@@ -7,9 +7,9 @@ and persistence without dictating what runs on it.
 ## What the Criome Is
 
 A universal computing paradigm. The environment in which sema-typed agents
-operate. Agents (like samskara) own their own sema worlds within the criome.
-The criome doesn't know about schemas, domains, or typed relations — that's
-the agent's concern. The criome knows about bytes, hashes, and identity.
+operate. Agents own their own sema worlds within the criome. The criome
+doesn't know about schemas, domains, or typed relations — that's the
+agent's concern. The criome knows about bytes, hashes, and identity.
 
 ## The Stack
 
@@ -17,7 +17,6 @@ the agent's concern. The criome knows about bytes, hashes, and identity.
 criome          runtime — hosts sema worlds, provides identity
 criome-store    persistence — content-addressed bytes (blake3 → bytes)
 arbor           versioning — prolly trees over the store
-samskara        first agent — rules, knowledge, phase/dignity lifecycle
 nexus           protocol — how agents talk to sema worlds
 aski            language — how sema types are specified
 sema            the format — the universal typed binary that everything is
