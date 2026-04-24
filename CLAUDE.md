@@ -21,11 +21,14 @@ criome          runtime — hosts sema worlds; three daemons
                 nexusd (text↔rkyv), criomed (sema's engine),
                 lojixd (effects executor)
 sema            records DB — content-addressed logical code records
-                (Fn, Struct, Expr, Type, …); owned by criomed
-                backed by redb
-lojix-store     blob DB — append-only file + hash→offset index;
-                opaque bytes (compiled binaries, attachments);
-                owned by lojixd
+                (Fn, Struct, Expr, Type, …); owned by criomed;
+                redb-backed
+lojix-store     content-addressed filesystem — a nix-store analogue
+                hashed by blake3; holds real unix files and
+                directory trees (compiled binary trees, user
+                attachments); separate index DB for metadata;
+                owned by lojixd; you `exec` from hash-derived
+                paths directly — no extraction step
 nexus           protocol — how clients talk to criomed (parsed
                 by nexusd; rkyv to criomed)
 nota            language — canonical text grammar nota ⊂ nexus
@@ -38,8 +41,9 @@ specified" is now played by `nexus-schema` records.
 **Earlier framing (historical)**: an earlier vision called the
 persistence layer `criome-store` as a single universal store.
 The MVP splits this into two stores — `sema` (records, redb)
-and `lojix-store` (blobs, append-only) — so that records and
-opaque bytes can evolve independently and GC differently.
+and `lojix-store` (content-addressed filesystem with separate
+index DB) — so that structured records and real artifact files
+can evolve independently and GC differently.
 
 ## The Vision
 
