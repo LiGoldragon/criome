@@ -16,7 +16,6 @@ name = "criome"
 path = "src/main.rs"
 
 [dependencies]
-# nexus-schema was SHELVED 2026-04-25; its types are absorbed into signal.
 signal = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
 lojix-schema = { git = "https://github.com/LiGoldragon/lojix-schema", branch = "main" }
 ractor = "0.15"
