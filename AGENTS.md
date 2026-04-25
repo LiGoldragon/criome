@@ -14,7 +14,7 @@ agent's concern. The criome knows about bytes, hashes, and identity.
 ## The Stack
 
 Current (MVP-era, aligned with
-`mentci-next/docs/architecture.md`):
+`ARCHITECTURE.md`):
 
 ```
 criome          runtime — hosts sema worlds; three daemons
