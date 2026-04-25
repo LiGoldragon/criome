@@ -7,7 +7,7 @@ Criome is the project. **Sema is its heart** — the typed,
 content-addressed records that hold every concept the engine
 reasons about. **Nexus is the bridge** that lets the legacy
 untyped-text world create and interact with sema — humans and
-LLMs author nexus text; nexusd parses it into signal rkyv;
+LLMs author nexus text; nexus parses it into signal rkyv;
 criomed validates and commits to sema. **Lojix is the compiler
 infrastructure** — build, store, deploy of artifacts referenced
 from sema by hash.
@@ -32,10 +32,10 @@ sema:
   and applies the change to sema. Rules and derivations are
   themselves records; cascades settle inside sema. Nothing
   "lives above" sema holding derived values.
-- **nexusd** is the translator — the bridge to the legacy
+- **nexus** is the translator — the bridge to the legacy
   untyped-text world. Nexus is the text request language —
   structured, controlled, permissioned. The rkyv form of
-  nexus is **signal**: nexusd parses nexus text into signal
+  nexus is **signal**: nexus parses nexus text into signal
   envelopes (`Assert`, `Mutate`, `Retract`, `Query`,
   `Compile`, …) and serialises replies back. Two faces of
   one language; the translation is mechanical.
@@ -94,12 +94,12 @@ want in user-space, but only nexus requests reach the engine.
 
 Sema is rkyv (binary, content-addressed). **Nexus is the text
 request language**; **signal is its rkyv form**, emitted by
-nexusd and consumed by criomed. Parsing nexus produces signal
+nexus and consumed by criomed. Parsing nexus produces signal
 envelopes; it does not produce sema directly. There are no
 "nexus records." There is sema (rkyv records described by
 KindDecl), and there are signal messages (rkyv envelopes
 carrying language IR). nexus text is never persisted as
-records; signal is never rendered to text outside nexusd. The
+records; signal is never rendered to text outside nexus. The
 analogy is SQL-and-a-DB: SQL is a request language; stored
 rows are in the DB's on-disk format. No one calls a row a
 "SQL record."
@@ -107,7 +107,7 @@ rows are in the DB's on-disk format. No one calls a row a
 ### Invariant C — Sema is the concern; everything orbits
 
 If a component does not serve sema directly, it is not core.
-criomed = sema's engine / guardian. nexusd = sema's
+criomed = sema's engine / guardian. nexus = sema's
 text-request translator. lojixd = executor for effects sema
 can't perform directly — outcomes return as sema. rsc = sema →
 `.rs` projector. lojix-store = artifact files, referenced
@@ -121,7 +121,7 @@ can't perform directly — outcomes return as sema. rsc = sema →
   user writes nexus text
       │
       ▼
-  nexusd ─────── parses text → signal (rkyv)
+  nexus ─────── parses text → signal (rkyv)
       │           (CriomeRequest::Assert / Mutate / Retract /
       │            Query / Compile / Subscribe / …)
       ▼
@@ -137,7 +137,7 @@ can't perform directly — outcomes return as sema. rsc = sema →
   criomed replies via signal rkyv
       │
       ▼
-  nexusd ─────── rkyv → nexus text
+  nexus ─────── rkyv → nexus text
       │
       ▼
   user reads reply
@@ -150,7 +150,7 @@ schema-invalid shapes, unauthorised actions all fail here.
 
 **Genesis runs the same flow.** At first boot, criomed
 dispatches a `genesis.nexus` text file (shipping with the
-criomed binary) through the same path: nexusd parses it,
+criomed binary) through the same path: nexus parses it,
 signal envelopes flow to criomed, the validator runs,
 records land in sema. The first messages validate against
 the built-in Rust types in `criome-schema` (no in-sema
@@ -167,7 +167,7 @@ the genesis stream has already asserted. Once the
         ▲ │
         │ ▼
      ┌─────────┐
-     │ nexusd  │ messenger: text ↔ rkyv only; validates syntax +
+     │ nexus  │ messenger: text ↔ rkyv only; validates syntax +
      │         │ protocol version; forwards requests to criomed;
      │         │ serialises replies back to text. Stateless modulo
      │         │ in-flight request correlations.
@@ -210,7 +210,7 @@ the genesis stream has already asserted. Once the
 
 **Invariants**:
 
-- Text crosses only at nexusd's boundary. Internal daemon-
+- Text crosses only at nexus's boundary. Internal daemon-
   to-daemon messages are rkyv.
 - No daemon-to-daemon path routes bulk data through criomed —
   when forge work inside lojixd writes to lojix-store, it does
@@ -335,7 +335,7 @@ and in mentci's reports; this file only names.
 ```
  human nexus text: (Query (Fn :name :resolve_pattern))
         ▼
-  nexusd parses → RawPattern; wraps as signal::Query
+  nexus parses → RawPattern; wraps as signal::Query
         ▼
   criomed validates; resolver(RawPattern, sema snapshot) → PatternExpr
         ▼
@@ -343,7 +343,7 @@ and in mentci's reports; this file only names.
         ▼
   criomed replies via rkyv
         ▼
-  nexusd serialises reply to nexus text
+  nexus serialises reply to nexus text
         ▼
  human
 ```
@@ -353,7 +353,7 @@ and in mentci's reports; this file only names.
 ```
  user: (Mutate (Fn :slot 42 :body (Block …)))
         ▼
- nexusd → criomed (signal::Mutate)
+ nexus → criomed (signal::Mutate)
         ▼
  criomed validates:
    • kind well-formed?
@@ -399,7 +399,7 @@ Run-time (plan dispatch):
 
 Self-host close:
 - User runs the new binary directly from its lojix-store path.
-- New binary connects to nexusd; asserts records; cascades fire
+- New binary connects to nexus; asserts records; cascades fire
   against the live sema. Loop closes.
 
 ---
@@ -417,13 +417,13 @@ this section is the architectural roles.
   declarations: Fn, Struct, Opus, SlotBinding, MemberEntry,
   Rule, ChangeLogEntry, …; plus nexus language IR — patterns,
   query operators, edit verbs, diagnostics).
-- **Layer 2 — contract crates**: signal (nexusd↔criomed;
+- **Layer 2 — contract crates**: signal (nexus↔criomed;
   requests + replies + handshake), lojix-msg (criomed↔lojixd;
   execution verbs).
 - **Layer 3 — storage**: sema (records DB — redb-backed;
   owned by criomed), lojix-store (content-addressed
   filesystem — owned by lojixd; includes a reader library).
-- **Layer 4 — daemons**: nexusd (translator), criomed (sema's
+- **Layer 4 — daemons**: nexus (translator), criomed (sema's
   engine), lojixd (executor).
 - **Layer 5 — clients + projectors**: nexus-cli (the text
   client), rsc (sema → `.rs` projector; linked by lojixd).
@@ -441,7 +441,7 @@ status.
 
 ### Three-pillar framing
 
-- **criome** — the runtime (nexusd, criomed, lojixd; the
+- **criome** — the runtime (nexus, criomed, lojixd; the
   daemon graph).
 - **sema** — the records (the heart).
 - **lojix** — the artifacts pillar (build, compile, store,
@@ -525,7 +525,7 @@ Foundational rules. Every session follows these.
   "nexus records."
 - **Sema is all we are concerned with.** Everything else
   orbits sema.
-- **Text only crosses nexusd.** All internal traffic is rkyv.
+- **Text only crosses nexus.** All internal traffic is rkyv.
 - **All-rkyv except nexus text.** The only non-rkyv messaging
   surface is the nexus *text* payload (carried inside a
   client-msg `Send`). Every other wire / storage format —

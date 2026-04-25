@@ -18,7 +18,7 @@ Current (MVP-era, aligned with
 
 ```
 criome          runtime — hosts sema worlds; three daemons
-                nexusd (text↔rkyv), criomed (sema's engine),
+                nexus (text↔rkyv), criomed (sema's engine),
                 lojixd (effects executor)
 sema            records DB — content-addressed logical code records
                 (Fn, Struct, Expr, Type, …); owned by criomed;
@@ -30,7 +30,7 @@ lojix-store     content-addressed filesystem — a nix-store analogue
                 owned by lojixd; you `exec` from hash-derived
                 paths directly — no extraction step
 nexus           protocol — how clients talk to criomed (parsed
-                by nexusd; rkyv to criomed)
+                by nexus; rkyv to criomed)
 nota            language — canonical text grammar nota ⊂ nexus
 ```
 
