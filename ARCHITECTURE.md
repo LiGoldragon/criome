@@ -125,6 +125,27 @@ the *client's* orchestration concern: the client captures the
 reply value in its host language and substitutes it into the next
 request text. The grammar stays small.
 
+**The "no parser keywords" rule does not preclude schema
+enums.** The nexus parser has no reserved words like `SELECT` or
+`IF` that it dispatches on; the verb system is sigil × delimiter
+composition. But the **schema** is strongly typed and grows by
+adding new typed kinds and enum variants —
+`RelationKind { DependsOn, Contains, … }`,
+`OutcomeMessage { Ok, Diagnostic }`, etc. Schema-level closed
+enums are exactly what signal is for. The two scopes (parser /
+schema) are distinct.
+
+**Slots are user-facing identity, hashes are version-locking.**
+Records reference each other by `Slot` (mutable identity that
+follows the current version of the referenced record). When
+content changes, the slot binding rebinds to the new content;
+references via slot keep working — no Merkle-DAG ripple. Hashes
+exist for cases where the client wants to lock onto a specific
+version (snapshots, audits, distributed sync); they are an
+optional verification mechanism, not the primary reference type.
+`Edge.from: Slot` is the correct shape; do not try to make it
+`Hash`.
+
 ### Invariant C — Sema is the concern; everything orbits
 
 If a component does not serve sema directly, it is not core.
@@ -354,7 +375,7 @@ and in mentci's reports; this file only names.
 ### Single query
 
 ```
- human nexus text: (Query (Fn :name :resolve_pattern))
+ human nexus text: (| Fn @name |)
         ▼
   nexus parses → RawPattern; wraps as signal::Query
         ▼
@@ -362,7 +383,7 @@ and in mentci's reports; this file only names.
         ▼
   matcher runs; records returned
         ▼
-  criome replies via rkyv
+  criome replies via signal (rkyv)
         ▼
   nexus serialises reply to nexus text
         ▼
@@ -372,13 +393,13 @@ and in mentci's reports; this file only names.
 ### Mutation request (validation + apply)
 
 ```
- user: (Mutate (Fn :slot 42 :body (Block …)))
+ user nexus text: ~(| Fn @id _ |) (Fn @id (Block …))
         ▼
- nexus → criome (signal::Mutate)
+ nexus → criome (signal::Mutate, one per matched record)
         ▼
  criome validates:
    • kind well-formed?
-   • all slot-refs in the body resolve to existing slots?
+   • all slot-refs in the new content resolve to existing slots?
    • author authorised? (caps / BLS post-MVP)
    • rule engine permits? (e.g., not mutating a seed-protected
      record)
@@ -386,21 +407,21 @@ and in mentci's reports; this file only names.
  criome writes new content to sema:
    • per-kind ChangeLogEntry appended
    • SlotBinding updated with new current-hash
-   • subscriptions on slot 42 fire → downstream cascades
-     re-derive
+   • subscriptions on the affected slots fire → downstream
+     cascades re-derive
         ▼
- criome replies success
+ criome replies (Ok) per affected slot
 ```
 
 ### Compile + self-host loop
 
 Edit-time (requests accumulate):
-- User issues nexus requests (Assert / Mutate / Patch) that
-  change code records in sema. Each is validated; cascades
-  settle; sema reflects the new state.
+- User issues nexus requests (Assert / Mutate / Retract /
+  AtomicBatch) that change code records in sema. Each is
+  validated; cascades settle; sema reflects the new state.
 
 Run-time (plan dispatch):
-- User issues `(Compile (Opus :slot N))`.
+- User issues a Compile request against an Opus record.
 - criome reads the Opus + transitive OpusDeps from sema.
 - rsc projects records → scratch workdir containing `.rs` +
   `Cargo.toml` + `flake.nix` (crane + fenix call).
