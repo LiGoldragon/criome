@@ -113,6 +113,18 @@ mid-render crashes, partial sequences in flight) live entirely
 at the daemon ↔ client leg; criome itself only emits complete
 signal frames.
 
+**Nexus is a request language, not a programming language.** It
+has no variables, no scoping, no evaluation, no cross-request
+state. Each top-level expression is one self-describing request
+with literal values. Pattern binds (`@x` inside `(\| ... \|)`)
+are the only form of name in the language and exist for matching
+during querying — they never appear in assertion positions, and
+they never carry state across requests. Dependent edits — where
+request N+1 needs the slot assigned by request N's reply — are
+the *client's* orchestration concern: the client captures the
+reply value in its host language and substitutes it into the next
+request text. The grammar stays small.
+
 ### Invariant C — Sema is the concern; everything orbits
 
 If a component does not serve sema directly, it is not core.
