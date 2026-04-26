@@ -104,6 +104,15 @@ analogy is SQL-and-a-DB: SQL is a request language; stored
 rows are in the DB's on-disk format. No one calls a row a
 "SQL record."
 
+**Criome's wire is signal, end-to-end.** Text never crosses
+criome's boundary in either direction. The nexus daemon owns
+all text translation — text-in becomes signal before the
+request reaches criome; signal-out becomes text after the reply
+leaves criome. Failure modes involving text streams (truncation,
+mid-render crashes, partial sequences in flight) live entirely
+at the daemon ↔ client leg; criome itself only emits complete
+signal frames.
+
 ### Invariant C — Sema is the concern; everything orbits
 
 If a component does not serve sema directly, it is not core.
