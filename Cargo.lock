@@ -507,14 +507,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-schema"
+name = "nota-codec"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nexus-schema?branch=main#4faee90baa907592e65a56edce5293971a839b3d"
+source = "git+https://github.com/LiGoldragon/nota-codec.git?rev=90bb518fb6fc5447dc34db53c432a461ff6c960a#90bb518fb6fc5447dc34db53c432a461ff6c960a"
 dependencies = [
- "blake3",
+ "nota-derive",
  "rkyv",
- "serde",
  "thiserror",
+]
+
+[[package]]
+name = "nota-derive"
+version = "0.1.0"
+source = "git+https://github.com/LiGoldragon/nota-derive.git?rev=96633b7d7bd0fb6204d301401b4c08505277bf53#96633b7d7bd0fb6204d301401b4c08505277bf53"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -714,11 +723,11 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal?branch=main#0d256329972222380be1de55a72d7b90463a067b"
+source = "git+https://github.com/LiGoldragon/signal?branch=main#6ef3de491427dec1ab006408a49c57a9a407498b"
 dependencies = [
- "nexus-schema",
+ "blake3",
+ "nota-codec",
  "rkyv",
- "serde",
  "thiserror",
 ]
 
