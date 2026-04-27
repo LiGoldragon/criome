@@ -36,9 +36,10 @@ sema:
   untyped-text world. Nexus is the text request language —
   structured, controlled, permissioned. The rkyv form of
   nexus is **signal**: nexus parses nexus text into signal
-  envelopes (`Assert`, `Mutate`, `Retract`, `Query`,
-  `Compile`, …) and serialises replies back. Two faces of
-  one language; the translation is mechanical.
+  envelopes (`Assert`, `Mutate`, `Retract`, `AtomicBatch`,
+  `Query`, `Subscribe`, `Validate` today; `Compile` is
+  planned post-MVP) and serialises replies back. Two faces
+  of one language; the translation is mechanical.
 - **lojix** is the hands. It performs effects sema can't
   (spawning `nix` subprocesses; reading and writing
   filesystem paths; materialising files). Inputs are plan
@@ -222,6 +223,14 @@ The principle generates concrete rules:
   user reads reply
 ```
 
+Current signal::Request verbs (per
+[signal/src/request.rs](https://github.com/LiGoldragon/signal/blob/main/src/request.rs)):
+`Handshake`, `Assert`, `Mutate`, `Retract`, `AtomicBatch`,
+`Query`, `Subscribe`, `Validate`. `Compile` (referenced
+elsewhere in this doc) is a **planned** post-MVP verb that
+will trigger the lojix-schema dispatch pipeline; it is not
+in the M0 wire today.
+
 **Every edit is a request.** criome is the arbiter; assertions,
 mutations, retractions can all be rejected. This is the
 hallucination wall: unknown names, broken references,
@@ -232,10 +241,11 @@ dispatches a `genesis.nexus` text file (shipping with the
 criome binary) through the same path: nexus parses it,
 signal envelopes flow to criome, the validator runs,
 records land in sema. The first messages validate against
-the built-in Rust types in `criome-schema` (no in-sema
-KindDecls yet); subsequent ones validate against records
-the genesis stream has already asserted. Once the
-`SemaGenesis` marker lands, normal mode begins.
+the built-in Rust types in signal (the `KindDecl` /
+`FieldDecl` / data-kind types compiled into the binary; no
+separate `criome-schema` crate); subsequent ones validate
+against records the genesis stream has already asserted.
+Once the `SemaGenesis` marker lands, normal mode begins.
 
 ---
 
@@ -492,10 +502,14 @@ this section is the architectural roles.
 - **Layer 0 — text grammars**: nota (spec), nota-serde-core
   (shared lexer+ser+de kernel), nota-serde (façade),
   nexus (spec), nexus-serde (façade).
-- **Layer 1 — schema vocabulary**: nexus-schema (record-kind
-  declarations: Fn, Struct, Opus, SlotBinding, MemberEntry,
-  Rule, ChangeLogEntry, …; plus nexus language IR — patterns,
-  query operators, edit verbs, diagnostics).
+- **Layer 1 — schema vocabulary**: lives inside
+  [signal](https://github.com/LiGoldragon/signal) (record-kind
+  declarations as KindDecl + FieldDecl + Cardinality types;
+  plus the data-kind structs Node / Edge / Graph and their
+  paired *Query types; plus the IR types — PatternField,
+  AssertOp / MutateOp / RetractOp / QueryOp / Records,
+  Diagnostic). The former separate `nexus-schema` crate was
+  absorbed into signal.
 - **Layer 2 — contract crates**: signal (nexus↔criome;
   requests + replies + handshake), lojix-schema (criome↔lojix;
   execution verbs).
@@ -508,9 +522,11 @@ this section is the architectural roles.
   client), rsc (sema → `.rs` projector; linked by lojix).
 - **Spec-only (terminal state)**: lojix (namespace README).
 
-Currently `lojix-schema`, `criome`, `lojix` are CANON-MISSING —
-not yet scaffolded. See workspace-manifest in mentci for
-status.
+Currently `lojix` is CANON-MISSING (not yet scaffolded).
+`criome` and `lojix-schema` are scaffolded; criome has the
+M0 daemon body to come (see
+[mentci/reports/089](https://github.com/LiGoldragon/mentci/blob/main/reports/089-m0-implementation-plan-step-3-onwards.md)).
+See workspace-manifest in mentci for the full status.
 
 > Some repos in this layout are not yet at terminal shape;
 > see workspace-manifest for current vs. terminal status
@@ -552,9 +568,10 @@ grammar is organised as a **delimiter-family matrix**:
 
 **Every top-level nexus expression is a request.** The head of
 a top-level `( )`-form is a request verb (`Assert`, `Mutate`,
-`Retract`, `Query`, `Compile`, `Subscribe`, …). Nested
-expressions are record constructions that the request refers
-to. Parsing rejects top-level expressions that aren't requests.
+`Retract`, `Query`, `Subscribe`, `Validate` today; `Compile`
+post-MVP). Nested expressions are record constructions that
+the request refers to. Parsing rejects top-level expressions
+that aren't requests.
 
 **Sigil budget is closed.** Six total: `;;` (comment), `#`
 (byte-literal prefix), `~` (mutate), `@` (bind), `!` (negate),
@@ -608,14 +625,16 @@ Foundational rules. Every session follows these.
 - **All-rkyv except nexus text.** The only non-rkyv messaging
   surface is the nexus *text* payload (carried inside a
   client-msg `Send`). Every other wire / storage format —
-  client-msg, signal, future criome-net, future lojix-schema,
-  sema records, lojix-store index entries — is rkyv. No
-  compromise. All rkyv-using crates pin the *same* feature
-  set so archived types interop:
+  signal, future criome-net, lojix-schema, sema records,
+  lojix-store index entries — is rkyv. No compromise. All
+  rkyv-using crates pin the *same* feature set so archived
+  types interop:
   `default-features = false, features = ["std", "bytecheck",
   "little_endian", "pointer_width_32", "unaligned"]`. Pinned
   to rkyv 0.8.x. Pattern reference:
-  [nexus-schema](https://github.com/LiGoldragon/nexus-schema).
+  [signal](https://github.com/LiGoldragon/signal). Discipline
+  documented in
+  [mentci/reports/074](https://github.com/LiGoldragon/mentci/blob/main/reports/074-portable-rkyv-discipline.md).
 - **Every edit is a request.** criome validates; requests can
   be rejected; this is the hallucination wall.
 - **Bootstrap rung by rung.** The engine bootstraps using its
