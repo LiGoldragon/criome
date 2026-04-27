@@ -16,13 +16,14 @@ name = "criome"
 path = "src/main.rs"
 
 [dependencies]
-signal = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
+signal       = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
+sema         = { git = "https://github.com/LiGoldragon/sema", branch = "main" }
 lojix-schema = { git = "https://github.com/LiGoldragon/lojix-schema", branch = "main" }
-ractor = "0.15"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-thiserror = "2"
-clap = { version = "4", features = ["derive"] }
-rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+ractor       = "0.15"
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
+thiserror    = "2"
+clap         = { version = "4", features = ["derive"] }
+rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 
 [lints.rust]
 unused = "allow"

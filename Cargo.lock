@@ -227,6 +227,7 @@ dependencies = [
  "lojix-schema",
  "ractor",
  "rkyv",
+ "sema",
  "signal",
  "thiserror",
  "tokio",
@@ -625,6 +626,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redb"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -683,6 +693,17 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sema"
+version = "0.1.0"
+source = "git+https://github.com/LiGoldragon/sema?branch=main#52f46551bf2529f30589beba9bad04c4d657813b"
+dependencies = [
+ "blake3",
+ "redb",
+ "rkyv",
+ "thiserror",
+]
 
 [[package]]
 name = "serde"

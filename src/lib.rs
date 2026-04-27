@@ -1,28 +1,33 @@
 //! criome — sema's engine.
 //!
-//! Receives [`signal`](https://github.com/LiGoldragon/signal)
-//! frames over UDS from the nexus daemon. Runs every request
-//! through the validator pipeline:
+//! Receives [`signal::Frame`] envelopes from the nexus daemon
+//! over a Unix socket. For each request:
 //!
-//! 1. **schema-check** — kind well-formed against `KindDecl`?
-//! 2. **ref-check** — slot-refs resolve to existing slots?
-//! 3. **invariant-check** — Rule records with `is_must_hold`
-//!    pass?
-//! 4. **permission-check** — capability tokens / quorum?
-//! 5. **write** — append to per-kind change-log; update
-//!    `SlotBinding`.
-//! 6. **cascade** — derived facts re-derive; subscriptions
-//!    fire.
+//! - [`Request::Handshake`](signal::Request::Handshake) →
+//!   handshake-version negotiation; reply with
+//!   `HandshakeAccepted` or `HandshakeRejected`.
+//! - [`Request::Assert`](signal::Request::Assert) → rkyv-encode
+//!   the inner record and append it to sema; reply with
+//!   `Outcome(Ok)`.
+//! - [`Request::Query`](signal::Request::Query) → scan sema,
+//!   try-decode each record as the requested kind, filter by
+//!   the query's `PatternField`s, reply with typed
+//!   [`Records`](signal::Records).
+//! - Other verbs → `Outcome(Diagnostic E0099)` ("not in M0").
 //!
-//! For effects sema can't perform (compile, deploy, file
-//! materialisation), criome dispatches
-//! [`lojix-schema`](https://github.com/LiGoldragon/lojix-schema)
-//! verbs to the [lojix](https://github.com/LiGoldragon/lojix)
-//! daemon.
-//!
-//! Skeleton-as-design. All bodies are `todo!()`.
+//! The full validator pipeline (schema-check, ref-resolve,
+//! invariant-check, permission-check, write, cascade) lands at
+//! M1+ — see [criome ARCHITECTURE.md §4](https://github.com/LiGoldragon/criome/blob/main/ARCHITECTURE.md#4--the-three-daemons-expanded).
+//! M0 is the minimum end-to-end loop: nexus text → nexus
+//! daemon → signal frame → criome → sema → records → criome
+//! reply → nexus daemon → nexus text.
 
+pub mod assert;
+pub mod dispatch;
 pub mod error;
+pub mod handshake;
+pub mod kinds;
+pub mod query;
 pub mod uds;
 pub mod validator;
 
