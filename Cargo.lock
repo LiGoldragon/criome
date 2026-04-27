@@ -510,7 +510,7 @@ dependencies = [
 [[package]]
 name = "nota-codec"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-codec.git?rev=90bb518fb6fc5447dc34db53c432a461ff6c960a#90bb518fb6fc5447dc34db53c432a461ff6c960a"
+source = "git+https://github.com/LiGoldragon/nota-codec.git?rev=103b3de6ff177ef20c9c00cabda4a9342bc7edb9#103b3de6ff177ef20c9c00cabda4a9342bc7edb9"
 dependencies = [
  "nota-derive",
  "rkyv",
@@ -520,7 +520,7 @@ dependencies = [
 [[package]]
 name = "nota-derive"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-derive.git?rev=96633b7d7bd0fb6204d301401b4c08505277bf53#96633b7d7bd0fb6204d301401b4c08505277bf53"
+source = "git+https://github.com/LiGoldragon/nota-derive.git?rev=7cff7aaddb8ed8d234b4c53b5b113adf525356ea#7cff7aaddb8ed8d234b4c53b5b113adf525356ea"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -744,9 +744,8 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal?branch=main#6ef3de491427dec1ab006408a49c57a9a407498b"
+source = "git+https://github.com/LiGoldragon/signal?branch=main#05b6411c0b59c9998581625ee19b04f0baf070e8"
 dependencies = [
- "blake3",
  "nota-codec",
  "rkyv",
  "thiserror",
