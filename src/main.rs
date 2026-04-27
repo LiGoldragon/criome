@@ -1,13 +1,14 @@
 //! criome — daemon entry point.
 //!
 //! Opens sema at `$SEMA_PATH` (default `/tmp/sema.redb`),
-//! binds a UDS listener at `/tmp/criome.sock` (or
-//! `$CRIOME_SOCKET`), and runs the accept loop until killed.
+//! constructs a [`Daemon`] over it, binds a UDS listener at
+//! `$CRIOME_SOCKET` (default `/tmp/criome.sock`), and runs the
+//! accept loop until killed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use criome::{uds::Listener, Result};
+use criome::{uds::Listener, Daemon, Result};
 use sema::Sema;
 
 const DEFAULT_SOCKET_PATH: &str = "/tmp/criome.sock";
@@ -23,10 +24,11 @@ async fn main() -> Result<()> {
 
     eprintln!("criome: opening sema at {}", sema_path.display());
     let sema = Arc::new(Sema::open(&sema_path)?);
+    let daemon = Arc::new(Daemon::new(sema));
 
     eprintln!("criome: binding UDS at {socket_path}");
     let listener = Listener::bind(&socket_path).await?;
 
     eprintln!("criome: ready");
-    listener.run(sema).await
+    listener.run(daemon).await
 }
