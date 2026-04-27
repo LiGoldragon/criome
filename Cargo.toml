@@ -12,7 +12,7 @@ name = "criome"
 path = "src/lib.rs"
 
 [[bin]]
-name = "criome"
+name = "criome-daemon"
 path = "src/main.rs"
 
 [dependencies]

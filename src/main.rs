@@ -22,13 +22,13 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| DEFAULT_SEMA_PATH.to_string())
         .into();
 
-    eprintln!("criome: opening sema at {}", sema_path.display());
+    eprintln!("criome-daemon: opening sema at {}", sema_path.display());
     let sema = Arc::new(Sema::open(&sema_path)?);
     let daemon = Arc::new(Daemon::new(sema));
 
-    eprintln!("criome: binding UDS at {socket_path}");
+    eprintln!("criome-daemon: binding UDS at {socket_path}");
     let listener = Listener::bind(&socket_path).await?;
 
-    eprintln!("criome: ready");
+    eprintln!("criome-daemon: ready");
     listener.run(daemon).await
 }
