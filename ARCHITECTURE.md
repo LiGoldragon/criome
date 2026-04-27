@@ -57,12 +57,26 @@ fenix pins the Rust toolchain; crane builds packages. rsc
 emits the workdir that these consume. Direct `rustc`
 orchestration is a post-nix-replacement concern.
 
-**Macro philosophy**: we **author no macros** ourselves (no
-`macro_rules!`, no proc-macro crates). Our internal code-gen
-patterns live as sema rules that run before rsc emission. We
-**freely call** third-party macros — `#[derive(Serialize)]`,
-`#[tokio::main]`, `format!`, `println!`, etc. — and rsc emits
-those invocations verbatim for rustc to expand.
+**Macro philosophy** (current era → eventual state). In the
+eventual self-hosting state — when sema holds the full
+specification of every program as a typed graph of records,
+and rsc projects those records to Rust source — there are no
+*authored* macros. Code-generation patterns live as sema rules
+that rsc emits as plain Rust; the macro-like behaviour happens
+at the sema-to-Rust boundary, not as proc-macro expansion
+inside rustc.
+
+In the current bootstrap era, the engine itself is still
+written in Rust by hand. Authored macros (`macro_rules!` and
+proc-macro crates) are fine when they're the right tool —
+they will be migrated to sema-rules + rsc-projection later,
+the same way every other piece of hand-written Rust will be.
+Per Li 2026-04-27: *"right now we are writing the engine in
+Rust, so we can write Rust macros."*
+
+We **freely call** third-party macros — `#[derive(Serialize)]`,
+`#[tokio::main]`, `format!`, `println!`, etc. — in both eras,
+and rsc emits those invocations verbatim for rustc to expand.
 
 **The code category in sema is named *machina*** — the subset
 of records that compiles to Rust in v1. The native checker
@@ -595,10 +609,14 @@ Foundational rules. Every session follows these.
   spawns `nix build`. Direct rustc orchestration is a post-
   nix-replacement concern. rsc emits `.rs` + `Cargo.toml` +
   `flake.nix`; nix drives the rest.
-- **We author no macros.** No `macro_rules!`, no proc-macro
-  crates. Our code-gen patterns are sema rules. We freely
-  **call** third-party macros (derive, attribute, function-
-  like) and rsc emits the invocations.
+- **Authored macros are transitional.** In the eventual
+  self-hosting state, code-gen patterns are sema rules
+  emitted by rsc and there are no authored macros. In the
+  current bootstrap era we may author macros where useful,
+  understanding that they're transitional code that will be
+  replaced by sema-projection later. We freely **call**
+  third-party macros (derive, attribute, function-like) in
+  both eras.
 - **Skeleton-as-design.** New concrete design starts as
   compiled skeleton code (types + trait signatures + `todo!()`
   bodies) in the relevant repo. Reports (in mentci) are for
