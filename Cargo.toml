@@ -24,7 +24,3 @@ tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-uti
 thiserror    = "2"
 clap         = { version = "4", features = ["derive"] }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
-
-[lints.rust]
-unused = "allow"
-dead_code = "allow"
