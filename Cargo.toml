@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "criome-daemon"
 path = "src/main.rs"
 
+[[bin]]
+name = "criome-handle-frame"
+path = "src/bin/handle_frame.rs"
+
 [dependencies]
 signal       = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
 sema         = { git = "https://github.com/LiGoldragon/sema", branch = "main" }
