@@ -19,9 +19,9 @@ use std::sync::Arc;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use sema::Sema;
 use signal::{
-    AssertOperation, Body, Diagnostic, DiagnosticLevel, Frame, HandshakeRejectionReason,
-    HandshakeReply, HandshakeRequest, Ok as OkRecord, OutcomeMessage, ProtocolVersion, Reply,
-    Request, Slot, SIGNAL_PROTOCOL_VERSION,
+    AssertOperation, Body, Diagnostic, Frame, HandshakeRejectionReason, HandshakeReply,
+    HandshakeRequest, Ok as OkRecord, OutcomeMessage, ProtocolVersion, Reply, Request, Slot,
+    SIGNAL_PROTOCOL_VERSION,
 };
 
 use crate::{kinds, reader};
@@ -101,7 +101,7 @@ impl State {
     /// Determined entirely by the request and the build-time
     /// `SIGNAL_PROTOCOL_VERSION`. M0 single-instance fills
     /// `server_id` with `Slot::from(0u64)`; multi-instance
-    /// criome assigns a real `CriomedInstance` slot here.
+    /// criome assigns a real `CriomeDaemonInstance` slot here.
     pub fn handle_handshake(request: HandshakeRequest) -> HandshakeOutcome {
         if request.client_version.is_compatible_with(SIGNAL_PROTOCOL_VERSION) {
             return HandshakeOutcome::Accepted(HandshakeReply {
@@ -136,12 +136,12 @@ impl State {
         match tagged {
             Ok(bytes) => match self.sema.store(&bytes) {
                 Ok(_slot) => OutcomeMessage::Ok(OkRecord::default()),
-                Err(error) => OutcomeMessage::Diagnostic(Self::diagnostic(
+                Err(error) => OutcomeMessage::Diagnostic(Diagnostic::error(
                     "E0500",
                     format!("sema write failed: {error}"),
                 )),
             },
-            Err(error) => OutcomeMessage::Diagnostic(Self::diagnostic(
+            Err(error) => OutcomeMessage::Diagnostic(Diagnostic::error(
                 "E0501",
                 format!("rkyv encode failed: {error}"),
             )),
@@ -149,7 +149,7 @@ impl State {
     }
 
     pub fn handle_deferred(verb: &'static str, milestone: &'static str) -> OutcomeMessage {
-        OutcomeMessage::Diagnostic(Self::diagnostic(
+        OutcomeMessage::Diagnostic(Diagnostic::error(
             "E0099",
             format!("{verb} verb not implemented in M0; planned for {milestone}"),
         ))
@@ -172,28 +172,8 @@ impl State {
         Ok(tagged)
     }
 
-    fn diagnostic(code: &str, message: String) -> Diagnostic {
-        diagnostic(code, message)
-    }
-
     fn protocol_error(code: &str, message: String) -> Reply {
-        Reply::Outcome(OutcomeMessage::Diagnostic(diagnostic(code, message)))
-    }
-}
-
-/// Module-level helper — build a `Diagnostic` with the standard
-/// `Error` level and empty context/suggestions/durable-record.
-/// Used by sibling modules ([`crate::connection`]) that need to
-/// emit canonical daemon-level diagnostics.
-pub fn diagnostic(code: &str, message: String) -> Diagnostic {
-    Diagnostic {
-        level: DiagnosticLevel::Error,
-        code: code.to_string(),
-        message,
-        primary_site: None,
-        context: vec![],
-        suggestions: vec![],
-        durable_record: None,
+        Reply::Outcome(OutcomeMessage::Diagnostic(Diagnostic::error(code, message)))
     }
 }
 

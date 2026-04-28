@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use signal::{Body, Frame, OutcomeMessage, Reply, Request};
+use signal::{Body, Diagnostic, Frame, OutcomeMessage, Reply, Request};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
@@ -130,7 +130,7 @@ impl State {
                     let records = call_into(raw, "reader query")?;
                     Reply::Records(records)
                 }
-                None => Reply::Outcome(OutcomeMessage::Diagnostic(engine::diagnostic(
+                None => Reply::Outcome(OutcomeMessage::Diagnostic(Diagnostic::error(
                     "E0500",
                     "no reader actors available — daemon misconfiguration".to_string(),
                 ))),
@@ -195,7 +195,7 @@ impl Actor for Connection {
 
         let reply = match frame.body {
             Body::Request(request) => state.dispatch(request).await.map_err(|e| Box::new(e) as ActorProcessingErr)?,
-            Body::Reply(_) => Reply::Outcome(OutcomeMessage::Diagnostic(engine::diagnostic(
+            Body::Reply(_) => Reply::Outcome(OutcomeMessage::Diagnostic(Diagnostic::error(
                 "E0098",
                 "client sent Body::Reply where Body::Request expected".to_string(),
             ))),
