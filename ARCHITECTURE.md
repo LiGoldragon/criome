@@ -547,10 +547,10 @@ this section is the architectural roles.
 - **Spec-only (terminal state)**: lojix (namespace README).
 
 Currently `lojix` is CANON-MISSING (not yet scaffolded).
-`criome` and `lojix-schema` are scaffolded; criome has the
-M0 daemon body to come (see
-[mentci/reports/089](https://github.com/LiGoldragon/mentci/blob/main/reports/089-m0-implementation-plan-step-3-onwards.md)).
-See workspace-manifest in mentci for the full status.
+`criome` and `lojix-schema` are scaffolded; criome has its
+M0 daemon body shipped (ractor-hosted; see `criome/src/lib.rs`
+for the supervision tree). See workspace-manifest in mentci
+for the full per-repo status.
 
 > Some repos in this layout are not yet at terminal shape;
 > see workspace-manifest for current vs. terminal status
