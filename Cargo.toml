@@ -23,7 +23,7 @@ path = "src/bin/handle_frame.rs"
 signal       = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
 sema         = { git = "https://github.com/LiGoldragon/sema", branch = "main" }
 lojix-schema = { git = "https://github.com/LiGoldragon/lojix-schema", branch = "main" }
-ractor       = "0.15"
+ractor       = { version = "0.15", features = ["async-trait"] }
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
 thiserror    = "2"
 clap         = { version = "4", features = ["derive"] }

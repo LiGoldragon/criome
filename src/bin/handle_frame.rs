@@ -2,7 +2,8 @@
 //!
 //! Read a length-prefixed [`signal::Frame`] from stdin, open
 //! sema at `$SEMA_PATH`, dispatch the frame through
-//! [`criome::Daemon::handle_frame`], write the reply Frame
+//! [`criome::engine::State::handle_frame`] (the sync façade
+//! that bypasses the actor system), write the reply Frame
 //! (length-prefixed) to stdout.
 //!
 //! Sema state mutates in place at `$SEMA_PATH`; the wrapping
@@ -13,7 +14,8 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use criome::{Daemon, Error, Result};
+use criome::engine;
+use criome::{Error, Result};
 use sema::Sema;
 use signal::Frame;
 
@@ -28,7 +30,7 @@ fn main() -> Result<()> {
         .into();
 
     let sema = Arc::new(Sema::open(&sema_path)?);
-    let daemon = Daemon::new(sema);
+    let engine = engine::State::new(sema);
 
     let mut stdin = std::io::stdin().lock();
     let mut length_bytes = [0u8; 4];
@@ -38,7 +40,7 @@ fn main() -> Result<()> {
     stdin.read_exact(&mut frame_bytes)?;
 
     let frame = Frame::decode(&frame_bytes)?;
-    let reply_frame = daemon.handle_frame(frame);
+    let reply_frame = engine.handle_frame(frame);
 
     let bytes = reply_frame.encode();
     let length = u32::try_from(bytes.len())

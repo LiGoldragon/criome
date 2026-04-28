@@ -1,45 +1,108 @@
-//! `Daemon` — the noun that owns sema and handles every signal
-//! frame. Each verb's `impl Daemon { … }` block lives in its
-//! own file under `src/` (handshake.rs / assert.rs / query.rs /
-//! dispatch.rs); this file holds the type definition and the
-//! cross-cutting entry points.
+//! `Daemon` actor — root of the criome supervision tree.
+//!
+//! Spawns the [`Engine`](crate::engine), the
+//! [`Reader`](crate::reader) pool (sized by
+//! [`sema::Sema::reader_count`]), and the
+//! [`Listener`](crate::listener) at startup. Holds the
+//! `ActorRef`s for graceful-shutdown propagation.
+//!
+//! The Daemon itself receives no user messages — it only
+//! exists to own the supervision relationship and respond to
+//! a `Stop` request from `main` (e.g., on SIGTERM).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use ractor::{Actor, ActorProcessingErr, ActorRef};
 use sema::Sema;
-use signal::Frame;
 
-pub struct Daemon {
-    sema: Arc<Sema>,
+use crate::{engine, listener, reader};
+use crate::error::{Error, Result};
+
+pub struct Daemon;
+
+pub struct State {
+    pub engine: ActorRef<engine::Message>,
+    pub readers: Vec<ActorRef<reader::Message>>,
+    pub listener: ActorRef<listener::Message>,
 }
 
+pub struct Arguments {
+    pub socket_path: PathBuf,
+    pub sema_path: PathBuf,
+}
+
+pub enum Message {}
+
 impl Daemon {
-    /// Construct a daemon over the given sema handle.
-    pub fn new(sema: Arc<Sema>) -> Self {
-        Self { sema }
+    /// Bring up the full supervision tree against `arguments`,
+    /// returning the root daemon's [`ActorRef`] + [`tokio::task::JoinHandle`].
+    /// `main` typically constructs Arguments from env vars and
+    /// awaits the join handle.
+    pub async fn start(arguments: Arguments) -> Result<(ActorRef<Message>, tokio::task::JoinHandle<()>)> {
+        let (daemon_ref, daemon_handle) =
+            Actor::spawn(Some("daemon".into()), Daemon, arguments)
+                .await
+                .map_err(|error| Error::ActorSpawn(error.to_string()))?;
+        Ok((daemon_ref, daemon_handle))
     }
+}
 
-    /// Borrow the sema handle. Used by per-verb impl blocks
-    /// in sibling modules.
-    pub(crate) fn sema(&self) -> &Sema {
-        &self.sema
-    }
+#[ractor::async_trait]
+impl Actor for Daemon {
+    type Msg = Message;
+    type State = State;
+    type Arguments = Arguments;
 
-    /// Process one inbound `Frame` and produce the reply
-    /// `Frame`. Wraps the per-verb dispatch on
-    /// [`Self::handle_request`] (defined in `dispatch.rs`).
-    pub fn handle_frame(&self, frame: Frame) -> Frame {
-        let reply = match frame.body {
-            signal::Body::Request(request) => self.handle_request(request),
-            signal::Body::Reply(_) => Self::protocol_error(
-                "E0098",
-                "client sent Body::Reply where Body::Request expected".to_string(),
-            ),
-        };
-        Frame {
-            principal_hint: None,
-            auth_proof: None,
-            body: signal::Body::Reply(reply),
+    async fn pre_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        arguments: Arguments,
+    ) -> std::result::Result<Self::State, ActorProcessingErr> {
+        let sema = Arc::new(Sema::open(&arguments.sema_path)?);
+        let reader_count = sema.reader_count()?;
+
+        let (engine_ref, _) = Actor::spawn_linked(
+            Some("engine".into()),
+            engine::Engine,
+            engine::Arguments { sema: Arc::clone(&sema) },
+            myself.get_cell(),
+        )
+        .await?;
+
+        let mut readers = Vec::with_capacity(reader_count as usize);
+        for index in 0..reader_count {
+            let (reader_ref, _) = Actor::spawn_linked(
+                Some(format!("reader-{index}")),
+                reader::Reader,
+                reader::Arguments { sema: Arc::clone(&sema) },
+                myself.get_cell(),
+            )
+            .await?;
+            readers.push(reader_ref);
         }
+
+        let (listener_ref, _) = Actor::spawn_linked(
+            Some("listener".into()),
+            listener::Listener,
+            listener::Arguments {
+                socket_path: arguments.socket_path,
+                engine: engine_ref.clone(),
+                readers: readers.clone(),
+            },
+            myself.get_cell(),
+        )
+        .await?;
+
+        Ok(State { engine: engine_ref, readers, listener: listener_ref })
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        _message: Message,
+        _state: &mut State,
+    ) -> std::result::Result<(), ActorProcessingErr> {
+        Ok(())
     }
 }

@@ -1,31 +1,54 @@
-//! Query handler — `impl Daemon { handle_query + per-kind finders + matcher }`.
+//! `Reader` actor — read side of criome's sema.
 //!
-//! Scans sema, filters records by their kind tag (one-byte
-//! discriminator from [`crate::kinds`]), decodes each matching
-//! record, filters by the query's `PatternField`s, returns a
-//! typed `Records` reply.
+//! Multiple `Reader` actors share the same `Arc<Sema>` and
+//! answer `Query` messages concurrently via redb's MVCC. The
+//! pool size comes from [`sema::Sema::reader_count`] at daemon
+//! startup; each `Reader` actor is its own ractor mailbox so
+//! a slow query on one reader doesn't block others.
 //!
-//! The kind-tag prefix is M0's solution for single-table
-//! storage; per-kind tables in sema (M1+) replace the tag check
-//! with table selection. The matcher logic stays the same.
+//! Read-only by construction — no message variant mutates
+//! sema. Writes go through [`crate::engine::Engine`] instead.
 
+use std::sync::Arc;
+
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use sema::Sema;
 use signal::{
     Edge, EdgeQuery, Graph, GraphQuery, KindDecl, KindDeclQuery, Node, NodeQuery, PatternField,
-    QueryOperation, Records, Reply,
+    QueryOperation, Records,
 };
 
-use crate::daemon::Daemon;
 use crate::kinds;
 
-impl Daemon {
-    pub(crate) fn handle_query(&self, operation: QueryOperation) -> Reply {
-        let records = match operation {
+pub struct Reader;
+
+pub struct State {
+    sema: Arc<Sema>,
+}
+
+pub struct Arguments {
+    pub sema: Arc<Sema>,
+}
+
+pub enum Message {
+    Query {
+        operation: QueryOperation,
+        reply_port: RpcReplyPort<Records>,
+    },
+}
+
+impl State {
+    pub fn new(sema: Arc<Sema>) -> Self {
+        Self { sema }
+    }
+
+    pub fn handle_query(&self, operation: QueryOperation) -> Records {
+        match operation {
             QueryOperation::Node(query) => Records::Node(self.find_nodes(&query)),
             QueryOperation::Edge(query) => Records::Edge(self.find_edges(&query)),
             QueryOperation::Graph(query) => Records::Graph(self.find_graphs(&query)),
             QueryOperation::KindDecl(query) => Records::KindDecl(self.find_kind_decls(&query)),
-        };
-        Reply::Records(records)
+        }
     }
 
     fn find_nodes(&self, query: &NodeQuery) -> Vec<Node> {
@@ -60,9 +83,6 @@ impl Daemon {
             .collect()
     }
 
-    /// Iterate sema; for each record whose first byte matches
-    /// `expected_tag`, decode the rest as `T` and yield it.
-    /// Records of other kinds are skipped without decoding.
     fn decode_kind<T>(&self, expected_tag: u8) -> Vec<T>
     where
         T: rkyv::Archive,
@@ -70,7 +90,7 @@ impl Daemon {
             + rkyv::Deserialize<T, rkyv::api::high::HighDeserializer<rkyv::rancor::Error>>,
     {
         let mut decoded = Vec::new();
-        for (_slot, bytes) in self.sema().iter().unwrap_or_default() {
+        for (_slot, bytes) in self.sema.iter().unwrap_or_default() {
             if bytes.first().copied() != Some(expected_tag) {
                 continue;
             }
@@ -81,15 +101,39 @@ impl Daemon {
         decoded
     }
 
-    /// `Wildcard` and `Bind` both match anything. `Match(literal)`
-    /// matches iff the value equals the literal. (M0 doesn't
-    /// return bind captures — the reply is just the typed
-    /// records; bind-capture values land at M1+ when the result
-    /// projection surface grows.)
     fn matches_pattern_field<T: PartialEq>(value: &T, pattern: &PatternField<T>) -> bool {
         match pattern {
             PatternField::Wildcard | PatternField::Bind => true,
             PatternField::Match(literal) => value == literal,
         }
+    }
+}
+
+#[ractor::async_trait]
+impl Actor for Reader {
+    type Msg = Message;
+    type State = State;
+    type Arguments = Arguments;
+
+    async fn pre_start(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        arguments: Arguments,
+    ) -> std::result::Result<Self::State, ActorProcessingErr> {
+        Ok(State::new(arguments.sema))
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: Message,
+        state: &mut State,
+    ) -> std::result::Result<(), ActorProcessingErr> {
+        match message {
+            Message::Query { operation, reply_port } => {
+                let _ = reply_port.send(state.handle_query(operation));
+            }
+        }
+        Ok(())
     }
 }
