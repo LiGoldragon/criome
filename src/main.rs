@@ -9,8 +9,10 @@
 
 use std::path::PathBuf;
 
+use ractor::Actor;
+
 use criome::daemon::{Arguments, Daemon};
-use criome::Result;
+use criome::{Error, Result};
 
 const DEFAULT_SOCKET_PATH: &str = "/tmp/criome.sock";
 const DEFAULT_SEMA_PATH: &str = "/tmp/sema.redb";
@@ -27,12 +29,17 @@ async fn main() -> Result<()> {
     eprintln!("criome-daemon: opening sema at {}", sema_path.display());
     eprintln!("criome-daemon: binding UDS at {}", socket_path.display());
 
-    let (_daemon_ref, daemon_handle) =
-        Daemon::start(Arguments { socket_path, sema_path }).await?;
+    let (_daemon_ref, daemon_handle) = Actor::spawn(
+        Some("daemon".into()),
+        Daemon,
+        Arguments { socket_path, sema_path },
+    )
+    .await
+    .map_err(|error| Error::ActorSpawn(error.to_string()))?;
 
     eprintln!("criome-daemon: ready");
-    daemon_handle.await.map_err(|error| {
-        criome::Error::ActorCall(format!("daemon join: {error}"))
-    })?;
+    daemon_handle
+        .await
+        .map_err(|error| Error::ActorCall(format!("daemon join: {error}")))?;
     Ok(())
 }
