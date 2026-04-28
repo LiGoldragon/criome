@@ -14,8 +14,7 @@ use std::sync::Arc;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use sema::Sema;
 use signal::{
-    Edge, EdgeQuery, Graph, GraphQuery, KindDecl, KindDeclQuery, Node, NodeQuery, PatternField,
-    QueryOperation, Records,
+    Edge, EdgeQuery, Graph, GraphQuery, Node, NodeQuery, PatternField, QueryOperation, Records,
 };
 
 use crate::kinds;
@@ -47,7 +46,6 @@ impl State {
             QueryOperation::Node(query) => Records::Node(self.find_nodes(&query)),
             QueryOperation::Edge(query) => Records::Edge(self.find_edges(&query)),
             QueryOperation::Graph(query) => Records::Graph(self.find_graphs(&query)),
-            QueryOperation::KindDecl(query) => Records::KindDecl(self.find_kind_decls(&query)),
         }
     }
 
@@ -73,13 +71,6 @@ impl State {
         self.decode_kind::<Graph>(kinds::GRAPH)
             .into_iter()
             .filter(|graph| Self::matches_pattern_field(&graph.title, &query.title))
-            .collect()
-    }
-
-    fn find_kind_decls(&self, query: &KindDeclQuery) -> Vec<KindDecl> {
-        self.decode_kind::<KindDecl>(kinds::KIND_DECL)
-            .into_iter()
-            .filter(|kind_decl| Self::matches_pattern_field(&kind_decl.name, &query.name))
             .collect()
     }
 

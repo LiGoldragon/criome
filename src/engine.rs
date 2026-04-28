@@ -131,7 +131,6 @@ impl State {
             AssertOperation::Node(value) => Self::prepend_tag(kinds::NODE, value),
             AssertOperation::Edge(value) => Self::prepend_tag(kinds::EDGE, value),
             AssertOperation::Graph(value) => Self::prepend_tag(kinds::GRAPH, value),
-            AssertOperation::KindDecl(value) => Self::prepend_tag(kinds::KIND_DECL, value),
         };
         match tagged {
             Ok(bytes) => match self.sema.store(&bytes) {

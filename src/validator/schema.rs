@@ -1,11 +1,10 @@
-//! Step 1 — schema-check. Look up `kind_name` against `KindDecl`
-//! records in sema; verify the request's record matches the
-//! kind's field shapes.
-//!
-//! At first boot, validates against built-in Rust types in
-//! `criome-schema` (CANON-MISSING; not yet a separate crate);
-//! after `genesis.nexus` lands, validates against in-sema
-//! `KindDecl` records.
+//! Step 1 — schema-check. Verify the request's record matches
+//! the kind's field shapes. M0 validates against the closed
+//! Rust enum in [`signal`](https://github.com/LiGoldragon/signal)
+//! (`AssertOperation` / `MutateOperation` / etc. are the
+//! authoritative type system). When `rsc` lands and projects
+//! Rust from records, the schema-check moves to record-driven
+//! validation; until then, the closed Rust enum is the truth.
 
 use crate::Result;
 
