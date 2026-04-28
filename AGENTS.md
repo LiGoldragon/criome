@@ -34,16 +34,11 @@ nexus           protocol — how clients talk to criome (parsed
 nota            language — canonical text grammar nota ⊂ nexus
 ```
 
-**Shelved for MVP**: `arbor` (prolly-tree versioning).
-`aski` is no longer in the stack — its role as "how types are
-specified" is now played by `nexus-schema` records.
+Schema-as-data lives in `KindDecl` records (defined in
+[signal](https://github.com/LiGoldragon/signal)); the typed
+Rust code is rsc's projection.
 
-**Earlier framing (historical)**: an earlier vision called the
-persistence layer `criome-store` as a single universal store.
-The MVP splits this into two stores — `sema` (records, redb)
-and `lojix-store` (content-addressed filesystem with separate
-index DB) — so that structured records and real artifact files
-can evolve independently and GC differently.
+**Shelved for MVP**: `arbor` (prolly-tree versioning).
 
 ## The Vision
 
