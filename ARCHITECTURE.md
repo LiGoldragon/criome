@@ -32,14 +32,16 @@ sema:
   and applies the change to sema. Rules and derivations are
   themselves records; cascades settle inside sema. Nothing
   "lives above" sema holding derived values.
-- **nexus** is the translator — the bridge to the legacy
-  untyped-text world. Nexus is the text request language —
-  structured, controlled, permissioned. The rkyv form of
-  nexus is **signal**: nexus parses nexus text into signal
-  envelopes (`Assert`, `Mutate`, `Retract`, `AtomicBatch`,
-  `Query`, `Subscribe`, `Validate` today; `Compile` is
-  planned post-MVP) and serialises replies back. Two faces
-  of one language; the translation is mechanical.
+- **nexus** is the text front-end — the bridge to the legacy
+  untyped-text world. A text request language (structured,
+  controlled, permissioned) that parses to **signal**, criome's
+  rkyv request protocol. Envelopes: `Assert`, `Mutate`,
+  `Retract`, `AtomicBatch`, `Query`, `Subscribe`, `Validate`
+  today; `Compile` is planned post-MVP. Replies serialise back
+  to text the same way. Two faces of one language; the
+  translation is mechanical. Future clients (the GUI editor
+  being the first) speak signal directly and never go through
+  nexus.
 - **lojix** is the hands. It performs effects sema can't
   (spawning `nix` subprocesses; reading and writing
   filesystem paths; materialising files). Inputs are plan
@@ -54,6 +56,14 @@ sema:
   analogue) holding real unix files, referenced from sema by
   hash. Canonical from day one — see §5 for how it relates to
   `/nix/store` during the bootstrap era.
+
+**Signal is the messaging system of the whole sema-ecosystem.**
+**criome speaks only signal.** Nexus is one signal speaker —
+the text↔signal gateway for humans, agents, and scripts. Future
+clients (the GUI editor being the first) connect to criome by
+speaking signal directly, the same way nexus does. Anything that
+wants to talk to criome speaks signal; nexus is one front-end
+among many that may exist over time, not a required intermediary.
 
 **Build backend for this era**: **nix via crane + fenix**.
 fenix pins the Rust toolchain; crane builds packages. prism
@@ -112,17 +122,19 @@ want in user-space, but only nexus requests reach the engine.
 
 ### Invariant B — Nexus is a language, not a record format
 
-Sema is rkyv (binary, content-addressed). **Nexus is the text
-request language**; **signal is its rkyv form**, emitted by
-nexus and consumed by criome. Parsing nexus produces signal
-envelopes; it does not produce sema directly. There are no
-"nexus records." There is sema (rkyv records of typed kinds
-defined in signal), and there are signal messages (rkyv
-envelopes carrying language IR). nexus text is never persisted as
-records; signal is never rendered to text outside nexus. The
-analogy is SQL-and-a-DB: SQL is a request language; stored
-rows are in the DB's on-disk format. No one calls a row a
-"SQL record."
+Sema is rkyv (binary, content-addressed). **Signal is criome's
+rkyv request protocol** — every client speaks signal to criome.
+**Nexus is one front-end** — the text request language whose
+parser produces signal envelopes (the parse is mechanical).
+Future clients may speak signal directly without going through
+nexus. Parsing nexus produces signal envelopes; it does not
+produce sema directly. There are no "nexus records." There is
+sema (rkyv records of typed kinds defined in signal), and there
+are signal messages (rkyv envelopes carrying language IR). nexus
+text is never persisted as records; signal is never rendered to
+text outside nexus. The analogy is SQL-and-a-DB: SQL is one
+text request language; stored rows are in the DB's on-disk
+format. No one calls a row a "SQL record."
 
 **Criome's wire is signal, end-to-end.** Text never crosses
 criome's boundary in either direction. The nexus daemon owns
