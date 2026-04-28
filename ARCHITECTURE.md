@@ -45,38 +45,43 @@ sema:
   filesystem paths; materialising files). Inputs are plan
   records read from sema; outputs become outcome records
   written back.
-- **rsc** projects sema → `.rs` + `Cargo.toml` + `flake.nix`
-  for nix to consume. One-way emission.
+- **prism** projects sema records → `.rs` source files. Used
+  by lojix-daemon's runtime-creation pipeline as the code-
+  emission phase (lojix-daemon orchestrates the surrounding
+  work — directory assembly, dependency resolution, compiler
+  invocation). One-way emission: sema → Rust source.
 - **lojix-store** is a content-addressed filesystem (nix-store
   analogue) holding real unix files, referenced from sema by
   hash. Canonical from day one — see §5 for how it relates to
   `/nix/store` during the bootstrap era.
 
 **Build backend for this era**: **nix via crane + fenix**.
-fenix pins the Rust toolchain; crane builds packages. rsc
-emits the workdir that these consume. Direct `rustc`
-orchestration is a post-nix-replacement concern.
+fenix pins the Rust toolchain; crane builds packages. prism
+emits the source files; lojix-daemon assembles the workdir
+(`.rs` from prism + `Cargo.toml` + `flake.nix`) and invokes
+the nix build. Direct `rustc` orchestration is a post-nix-
+replacement concern.
 
 **Macro philosophy** (current era → eventual state). In the
 eventual self-hosting state — when sema holds the full
 specification of every program as a typed graph of records,
-and rsc projects those records to Rust source — there are no
+and prism projects those records to Rust source — there are no
 *authored* macros. Code-generation patterns live as sema rules
-that rsc emits as plain Rust; the macro-like behaviour happens
+that prism emits as plain Rust; the macro-like behaviour happens
 at the sema-to-Rust boundary, not as proc-macro expansion
 inside rustc.
 
 In the current bootstrap era, the engine itself is still
 written in Rust by hand. Authored macros (`macro_rules!` and
 proc-macro crates) are fine when they're the right tool —
-they will be migrated to sema-rules + rsc-projection later,
+they will be migrated to sema-rules + prism-projection later,
 the same way every other piece of hand-written Rust will be.
 Per Li 2026-04-27: *"right now we are writing the engine in
 Rust, so we can write Rust macros."*
 
 We **freely call** third-party macros — `#[derive(Serialize)]`,
 `#[tokio::main]`, `format!`, `println!`, etc. — in both eras,
-and rsc emits those invocations verbatim for rustc to expand.
+and prism emits those invocations verbatim for rustc to expand.
 
 **The code category in sema is named *machina*** — the subset
 of records that compiles to Rust in v1. The native checker
@@ -100,7 +105,7 @@ These are load-bearing. Everything downstream depends on them.
 ### Invariant A — Rust is only an output
 
 Sema changes **only** in response to nexus requests. There is
-**no** `.rs` → sema parsing path. No ingester. rsc projects
+**no** `.rs` → sema parsing path. No ingester. prism projects
 sema → `.rs` one-way for rustc/cargo; nothing in the engine
 ever reads that text back. External tools may do whatever they
 want in user-space, but only nexus requests reach the engine.
@@ -166,7 +171,7 @@ optional verification mechanism, not the primary reference type.
 If a component does not serve sema directly, it is not core.
 criome = sema's engine / guardian. nexus = sema's
 text-request translator. lojix = executor for effects sema
-can't perform directly — outcomes return as sema. rsc = sema →
+can't perform directly — outcomes return as sema. prism = sema →
 `.rs` projector. lojix-store = artifact files, referenced
 *from* sema.
 
@@ -177,7 +182,7 @@ through it. No wrapper enums that mix concerns; no string-
 tagged dynamic dispatch; no generic-record fallback. Each
 verb's payload type is the precise shape it operates on; each
 record kind is a closed Rust type defined in signal — the
-authoritative type system today. Once `rsc` lands, those
+authoritative type system today. Once `prism` lands, those
 typed structs will be projected from records; until then,
 new kinds land by hand.
 
@@ -303,7 +308,7 @@ are the authoritative type system today). Once the
      │          │   compile + build), RunNixosRebuild (deploy),
      │          │   PutStoreEntry, GetStorePath, MaterializeFiles, …
      │          │ • invokes nix (crane + fenix) against the workdir
-     │          │   rsc emitted; output lands in /nix/store during
+     │          │   prism emitted; output lands in /nix/store during
      │          │   the bootstrap era
      │          │ • replies {output-hash, warnings, wall_ms}
      └──────────┘
@@ -338,7 +343,7 @@ are the authoritative type system today). Once the
   (`SlotBinding` records). Content edits update the slot's
   current-hash (no ripple-rehash of dependents). Renames
   update the slot's display-name (no record rewrites
-  anywhere). Display-name is global — one name per slot; rsc
+  anywhere). Display-name is global — one name per slot; prism
   projections pick it up everywhere.
 - **Change log**: per-kind. Each record-kind has its own redb
   table keyed by `(Slot, seq)` carrying `ChangeLogEntry`
@@ -482,8 +487,9 @@ Edit-time (requests accumulate):
 Run-time (plan dispatch):
 - User issues a Compile request against an Opus record.
 - criome reads the Opus + transitive OpusDeps from sema.
-- rsc projects records → scratch workdir containing `.rs` +
-  `Cargo.toml` + `flake.nix` (crane + fenix call).
+- lojix-daemon's pipeline runs: prism emits `.rs` source from
+  the records; lojix-daemon assembles the scratch workdir
+  (adding `Cargo.toml` + `flake.nix`, crane + fenix glue).
 - criome emits `RunNix { flake_ref, attr, overrides, target }`
   to lojix.
 - lojix invokes `nix build`; nix/crane run cargo + rustc with
@@ -538,7 +544,7 @@ this section is the architectural roles.
 - **Layer 4 — daemons**: nexus (translator), criome (sema's
   engine), lojix (executor).
 - **Layer 5 — clients + projectors**: nexus-cli (the text
-  client), rsc (sema → `.rs` projector; linked by lojix).
+  client), prism (sema → `.rs` projector; linked by lojix).
 - **Spec-only (terminal state)**: lojix (namespace README).
 
 Currently `lojix` is CANON-MISSING (not yet scaffolded).
@@ -607,16 +613,17 @@ Detailed grammar shape lives in
 
 Foundational rules. Every session follows these.
 
-- **Rust is only an output.** No `.rs` → sema parsing. rsc
+- **Rust is only an output.** No `.rs` → sema parsing. prism
   emits one-way.
 - **Nix is the build backend until we replace it.** Compile
   plans become `RunNix` invocations (crane + fenix); lojix
   spawns `nix build`. Direct rustc orchestration is a post-
-  nix-replacement concern. rsc emits `.rs` + `Cargo.toml` +
-  `flake.nix`; nix drives the rest.
+  nix-replacement concern. prism emits `.rs` source; lojix-
+  daemon assembles the workdir with `Cargo.toml` + `flake.nix`;
+  nix drives the rest.
 - **Authored macros are transitional.** In the eventual
   self-hosting state, code-gen patterns are sema rules
-  emitted by rsc and there are no authored macros. In the
+  emitted by prism and there are no authored macros. In the
   current bootstrap era we may author macros where useful,
   understanding that they're transitional code that will be
   replaced by sema-projection later. We freely **call**
