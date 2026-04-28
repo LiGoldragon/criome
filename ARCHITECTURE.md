@@ -675,6 +675,13 @@ Foundational rules. Every session follows these.
   "little_endian", "pointer_width_32", "unaligned"]`. Pinned
   to rkyv 0.8.x. Discipline documented in
   [tools-documentation/rust/rkyv.md](https://github.com/LiGoldragon/tools-documentation/blob/main/rust/rkyv.md).
+- **Push, not pull.** Producers push, consumers subscribe. No
+  polling, ever. Real-time consumers (the GUI editor; future
+  alternative UIs; any agent reflecting criome state) use
+  `Subscribe` once it ships (M2+) and **defer their real-time
+  feature** until then — they do not poll while waiting.
+  Discipline documented in
+  [tools-documentation/programming/push-not-pull.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/push-not-pull.md).
 - **Every edit is a request.** criome validates; requests can
   be rejected; this is the hallucination wall.
 - **Bootstrap rung by rung.** The engine bootstraps using its
