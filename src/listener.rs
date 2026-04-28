@@ -9,7 +9,7 @@
 //! The accept loop is modeled as a self-cast `Accept` message
 //! — each tick accepts one connection, spawns the child, and
 //! re-arms. Connection panics are logged and the listener
-//! moves on (per [reports/103 §8 Q4](../../reports/103-ractor-migration-design-2026-04-28.md)).
+//! moves on.
 
 use std::path::PathBuf;
 use std::sync::Arc;
