@@ -581,7 +581,7 @@ current lojix-family daemon.
 ## 9 · Grammar shape
 
 Nota is a strict subset of nexus. A single lexer (in
-nota-serde-core) handles both, gated by a dialect knob. The
+nota-codec) handles both, gated by a dialect knob. The
 grammar is organised as a **delimiter-family matrix**:
 
 - Outer character picks the family — records `( )`, composites
