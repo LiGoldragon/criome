@@ -20,16 +20,24 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use sema::Sema;
 use signal::{
     AssertOperation, Body, Diagnostic, Frame, HandshakeRejectionReason, HandshakeReply,
-    HandshakeRequest, Ok as OkRecord, OutcomeMessage, ProtocolVersion, Reply, Request, Slot,
-    SIGNAL_PROTOCOL_VERSION,
+    HandshakeRequest, Ok as OkRecord, OutcomeMessage, ProtocolVersion, QueryOperation, Records,
+    Reply, Request, Slot, SIGNAL_PROTOCOL_VERSION,
 };
 
-use crate::{kinds, reader};
+use crate::{connection, kinds, reader};
 
 pub struct Engine;
 
+/// One registered subscription. The `connection` ActorRef is
+/// where matching records get pushed when writes happen.
+pub struct Subscription {
+    pub query: QueryOperation,
+    pub connection: ActorRef<connection::Message>,
+}
+
 pub struct State {
     sema: Arc<Sema>,
+    subscriptions: Vec<Subscription>,
 }
 
 pub struct Arguments {
@@ -45,9 +53,20 @@ pub enum Message {
         operation: AssertOperation,
         reply_port: RpcReplyPort<OutcomeMessage>,
     },
+    /// Register a subscription. Returns the initial set of
+    /// matching records (the position-paired reply); the
+    /// subscription remains live until the connection actor
+    /// drops, at which point send-failures from
+    /// [`State::push_subscriptions`] silently prune it on the
+    /// next write.
+    Subscribe {
+        operation: QueryOperation,
+        connection: ActorRef<connection::Message>,
+        reply_port: RpcReplyPort<Records>,
+    },
     /// Verbs that are not yet implemented in M0. Returns a
     /// canonical `E0099` diagnostic. `Mutate`, `Retract`,
-    /// `AtomicBatch`, `Subscribe`, `Validate` all route here.
+    /// `AtomicBatch`, `Validate` all route here.
     DeferredVerb {
         verb: &'static str,
         milestone: &'static str,
@@ -62,7 +81,23 @@ pub enum HandshakeOutcome {
 
 impl State {
     pub fn new(sema: Arc<Sema>) -> Self {
-        Self { sema }
+        Self { sema, subscriptions: Vec::new() }
+    }
+
+    /// After a successful write, run every registered
+    /// subscription against current sema and push fresh
+    /// records to its connection. Pushes that fail (because
+    /// the connection actor died) silently prune the
+    /// subscription. Cost is O(subs × sema-size); fine at MVP
+    /// volume; optimization lands when scale demands.
+    fn push_subscriptions(&mut self) {
+        let reader_state = reader::State::new(Arc::clone(&self.sema));
+        self.subscriptions.retain(|sub| {
+            let records = reader_state.handle_query(sub.query.clone());
+            sub.connection
+                .cast(connection::Message::SubscriptionPush { records })
+                .is_ok()
+        });
     }
 
     /// Sync façade dispatching every verb. Used by the
@@ -93,7 +128,9 @@ impl State {
             Request::Mutate(_) => Reply::Outcome(Self::handle_deferred("Mutate", "M1")),
             Request::Retract(_) => Reply::Outcome(Self::handle_deferred("Retract", "M1")),
             Request::AtomicBatch(_) => Reply::Outcome(Self::handle_deferred("AtomicBatch", "M1")),
-            Request::Subscribe(_) => Reply::Outcome(Self::handle_deferred("Subscribe", "M2")),
+            Request::Subscribe(operation) => Reply::Records(
+                reader::State::new(Arc::clone(&self.sema)).handle_query(operation),
+            ),
             Request::Validate(_) => Reply::Outcome(Self::handle_deferred("Validate", "M1")),
         }
     }
@@ -201,7 +238,19 @@ impl Actor for Engine {
                 let _ = reply_port.send(State::handle_handshake(request));
             }
             Message::Assert { operation, reply_port } => {
-                let _ = reply_port.send(state.handle_assert(operation));
+                let outcome = state.handle_assert(operation);
+                let succeeded = matches!(outcome, OutcomeMessage::Ok(_));
+                let _ = reply_port.send(outcome);
+                if succeeded {
+                    state.push_subscriptions();
+                }
+            }
+            Message::Subscribe { operation, connection, reply_port } => {
+                // Compute initial matches for the position-paired reply.
+                let initial =
+                    reader::State::new(Arc::clone(&state.sema)).handle_query(operation.clone());
+                state.subscriptions.push(Subscription { query: operation, connection });
+                let _ = reply_port.send(initial);
             }
             Message::DeferredVerb { verb, milestone, reply_port } => {
                 let _ = reply_port.send(State::handle_deferred(verb, milestone));

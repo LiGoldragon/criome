@@ -44,6 +44,10 @@ pub enum Message {
     /// reads one frame, dispatches it, writes the reply, and
     /// re-arms (or stops on EOF / error).
     ReadNext,
+    /// Out-of-band push from the engine — a registered
+    /// subscription has new matching records. Written to the
+    /// socket as a `Reply::Records` frame.
+    SubscriptionPush { records: signal::Records },
 }
 
 /// Convert a ractor `CallResult<T>` into the crate's `Result<T>`.
@@ -138,7 +142,17 @@ impl State {
             Request::Mutate(_) => self.deferred("Mutate", "M1").await?,
             Request::Retract(_) => self.deferred("Retract", "M1").await?,
             Request::AtomicBatch(_) => self.deferred("AtomicBatch", "M1").await?,
-            Request::Subscribe(_) => self.deferred("Subscribe", "M2").await?,
+            Request::Subscribe(_) => {
+                // Subscribe is dispatched by the connection
+                // actor's handle method (it needs `myself` to
+                // pass to the engine). The path here is a
+                // placeholder; real dispatch happens in the
+                // handle() arm where we have the ActorRef.
+                Reply::Outcome(OutcomeMessage::Diagnostic(Diagnostic::error(
+                    "E0510",
+                    "subscribe routing skipped this dispatch; bug".to_string(),
+                )))
+            }
             Request::Validate(_) => self.deferred("Validate", "M1").await?,
         };
         Ok(reply)
@@ -181,9 +195,25 @@ impl Actor for Connection {
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
-        _message: Message,
+        message: Message,
         state: &mut State,
     ) -> std::result::Result<(), ActorProcessingErr> {
+        match message {
+            Message::SubscriptionPush { records } => {
+                let frame = Frame {
+                    principal_hint: None,
+                    auth_proof: None,
+                    body: Body::Reply(Reply::Records(records)),
+                };
+                state
+                    .write_frame(frame)
+                    .await
+                    .map_err(|e| Box::new(e) as ActorProcessingErr)?;
+                return Ok(());
+            }
+            Message::ReadNext => { /* fall through to read-and-dispatch below */ }
+        }
+
         let frame = match state.read_frame().await {
             Ok(frame) => frame,
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -194,6 +224,24 @@ impl Actor for Connection {
         };
 
         let reply = match frame.body {
+            Body::Request(Request::Subscribe(operation)) => {
+                let raw = state
+                    .engine
+                    .call(
+                        |port| engine::Message::Subscribe {
+                            operation,
+                            connection: myself.clone(),
+                            reply_port: port,
+                        },
+                        None,
+                    )
+                    .await
+                    .map_err(|error| Error::ActorCall(error.to_string()))
+                    .map_err(|e| Box::new(e) as ActorProcessingErr)?;
+                let records = call_into(raw, "engine subscribe")
+                    .map_err(|e| Box::new(e) as ActorProcessingErr)?;
+                Reply::Records(records)
+            }
             Body::Request(request) => state.dispatch(request).await.map_err(|e| Box::new(e) as ActorProcessingErr)?,
             Body::Reply(_) => Reply::Outcome(OutcomeMessage::Diagnostic(Diagnostic::error(
                 "E0098",
