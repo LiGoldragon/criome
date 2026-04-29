@@ -5,7 +5,7 @@ edition      = "2024"
 rust-version = "1.85"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/LiGoldragon/criome"
-description  = "criome — the state-engine around sema. Receives signal frames over UDS; runs the validator pipeline (schema → refs → invariants → permissions → write → cascade); applies accepted mutations to sema; forwards effect-bearing signal verbs to the lojix daemon."
+description  = "criome — the state-engine around sema. Receives signal frames over UDS; runs the validator pipeline (schema → refs → invariants → permissions → write → cascade); applies accepted mutations to sema; forwards effect-bearing signal verbs to the forge daemon."
 
 [lib]
 name = "criome"

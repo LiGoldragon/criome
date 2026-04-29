@@ -39,8 +39,8 @@ sema:
   never runs.** It does not spawn subprocesses, write files
   outside sema, invoke external tools, or link code-emission
   libraries. Effect-bearing work is dispatched as typed verbs
-  to other components — `lojix` for filesystem and nix
-  execution, `prism` (via lojix) for code emission, and so
+  to other components — `forge` for filesystem and nix
+  execution, `prism` (via forge) for code emission, and so
   on. See §10 and
   [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md).
 - **nexus** is the text front-end — the bridge to the legacy
@@ -53,17 +53,17 @@ sema:
   translation is mechanical. Future clients (the GUI editor
   being the first) speak signal directly and never go through
   nexus.
-- **lojix** is the hands. It performs effects sema can't
+- **forge** is the hands. It performs effects sema can't
   (spawning `nix` subprocesses; reading and writing
   filesystem paths; materialising files). Inputs are plan
   records read from sema; outputs become outcome records
   written back.
 - **prism** projects sema records → `.rs` source files. Used
-  by lojix-daemon's runtime-creation pipeline as the code-
-  emission phase (lojix-daemon orchestrates the surrounding
+  by forge-daemon's runtime-creation pipeline as the code-
+  emission phase (forge-daemon orchestrates the surrounding
   work — directory assembly, dependency resolution, compiler
   invocation). One-way emission: sema → Rust source.
-- **lojix-store** is a content-addressed filesystem (nix-store
+- **arca** is a content-addressed filesystem (nix-store
   analogue) holding real unix files, referenced from sema by
   hash. Canonical from day one — see §5 for how it relates to
   `/nix/store` during the bootstrap era.
@@ -78,7 +78,7 @@ among many that may exist over time, not a required intermediary.
 
 **Build backend for this era**: **nix via crane + fenix**.
 fenix pins the Rust toolchain; crane builds packages. prism
-emits the source files; lojix-daemon assembles the workdir
+emits the source files; forge-daemon assembles the workdir
 (`.rs` from prism + `Cargo.toml` + `flake.nix`) and invokes
 the nix build. Direct `rustc` orchestration is a post-nix-
 replacement concern.
@@ -193,9 +193,9 @@ optional verification mechanism, not the primary reference type.
 
 If a component does not serve sema directly, it is not core.
 criome = sema's engine / guardian. nexus = sema's
-text-request translator. lojix = executor for effects sema
+text-request translator. forge = executor for effects sema
 can't perform directly — outcomes return as sema. prism = sema →
-`.rs` projector. lojix-store = artifact files, referenced
+`.rs` projector. arca = artifact files, referenced
 *from* sema.
 
 ### Invariant D — Perfect specificity
@@ -269,7 +269,7 @@ Current signal::Request verbs (per
 `Handshake`, `Assert`, `Mutate`, `Retract`, `AtomicBatch`,
 `Query`, `Subscribe`, `Validate`. `Compile` (referenced
 elsewhere in this doc) is a **planned** post-MVP verb that
-criome forwards to lojix once accepted; it is not in the M0
+criome forwards to forge once accepted; it is not in the M0
 wire today.
 
 **Every edit is a request.** criome is the arbiter; assertions,
@@ -312,15 +312,15 @@ are the authoritative type system today). Once the
      │         │ • resolves RawPattern → PatternExpr
      │         │ • fires subscriptions on commits
      │         │ • reads plan records from sema; dispatches
-     │         │   execution verbs to lojix
+     │         │   execution verbs to forge
      │         │ • signs capability tokens; tracks reachability
-     │         │   for lojix-store GC
+     │         │   for arca GC
      │         │ • never touches binary bytes itself
      └────┬────┘
-          │ signal (rkyv) — effect-bearing verbs forwarded to lojix
+          │ signal (rkyv) — effect-bearing verbs forwarded to forge
           ▼
-     ┌──────────┐   owns lojix-store directory
-     │  lojix  │   (lojix family; thin executor; no evaluation)
+     ┌──────────┐   owns arca directory
+     │  forge  │   (forge family; thin executor; no evaluation)
      │          │ internal actors:
      │          │   • NixRunner (spawns nix/nixos-rebuild;
      │          │     cargo runs inside via crane, not directly)
@@ -344,7 +344,7 @@ are the authoritative type system today). Once the
 - Text crosses only at nexus's boundary. Internal daemon-
   to-daemon messages are rkyv.
 - No daemon-to-daemon path routes bulk data through criome —
-  when forge work inside lojix writes to lojix-store, it does
+  when forge work inside forge writes to arca, it does
   so in-process under a criome-signed capability token; no
   bytes ever cross criome.
 - Criomed never sees compiled binary bytes; it only records
@@ -379,31 +379,31 @@ are the authoritative type system today). Once the
 - **Scope**: slots are **global** (not opus-scoped); one name
   per slot, globally consistent.
 
-### lojix-store — canonical artifact store (built on nix)
+### arca — canonical artifact store (built on nix)
 
-lojix-store is the **canonical artifact store from day one**.
+arca is the **canonical artifact store from day one**.
 It's an analogue to the nix-store, hashed by blake3. It holds
 **actual unix files and directory trees**, not blobs. A
 compiled binary lives at a hash-derived path; you `exec` it
 directly.
 
 nix produces artifacts into `/nix/store` during the build.
-lojix immediately bundles them into `~/.lojix/store/` (copy
-closure with RPATH rewrite) and returns the lojix-store hash.
-**sema records reference lojix-store hashes as canonical
+forge immediately bundles them into `~/.arca/` (copy
+closure with RPATH rewrite) and returns the arca hash.
+**sema records reference arca hashes as canonical
 identity** — `/nix/store` is a transient build-intermediate,
 not a destination.
 
-Why not defer lojix-store: dogfooding the real interface now
+Why not defer arca: dogfooding the real interface now
 reveals what it actually needs; deferred implementations rot.
-The gradualist path "nix builds; lojix-store stores; loosen
+The gradualist path "nix builds; arca stores; loosen
 dep on nix over time" is strictly safer than "nix forever
 until Big Bang replace."
 
-- **Owner**: lojix.
+- **Owner**: forge.
 - **Layout**: hash-keyed subdirectory per store entry, close
   to nix's `/nix/store/<hash>-<name>/` tree.
-- **Index DB**: lojix-owned redb table mapping
+- **Index DB**: forge-owned redb table mapping
   `blake3 → { path, metadata, reachability }`. The index does
   not contain the files; it maps to them.
 - **Holds**: compiled binaries and their runtime trees;
@@ -416,8 +416,8 @@ until Big Bang replace."
 ### Relationship
 
 Sema records carry `StoreEntryRef` (blake3) fields pointing at
-lojix-store entries. Criomed maintains the reachability view
-and drives GC; lojix resolves hashes to filesystem paths;
+arca entries. Criomed maintains the reachability view
+and drives GC; forge resolves hashes to filesystem paths;
 binaries are `exec`'d directly from their store path (no
 extraction, no copy, no `Launch` verb).
 
@@ -449,14 +449,14 @@ and in mentci's reports; this file only names.
   to a sema snapshot. Internal to criome.
 - **Frame / Body / Request / Reply** — signal envelope and
   protocol verbs (lives in [signal](https://github.com/LiGoldragon/signal)).
-- **lojix-bound signal verbs** — effect-bearing requests
-  criome forwards to lojix: **build** (records →
+- **forge-bound signal verbs** — effect-bearing requests
+  criome forwards to forge: **build** (records →
   `CompiledBinary` outcome via crane + fenix +
-  RPATH-rewrite-into-lojix-store), **deploy**
+  RPATH-rewrite-into-arca), **deploy**
   (nixos-rebuild), **store-entry operations**
   (get / put / materialize / delete). No `CompileRequest {
   opus: OpusId }` at the wire — criome forwards records
-  directly; lojix runs prism + nix + bundle internally.
+  directly; forge runs prism + nix + bundle internally.
 
 ---
 
@@ -513,20 +513,20 @@ Edit-time (requests accumulate):
 Run-time (plan dispatch):
 - User issues a Compile request against an Opus record.
 - criome reads the Opus + transitive OpusDeps from sema.
-- criome **forwards the records to lojix** as a signal verb
+- criome **forwards the records to forge** as a signal verb
   (criome itself runs nothing — see §10 "criome communicates;
   it never runs").
-- lojix-daemon links `prism` and runs the full pipeline
-  internally: prism emits `.rs` from the records → lojix
+- forge-daemon links `prism` and runs the full pipeline
+  internally: prism emits `.rs` from the records → forge
   assembles the scratch workdir (`.rs` + `Cargo.toml` +
   `flake.nix` + crane glue) → NixRunner spawns `nix build`
   (nix/crane run cargo + rustc with the fenix-pinned
   toolchain; proc-macros expand in rustc; output lands in
   `/nix/store`) → StoreWriter copies the closure into
-  lojix-store with RPATH rewrite (patchelf), deterministic
+  arca with RPATH rewrite (patchelf), deterministic
   bundle, blake3 hash, writes tree under
-  `~/.lojix/store/<blake3>/`.
-- lojix replies with `{ store_entry_hash, narhash,
+  `~/.arca/<blake3>/`.
+- forge replies with `{ store_entry_hash, narhash,
   wall_ms }`.
 - criome asserts `CompiledBinary { opus, store_entry_hash,
   narhash, toolchain_pin, … }` to sema. The canonical
@@ -534,12 +534,12 @@ Run-time (plan dispatch):
   cache lookup.
 
 The signal verb that carries the records from criome to
-lojix lands when `lojix-daemon` is wired. The load-bearing
-constraint: criome's role is **forward + await**; lojix runs
+forge lands when `forge-daemon` is wired. The load-bearing
+constraint: criome's role is **forward + await**; forge runs
 prism + nix + bundle internally.
 
 Self-host close:
-- User runs the new binary directly from its lojix-store path.
+- User runs the new binary directly from its arca path.
 - New binary connects to nexus; asserts records; cascades fire
   against the live sema. Loop closes.
 
@@ -569,20 +569,22 @@ this section is the architectural roles.
   `QueryOperation` / `BatchOperation` / `AtomicBatch` /
   `Records`, `Diagnostic`). New record kinds land here as the
   closed enum grows.
-- **Layer 2 — contract crate**: signal — the workspace's
-  typed wire protocol (requests + replies + handshake +
-  record kinds). Spoken on every leg: front-ends to criome,
-  and criome to lojix.
+- **Layer 2 — contract crates**: signal — the workspace's
+  typed wire protocol (Frame envelope + handshake + auth +
+  record kinds + front-end verbs). Spoken on every leg.
+  signal-forge — layered atop signal; carries the criome ↔
+  forge wire (effect-bearing verbs) so builder-internal field
+  churn doesn't recompile front-ends.
 - **Layer 3 — storage**: sema (records DB — redb-backed;
-  owned by criome), lojix-store (content-addressed
-  filesystem — owned by lojix; includes a reader library).
+  owned by criome), arca (content-addressed
+  filesystem — owned by forge; includes a reader library).
 - **Layer 4 — daemons**: nexus (translator), criome (sema's
-  engine), lojix (executor).
+  engine), forge (executor).
 - **Layer 5 — clients + projectors**: nexus-cli (the text
-  client), prism (sema → `.rs` projector; linked by lojix).
-- **Spec-only (terminal state)**: lojix (namespace README).
+  client), prism (sema → `.rs` projector; linked by forge).
+- **Spec-only (terminal state)**: forge (namespace README).
 
-Currently `lojix` is CANON-MISSING (not yet scaffolded).
+Currently `forge` is CANON-MISSING (not yet scaffolded).
 `criome` is scaffolded; criome has its
 M0 daemon body shipped (ractor-hosted; see `criome/src/lib.rs`
 for the supervision tree). See workspace-manifest in mentci
@@ -590,25 +592,25 @@ for the full per-repo status.
 
 > Some repos in this layout are not yet at terminal shape;
 > see workspace-manifest for current vs. terminal status
-> (e.g., `lojix` is currently a working monolith and must not
+> (e.g., `forge` is currently a working monolith and must not
 > be rewritten — its own AGENTS.md carries the binding
 > warning).
 
 ### Three-pillar framing
 
-- **criome** — the runtime (nexus, criome, lojix; the
+- **criome** — the runtime (nexus, criome, forge; the
   daemon graph).
 - **sema** — the records (the heart).
-- **lojix** — the artifacts pillar (build, compile, store,
+- **forge** — the artifacts pillar (build, compile, store,
   deploy; the compiler infrastructure).
 
-criome ⊇ {sema, lojix}. nexus is the bridge to legacy text
+criome ⊇ {sema, forge}. nexus is the bridge to legacy text
 (spanning all of criome); not a fourth pillar.
 
 **Lojix family membership** is orthogonal to layer. A crate is
-lojix-family iff it participates in the content-addressed
-typed build/store/deploy pipeline. `lojix` is the only
-current lojix-family daemon.
+forge-family iff it participates in the content-addressed
+typed build/store/deploy pipeline. `forge` is the only
+current forge-family daemon.
 
 **Shelved**: `arbor` (prolly-tree versioning) — post-MVP.
 
@@ -651,9 +653,9 @@ Foundational rules. Every session follows these.
 - **Rust is only an output.** No `.rs` → sema parsing. prism
   emits one-way.
 - **Nix is the build backend until we replace it.** Compile
-  plans become `RunNix` invocations (crane + fenix); lojix
+  plans become `RunNix` invocations (crane + fenix); forge
   spawns `nix build`. Direct rustc orchestration is a post-
-  nix-replacement concern. prism emits `.rs` source; lojix-
+  nix-replacement concern. prism emits `.rs` source; forge-
   daemon assembles the workdir with `Cargo.toml` + `flake.nix`;
   nix drives the rest.
 - **Authored macros are transitional.** In the eventual
@@ -669,7 +671,7 @@ Foundational rules. Every session follows these.
   bodies) in the relevant repo. Reports (in mentci) are for
   WHY (philosophy, invariants, decision-journey); skeleton
   code is for WHAT (types, traits, enums, verbs). rustc checks
-  consistency; prose can't drift. Example: `lojix-store/src/`.
+  consistency; prose can't drift. Example: `arca/src/`.
 - **Per-repo `ARCHITECTURE.md` at root.** Every canonical repo
   carries its own ARCHITECTURE.md describing role + boundaries
   + code map. Points at this file for cross-cutting context;
@@ -690,7 +692,7 @@ Foundational rules. Every session follows these.
 - **All-rkyv except nexus text.** The only non-rkyv messaging
   surface is the nexus *text* payload (carried inside a
   client-msg `Send`). Every other wire / storage format —
-  signal, future criome-net, sema records, lojix-store index
+  signal, future criome-net, sema records, arca index
   entries — is rkyv. No compromise. All
   rkyv-using crates pin the *same* feature set so archived
   types interop:
@@ -713,8 +715,8 @@ Foundational rules. Every session follows these.
   tools, or links libraries that do those things.
   Effect-bearing work (nix builds, file writes, code
   emission, deployment) lives in dedicated components
-  dispatched via typed verbs — `lojix` for filesystem/nix,
-  `prism` (via lojix) for code emission. The workspace is
+  dispatched via typed verbs — `forge` for filesystem/nix,
+  `prism` (via forge) for code emission. The workspace is
   composed of micro-components per
   [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md);
   criome is one of them — the state-engine — not the
@@ -749,9 +751,9 @@ Foundational rules. Every session follows these.
   the blake3 of its canonical rkyv encoding.
 - **A binary is just a path.** No `Launch` verb; store entries
   are real files.
-- **Criomed is the overlord** of lojix-store. Tracks
+- **Criomed is the overlord** of arca. Tracks
   reachability; signs tokens; directs GC.
-- **lojix is for effects sema can't do.** Its inputs are plan
+- **forge is for effects sema can't do.** Its inputs are plan
   records; its outputs are outcome records. It never sees an
   Opus directly.
 - **No backward compat.** The engine is being born. Rename,
@@ -810,7 +812,7 @@ rejection here — not just the acceptance elsewhere. Past
 recurring wrong frames: aski-as-input, personal-scale,
 global-database, federation, boundary-as-tension,
 bit-for-bit-identity, legibility-axis, sema-as-data-store,
-four-daemon topology, ingester-for-Rust, lojix-store-as-
+four-daemon topology, ingester-for-Rust, arca-as-
 blob-DB, banner-wrong-reports.
 
 ---
