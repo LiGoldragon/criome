@@ -3,17 +3,30 @@
 *Canonical reference for the engine's shape. Edited with extreme
 care.*
 
+> **🚨 REQUIRED READING for every agent and human working in any
+> sema-ecosystem repo. 🚨**
+>
+> Read this file in full before touching any component (criome,
+> signal, signal-forge, signal-arca, sema, nexus, nexus-cli,
+> forge, arca, prism, mentci-lib, lojix-cli, the GUI repo, or any
+> future canonical crate). Per-repo `ARCHITECTURE.md` files
+> describe each repo's niche; this file describes how the niches
+> fit. Both layers are needed; this file is the apex.
+
 Criome is the project. **Sema is its heart** — the typed,
 content-addressed records that hold every concept the engine
 reasons about. **Nexus is the bridge** that lets the legacy
 untyped-text world create and interact with sema — humans and
 LLMs author nexus text; nexus parses it into signal rkyv;
-criome validates and commits to sema. **Lojix is the compiler
-infrastructure** — build, store, deploy of artifacts referenced
-from sema by hash.
+criome validates and commits to sema. **Forge** is the
+executor — runs nix, links prism, bundles outputs.
+**arca-daemon** is the privileged writer for the
+content-addressed store. The full set of daemons + libraries
++ wire-protocol crates is laid out in §4 and §10.
 
 Criome runs on top of [CriomOS](https://github.com/LiGoldragon/CriomOS).
-Development happens in [mentci](https://github.com/LiGoldragon/mentci).
+Development happens in [mentci](https://github.com/LiGoldragon/mentci);
+deployment composes from there too.
 
 ---
 
@@ -863,6 +876,38 @@ global-database, federation, boundary-as-tension,
 bit-for-bit-identity, legibility-axis, sema-as-data-store,
 four-daemon topology, ingester-for-Rust, arca-as-
 blob-DB, banner-wrong-reports.
+
+### Responsibilities table — criome / forge / arca-daemon
+
+The criome-runs-nothing rule made concrete. Each row is one
+concern; columns mark which daemon owns it.
+
+| Concern | criome | forge | arca-daemon |
+|---|---|---|---|
+| Validates request (schema / refs / perms / invariants) | ✓ | — | — |
+| Reads from sema | ✓ | — | — |
+| Writes to sema | ✓ | — | — |
+| Forwards typed signal verbs to other components | ✓ | — | — |
+| Awaits replies from forge / arca-daemon | ✓ | — | — |
+| Signs capability tokens (criome holds the key) | ✓ | — | — |
+| Persists outcome records (e.g. `CompiledBinary`) | ✓ | — | — |
+| Spawns subprocesses (nix, nixos-rebuild) | — | ✓ | — |
+| Links `prism` (the code-emission library) | — | ✓ | — |
+| Runs `nix build` via crane + fenix | — | ✓ | — |
+| Bundles closures (RPATH rewrite + deterministic timestamps) | — | ✓ | — |
+| Performs `nixos-rebuild` (deploy) | — | ✓ | — |
+| Writes the bundled tree into arca's `_staging/` | — | ✓ | — |
+| Verifies criome-signed capability tokens | — | — | ✓ |
+| Computes blake3 of staged content | — | — | ✓ |
+| Atomic move from `_staging/` into `<store>/<blake3>/` | — | — | ✓ |
+| Updates per-store redb index | — | — | ✓ |
+| Manages multi-store ACL (sole writer of canonical store dirs) | — | — | ✓ |
+
+If a future contributor finds themselves adding "spawn",
+"write file into a store", "link prism", "run X" to criome,
+**that's the failure mode this rule closes**. Add the
+capability to forge or arca-daemon — or, if it's a new
+concern with its own bounded context, start a new component.
 
 ---
 
