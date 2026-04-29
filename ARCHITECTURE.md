@@ -510,22 +510,33 @@ Edit-time (requests accumulate):
 Run-time (plan dispatch):
 - User issues a Compile request against an Opus record.
 - criome reads the Opus + transitive OpusDeps from sema.
-- lojix-daemon's pipeline runs: prism emits `.rs` source from
-  the records; lojix-daemon assembles the scratch workdir
-  (adding `Cargo.toml` + `flake.nix`, crane + fenix glue).
-- criome emits `RunNix { flake_ref, attr, overrides, target }`
-  to lojix.
-- lojix invokes `nix build`; nix/crane run cargo + rustc with
-  the fenix-pinned toolchain; proc-macros expand in rustc;
-  output lands in `/nix/store`.
-- lojix runs `BundleIntoLojixStore` on the nix output: copy-
-  closure, RPATH rewrite via patchelf, deterministic bundle,
-  blake3 hash, write tree under `~/.lojix/store/<blake3>/`.
+- criome **forwards the records to lojix** via a typed
+  `lojix-schema` verb (criome itself runs nothing — see §10
+  "criome communicates; it never runs").
+- lojix-daemon links `prism` and runs the full pipeline
+  internally: prism emits `.rs` from the records →
+  lojix-daemon assembles the scratch workdir (`.rs` +
+  `Cargo.toml` + `flake.nix` + crane glue) → NixRunner spawns
+  `nix build` (nix/crane run cargo + rustc with the
+  fenix-pinned toolchain; proc-macros expand in rustc;
+  output lands in `/nix/store`) → StoreWriter runs
+  `BundleIntoLojixStore` on the nix output (copy-closure,
+  RPATH rewrite via patchelf, deterministic bundle, blake3
+  hash, write tree under `~/.lojix/store/<blake3>/`).
 - lojix replies with `{ store_entry_hash, narhash,
   wall_ms }`.
 - criome asserts `CompiledBinary { opus, store_entry_hash,
-  narhash, toolchain_pin, … }` to sema. The canonical identity
-  is `store_entry_hash`; narhash is kept for nix cache lookup.
+  narhash, toolchain_pin, … }` to sema. The canonical
+  identity is `store_entry_hash`; narhash is kept for nix
+  cache lookup.
+
+The exact `lojix-schema` verb that carries the records from
+criome to lojix lands when `lojix-daemon` is wired —
+candidates are a new `Build(records)` verb or a sequence of
+`MaterializeFiles` + `RunNix` + `BundleIntoLojixStore`. The
+load-bearing constraint is unchanged either way: criome's
+role is **forward + await**; lojix runs prism + nix +
+bundle internally.
 
 Self-host close:
 - User runs the new binary directly from its lojix-store path.
