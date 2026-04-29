@@ -63,7 +63,7 @@ fn assert_node_then_query_finds_it() {
     match extract_reply(engine.handle_frame(query)) {
         Reply::Records(Records::Node(nodes)) => {
             assert_eq!(nodes.len(), 1);
-            assert_eq!(nodes[0].name, "Alice");
+            assert_eq!(nodes[0].1.name, "Alice");
         }
         other => panic!("expected Records::Node, got {other:?}"),
     }
@@ -94,7 +94,7 @@ fn assert_three_kinds_query_filters_correctly() {
     match extract_reply(engine.handle_frame(query)) {
         Reply::Records(Records::Node(nodes)) => {
             assert_eq!(nodes.len(), 2, "Edge should not appear in Node query results");
-            let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+            let names: Vec<&str> = nodes.iter().map(|(_, n)| n.name.as_str()).collect();
             assert!(names.contains(&"User"));
             assert!(names.contains(&"Admin"));
         }
@@ -121,7 +121,7 @@ fn query_with_match_filters_by_value() {
     match extract_reply(engine.handle_frame(query)) {
         Reply::Records(Records::Node(nodes)) => {
             assert_eq!(nodes.len(), 2);
-            for node in &nodes {
+            for (_, node) in &nodes {
                 assert_eq!(node.name, "Alice");
             }
         }
