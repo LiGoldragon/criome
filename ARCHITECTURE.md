@@ -319,24 +319,39 @@ are the authoritative type system today). Once the
      └────┬────┘
           │ signal (rkyv) — effect-bearing verbs forwarded to forge
           ▼
-     ┌──────────┐   owns arca directory
-     │  forge  │   (forge family; thin executor; no evaluation)
+     ┌──────────┐   build + deploy executor
+     │  forge   │   (thin executor; no evaluation)
      │          │ internal actors:
      │          │   • NixRunner (spawns nix/nixos-rebuild;
      │          │     cargo runs inside via crane, not directly)
-     │          │   • StoreWriter + StoreReaderPool (store-entry
-     │          │     placement + path lookup + index updates)
-     │          │   • FileMaterialiser (store entries → workdir)
+     │          │   • StoreWriter (bundles nix output into arca's
+     │          │     write-only _staging/ directory)
+     │          │   • ArcaDepositor (signal-arca Deposit to
+     │          │     arca-daemon with capability token; awaits
+     │          │     hash reply)
+     │          │   • StoreReaderPool (filesystem-direct lookups)
+     │          │   • FileMaterialiser (arca entries → workdir)
      │          │ • receives effect-bearing signal verbs from
      │          │   criome — build (records → bundle), deploy
-     │          │   (nixos-rebuild), store-entry operations
-     │          │   (get/put/materialize/delete)
+     │          │   (nixos-rebuild)
      │          │ • links prism (records → .rs source) and
      │          │   invokes nix (crane + fenix) against the
      │          │   emitted workdir; output lands in /nix/store
      │          │   during the bootstrap era
-     │          │ • replies {output-hash, warnings, wall_ms}
+     │          │ • replies {arca_hash, narhash, wall_ms}
      └──────────┘
+            │
+            │ deposits bundled tree into _staging/ + sends
+            │ signal-arca Deposit verb to arca-daemon
+            ▼
+     ┌──────────────┐   privileged writer for arca stores
+     │ arca-daemon  │ • verifies criome-signed capability tokens
+     │              │ • computes blake3 of staged content
+     │              │ • atomic move into ~/.arca/<store>/<blake3>/
+     │              │ • updates per-store redb index
+     │              │ • manages multiple stores for access control
+     │              │ • replies {blake3} to depositor
+     └──────────────┘
 ```
 
 **Invariants**:
@@ -344,9 +359,10 @@ are the authoritative type system today). Once the
 - Text crosses only at nexus's boundary. Internal daemon-
   to-daemon messages are rkyv.
 - No daemon-to-daemon path routes bulk data through criome —
-  when forge work inside forge writes to arca, it does
-  so in-process under a criome-signed capability token; no
-  bytes ever cross criome.
+  forge bundles its build output into arca's write-only
+  staging directory and signal-arca-deposits to arca-daemon
+  under a criome-signed capability token; no bytes ever
+  cross criome.
 - Criomed never sees compiled binary bytes; it only records
   their hashes (as slot-refs resolved to blake3 via sema) in
   sema.
@@ -387,12 +403,21 @@ It's an analogue to the nix-store, hashed by blake3. It holds
 compiled binary lives at a hash-derived path; you `exec` it
 directly.
 
+arca is **one library + one daemon**:
+
+- The arca library is the public reader API + on-disk layout.
+- arca-daemon is the privileged writer. Owns a write-only
+  staging directory; manages multiple stores; verifies
+  criome-signed capability tokens; computes blake3; moves
+  deposits into the target store.
+
 nix produces artifacts into `/nix/store` during the build.
-forge immediately bundles them into `~/.arca/` (copy
-closure with RPATH rewrite) and returns the arca hash.
-**sema records reference arca hashes as canonical
-identity** — `/nix/store` is a transient build-intermediate,
-not a destination.
+forge bundles them (RPATH rewrite, deterministic timestamps)
+into arca's `~/.arca/_staging/<deposit-id>/` and asks
+arca-daemon to take ownership; arca-daemon computes blake3
+and moves into `~/.arca/<store>/<blake3>/`. **sema records
+reference arca hashes as canonical identity** — `/nix/store`
+is a transient build-intermediate, not a destination.
 
 Why not defer arca: dogfooding the real interface now
 reveals what it actually needs; deferred implementations rot.
@@ -400,26 +425,41 @@ The gradualist path "nix builds; arca stores; loosen
 dep on nix over time" is strictly safer than "nix forever
 until Big Bang replace."
 
-- **Owner**: forge.
-- **Layout**: hash-keyed subdirectory per store entry, close
-  to nix's `/nix/store/<hash>-<name>/` tree.
-- **Index DB**: forge-owned redb table mapping
-  `blake3 → { path, metadata, reachability }`. The index does
+- **Owner**: arca-daemon (privileged writer); the library is
+  consumed by every reader.
+- **Layout**: per store, `~/.arca/<store>/<blake3>/` —
+  hash-keyed subdirectory close to nix's
+  `/nix/store/<hash>-<name>/` tree.
+- **Multi-store**: arca-daemon manages multiple stores for
+  access control. Stores are filesystem-read-only to
+  consumers; only arca-daemon has write permission. This is
+  the access-control layer nix-store can't express (nix has
+  one global read-only store).
+- **Index DB**: per-store redb table mapping
+  `blake3 → { path, metadata, reachability }`. Owned by
+  arca-daemon; readers open it read-only. The index does
   not contain the files; it maps to them.
 - **Holds**: compiled binaries and their runtime trees;
-  user file attachments referenced by sema. Always real files
-  on disk.
+  user file attachments referenced by sema; any blob-shaped
+  data sema records point at. Always real files on disk.
 - **No typing**. The type of a store entry is known only
   through the sema record that references its hash.
+- **Write-only staging**: writers deposit content into
+  `~/.arca/_staging/` which they cannot read or modify after
+  deposit. arca-daemon computes the hash of exactly what
+  gets stored — no TOCTOU race.
 - **Access control**: capability tokens, signed by criome.
+  Tokens reference a sema authz record + target store +
+  validity window. arca-daemon verifies signature; rejects
+  expired or malformed tokens.
 
 ### Relationship
 
 Sema records carry `StoreEntryRef` (blake3) fields pointing at
 arca entries. Criomed maintains the reachability view
-and drives GC; forge resolves hashes to filesystem paths;
-binaries are `exec`'d directly from their store path (no
-extraction, no copy, no `Launch` verb).
+and drives GC; arca-daemon resolves hashes to filesystem
+paths; binaries are `exec`'d directly from their store path
+(no extraction, no copy, no `Launch` verb).
 
 ---
 
@@ -513,30 +553,39 @@ Edit-time (requests accumulate):
 Run-time (plan dispatch):
 - User issues a Compile request against an Opus record.
 - criome reads the Opus + transitive OpusDeps from sema.
-- criome **forwards the records to forge** as a signal verb
-  (criome itself runs nothing — see §10 "criome communicates;
-  it never runs").
+- criome **forwards the records to forge** as a signal verb,
+  with a criome-signed capability token authorising forge to
+  deposit into the target arca store. (criome itself runs
+  nothing — see §10 "criome communicates; it never runs".)
 - forge-daemon links `prism` and runs the full pipeline
   internally: prism emits `.rs` from the records → forge
   assembles the scratch workdir (`.rs` + `Cargo.toml` +
   `flake.nix` + crane glue) → NixRunner spawns `nix build`
   (nix/crane run cargo + rustc with the fenix-pinned
   toolchain; proc-macros expand in rustc; output lands in
-  `/nix/store`) → StoreWriter copies the closure into
-  arca with RPATH rewrite (patchelf), deterministic
-  bundle, blake3 hash, writes tree under
-  `~/.arca/<blake3>/`.
-- forge replies with `{ store_entry_hash, narhash,
+  `/nix/store`) → StoreWriter bundles the closure (RPATH
+  rewrite via patchelf, deterministic timestamps) and writes
+  the canonicalised tree into arca's write-only
+  `~/.arca/_staging/<deposit-id>/` → ArcaDepositor sends
+  signal-arca `Deposit { staging_id, capability_token }` to
+  arca-daemon → arca-daemon verifies the token, computes
+  blake3 of the staged tree, atomically moves it into
+  `~/.arca/<store>/<blake3>/`, updates the per-store redb
+  index, replies with the hash.
+- forge replies to criome with `{ arca_hash, narhash,
   wall_ms }`.
-- criome asserts `CompiledBinary { opus, store_entry_hash,
-  narhash, toolchain_pin, … }` to sema. The canonical
-  identity is `store_entry_hash`; narhash is kept for nix
-  cache lookup.
+- criome asserts `CompiledBinary { opus, arca_hash,
+  narhash, toolchain_pin, store, … }` to sema. The canonical
+  identity is `arca_hash`; narhash is kept for nix cache
+  lookup; `store` records which arca store the entry lives
+  in.
 
 The signal verb that carries the records from criome to
-forge lands when `forge-daemon` is wired. The load-bearing
-constraint: criome's role is **forward + await**; forge runs
-prism + nix + bundle internally.
+forge lands when `forge-daemon` is wired; the signal-arca
+verb (Deposit) lands alongside arca-daemon. The load-bearing
+constraint: criome's role is **forward + await + sign tokens**;
+forge runs prism + nix + bundle; arca-daemon owns the move
+into the canonical store.
 
 Self-host close:
 - User runs the new binary directly from its arca path.
