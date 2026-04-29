@@ -27,11 +27,22 @@ records in sema. The records are stored in rkyv, content-
 addressed by blake3. The rest of the engine exists to serve
 sema:
 
-- **criome** is sema's engine. It receives every request,
-  validates it (schema, references, permissions, invariants),
-  and applies the change to sema. Rules and derivations are
-  themselves records; cascades settle inside sema. Nothing
-  "lives above" sema holding derived values.
+- **sema** is the **database** — the records' home. Typed,
+  content-addressed, redb-backed; the canonical evaluated
+  state of the engine.
+- **criome** is the **state-engine** — the engine *around*
+  sema. It receives every request, validates it (schema,
+  references, permissions, invariants), and applies the
+  change to sema. Rules and derivations are themselves
+  records; cascades settle inside sema. Nothing "lives above"
+  sema holding derived values. **criome communicates; it
+  never runs.** It does not spawn subprocesses, write files
+  outside sema, invoke external tools, or link code-emission
+  libraries. Effect-bearing work is dispatched as typed verbs
+  to other components — `lojix` for filesystem and nix
+  execution, `prism` (via lojix) for code emission, and so
+  on. See §10 and
+  [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md).
 - **nexus** is the text front-end — the bridge to the legacy
   untyped-text world. A text request language (structured,
   controlled, permissioned) that parses to **signal**, criome's
@@ -682,6 +693,31 @@ Foundational rules. Every session follows these.
   feature** until then — they do not poll while waiting.
   Discipline documented in
   [tools-documentation/programming/push-not-pull.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/push-not-pull.md).
+- **criome communicates; it never runs.** sema is the
+  database; criome is the engine around it — receives,
+  validates, persists to sema, and forwards typed
+  instructions to other components. criome never spawns
+  subprocesses, writes files outside sema, invokes external
+  tools, or links libraries that do those things.
+  Effect-bearing work (nix builds, file writes, code
+  emission, deployment) lives in dedicated components
+  dispatched via typed verbs — `lojix` for filesystem/nix,
+  `prism` (via lojix) for code emission. The workspace is
+  composed of micro-components per
+  [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md);
+  criome is one of them — the state-engine — not the
+  do-everything box. The failure mode this rule closes:
+  agents bundling new features into criome (or any existing
+  crate) until the result is a monolith no LLM can hold in
+  context.
+- **One capability, one crate, one repo.** Every functional
+  capability lives in its own repo with its own `Cargo.toml`,
+  `flake.nix`, and tests. Components communicate through
+  typed protocols; each fits in a single LLM context window.
+  Adding a feature defaults to a *new* crate, not editing an
+  existing one — the burden of proof is on the contributor
+  who wants to grow a crate. Discipline + the case in
+  [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md).
 - **Every edit is a request.** criome validates; requests can
   be rejected; this is the hallucination wall.
 - **Bootstrap rung by rung.** The engine bootstraps using its
