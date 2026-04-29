@@ -61,7 +61,7 @@ sema:
   controlled, permissioned) that parses to **signal**, criome's
   rkyv request protocol. Envelopes: `Assert`, `Mutate`,
   `Retract`, `AtomicBatch`, `Query`, `Subscribe`, `Validate`
-  today; `Compile` is planned post-MVP. Replies serialise back
+  today; `BuildRequest` is planned post-MVP. Replies serialise back
   to text the same way. Two faces of one language; the
   translation is mechanical. Future clients (the GUI editor
   being the first) speak signal directly and never go through
@@ -257,7 +257,7 @@ The principle generates concrete rules:
       ▼
   nexus ─────── parses text → signal (rkyv)
       │           (CriomeRequest::Assert / Mutate / Retract /
-      │            Query / Compile / Subscribe / …)
+      │            Query / BuildRequest / Subscribe / …)
       ▼
   criome ─────── validates:
       │            • schema conformance
@@ -280,21 +280,21 @@ The principle generates concrete rules:
 Current signal::Request verbs (per
 [signal/src/request.rs](https://github.com/LiGoldragon/signal/blob/main/src/request.rs)):
 `Handshake`, `Assert`, `Mutate`, `Retract`, `AtomicBatch`,
-`Query`, `Subscribe`, `Validate`. `Compile` (referenced
-elsewhere in this doc) is a **planned** post-MVP verb that
-criome forwards to forge once accepted; it is not in the M0
-wire today.
+`Query`, `Subscribe`, `Validate`. `BuildRequest` is the
+next expected verb — a front-end-visible verb that asks
+criome to validate and forward a build to forge over
+signal-forge; lands alongside forge-daemon.
 
 **Every edit is a request.** criome is the arbiter; assertions,
 mutations, retractions can all be rejected. This is the
 hallucination wall: unknown names, broken references,
 schema-invalid shapes, unauthorised actions all fail here.
 
-**Genesis runs the same flow.** At first boot, criome
-dispatches a `genesis.nexus` text file (shipping with the
-criome binary) through the same path: nexus parses it,
-signal envelopes flow to criome, the validator runs,
-records land in sema. Validation runs against the built-in
+**Genesis runs the same flow.** At first boot, the
+`genesis.nexus` text file (shipping with the criome
+distribution) is fed through the standard path by the
+launcher: nexus parses it, signal envelopes flow to criome,
+the validator runs, records land in sema. Validation runs against the built-in
 Rust types in signal (the closed `AssertOperation` /
 `MutateOperation` / data-kind enums compiled into the binary
 are the authoritative type system today). Once the
@@ -330,7 +330,7 @@ are the authoritative type system today). Once the
      │         │   for arca GC
      │         │ • never touches binary bytes itself
      └────┬────┘
-          │ signal (rkyv) — effect-bearing verbs forwarded to forge
+          │ signal-forge (rkyv) — effect-bearing verbs forwarded to forge
           ▼
      ┌──────────┐   build + deploy executor
      │  forge   │   (thin executor; no evaluation)
@@ -342,7 +342,6 @@ are the authoritative type system today). Once the
      │          │   • ArcaDepositor (signal-arca Deposit to
      │          │     arca-daemon with capability token; awaits
      │          │     hash reply)
-     │          │   • StoreReaderPool (filesystem-direct lookups)
      │          │   • FileMaterialiser (arca entries → workdir)
      │          │ • receives effect-bearing signal verbs from
      │          │   criome — build (records → bundle), deploy
@@ -376,7 +375,7 @@ are the authoritative type system today). Once the
   staging directory and signal-arca-deposits to arca-daemon
   under a criome-signed capability token; no bytes ever
   cross criome.
-- Criomed never sees compiled binary bytes; it only records
+- criome never sees compiled binary bytes; it only records
   their hashes (as slot-refs resolved to blake3 via sema) in
   sema.
 - There is no `Launch` protocol verb. Store entries are real
@@ -405,16 +404,16 @@ are the authoritative type system today). Once the
   quorum-authored changes). Per-kind logs are ground truth;
   per-kind index tables and a global revision index are
   derivable views.
-- **Scope**: slots are **global** (not opus-scoped); one name
+- **Scope**: slots are **global** (not graph-scoped); one name
   per slot, globally consistent.
 
-### arca — canonical artifact store (built on nix)
+### arca — canonical artifact store
 
 arca is the **canonical artifact store from day one**.
-It's an analogue to the nix-store, hashed by blake3. It holds
-**actual unix files and directory trees**, not blobs. A
-compiled binary lives at a hash-derived path; you `exec` it
-directly.
+It's an analogue to the nix-store, hashed by blake3 of
+canonical encoding. It holds **actual unix files and
+directory trees**, not blobs. A compiled binary lives at a
+hash-derived path; you `exec` it directly.
 
 arca is **one library + one daemon**:
 
@@ -469,7 +468,7 @@ until Big Bang replace."
 ### Relationship
 
 Sema records carry `StoreEntryRef` (blake3) fields pointing at
-arca entries. Criomed maintains the reachability view
+arca entries. criome maintains the reachability view
 and drives GC; arca-daemon resolves hashes to filesystem
 paths; binaries are `exec`'d directly from their store path
 (no extraction, no copy, no `Launch` verb).
@@ -481,35 +480,53 @@ paths; binaries are `exec`'d directly from their store path
 Concrete field lists live in skeleton code (per-repo `src/`)
 and in mentci's reports; this file only names.
 
-- **Opus** — pure-Rust artifact specification. User-authored
-  sema record. Toolchain pinned by derivation reference,
-  outputs enumerated, every build-affecting input a field so
-  the record's hash captures the full closure.
+- **Graph** — a flow-graph; the user-authored program /
+  build-target. Carries the toolchain pin, output names, and
+  every other build-affecting input as fields, so the
+  record's hash captures the full closure. The graph's
+  members are reached via `Contains` edges to `Node`
+  records; dependencies on other graphs are `DependsOn`
+  edges. The flow-graph IS the program — there is no
+  separate "compilation unit" type above it.
+- **Node** — one computational unit inside a graph. Node
+  kinds (Source / Transformer / Sink / Junction / Supervisor
+  to start) carry the per-kind shape that prism's emission
+  templates project to Rust.
+- **Edge** — a typed connection between records. Carries a
+  closed `RelationKind` (Flow, DependsOn, Contains,
+  References, Produces, Consumes, Calls, Implements, IsA).
+  `DependsOn` between graphs replaces the old `OpusDep`
+  link; `Contains` from graph to node replaces the old
+  membership-record kind.
 - **Derivation** — escape hatch for non-pure deps. Wraps a nix
-  flake output or inline nix expression.
-- **OpusDep** — opus → {opus | derivation} link.
+  flake output or inline nix expression. Reachable via
+  `DependsOn` edges from a graph for inputs nix must
+  evaluate.
 - **Slot** — `u64` content-agnostic identity. Counter-minted
   by criome with freelist-reuse. Seed range `[0, 1024)`
   reserved.
 - **SlotBinding** — slot-keyed binding to current content
   hash and global display name. Bitemporal; slot-reuse is
   safe for historical queries.
-- **MemberEntry** — opus-membership record declaring which
-  slots an opus contributes and at what visibility.
 - **RawPattern** — wire form of a nexus pattern, carrying
   user-facing names. Transient on signal.
 - **PatternExpr** — resolved form, carrying slot-refs. Pinned
   to a sema snapshot. Internal to criome.
 - **Frame / Body / Request / Reply** — signal envelope and
-  protocol verbs (lives in [signal](https://github.com/LiGoldragon/signal)).
-- **forge-bound signal verbs** — effect-bearing requests
-  criome forwards to forge: **build** (records →
-  `CompiledBinary` outcome via crane + fenix +
-  RPATH-rewrite-into-arca), **deploy**
-  (nixos-rebuild), **store-entry operations**
-  (get / put / materialize / delete). No `CompileRequest {
-  opus: OpusId }` at the wire — criome forwards records
-  directly; forge runs prism + nix + bundle internally.
+  front-end verbs (live in
+  [signal](https://github.com/LiGoldragon/signal)).
+- **signal-forge verbs** — effect-bearing requests criome
+  forwards to forge over
+  [signal-forge](https://github.com/LiGoldragon/signal-forge):
+  **Build** (records → `CompiledBinary` outcome; forge runs
+  prism + nix + bundle internally), **Deploy**
+  (nixos-rebuild), and **store-entry control-plane
+  operations** (put / materialize / delete). Reads of arca
+  do not need a verb — consumers open arca's index DB
+  directly under filesystem read permissions. No
+  `CompileRequest { graph: Slot }` envelope at the wire —
+  criome forwards the records themselves so forge has
+  everything needed in one shot.
 
 ---
 
@@ -556,20 +573,23 @@ and in mentci's reports; this file only names.
  criome replies (Ok) per affected slot
 ```
 
-### Compile + self-host loop
+### Build + self-host loop
 
 Edit-time (requests accumulate):
 - User issues nexus requests (Assert / Mutate / Retract /
-  AtomicBatch) that change code records in sema. Each is
+  AtomicBatch) that change records in sema. Each is
   validated; cascades settle; sema reflects the new state.
 
 Run-time (plan dispatch):
-- User issues a Compile request against an Opus record.
-- criome reads the Opus + transitive OpusDeps from sema.
-- criome **forwards the records to forge** as a signal verb,
-  with a criome-signed capability token authorising forge to
-  deposit into the target arca store. (criome itself runs
-  nothing — see §10 "criome communicates; it never runs".)
+- User issues a `BuildRequest` (signal) naming a target Graph.
+- criome validates the target and reads the Graph plus the
+  transitive `DependsOn` graphs and `Contains` nodes from
+  sema.
+- criome **forwards the records to forge** as a signal-forge
+  `Build` verb, with a criome-signed capability token
+  authorising forge to deposit into the target arca store.
+  (criome itself runs nothing — see §10 "criome communicates;
+  it never runs".)
 - forge-daemon links `prism` and runs the full pipeline
   internally: prism emits `.rs` from the records → forge
   assembles the scratch workdir (`.rs` + `Cargo.toml` +
@@ -587,16 +607,16 @@ Run-time (plan dispatch):
   index, replies with the hash.
 - forge replies to criome with `{ arca_hash, narhash,
   wall_ms }`.
-- criome asserts `CompiledBinary { opus, arca_hash,
+- criome asserts `CompiledBinary { graph, arca_hash,
   narhash, toolchain_pin, store, … }` to sema. The canonical
   identity is `arca_hash`; narhash is kept for nix cache
   lookup; `store` records which arca store the entry lives
   in.
 
-The signal verb that carries the records from criome to
-forge lands when `forge-daemon` is wired; the signal-arca
-verb (Deposit) lands alongside arca-daemon. The load-bearing
-constraint: criome's role is **forward + await + sign tokens**;
+The signal-forge `Build` verb lands when `forge-daemon` is
+wired; the signal-arca `Deposit` verb lands alongside
+arca-daemon. The load-bearing constraint: criome's role is
+**validate + forward + await + sign tokens**;
 forge runs prism + nix + bundle; arca-daemon owns the move
 into the canonical store.
 
@@ -635,44 +655,25 @@ this section is the architectural roles.
   typed wire protocol (Frame envelope + handshake + auth +
   record kinds + front-end verbs). Spoken on every leg.
   signal-forge — layered atop signal; carries the criome ↔
-  forge wire (effect-bearing verbs) so builder-internal field
-  churn doesn't recompile front-ends.
+  forge wire. signal-arca — layered atop signal; carries the
+  writers ↔ arca-daemon wire. Layered protocols re-use
+  signal's envelope/handshake/auth so builder- and
+  store-internal field churn doesn't recompile front-end
+  clients that depend only on signal.
 - **Layer 3 — storage**: sema (records DB — redb-backed;
   owned by criome), arca (content-addressed
-  filesystem — owned by forge; includes a reader library).
-- **Layer 4 — daemons**: nexus (translator), criome (sema's
-  engine), forge (executor).
+  filesystem — owned by arca-daemon; includes a reader
+  library that any process can link).
+- **Layer 4 — daemons**: nexus (text translator), criome
+  (sema's engine), forge (executor), arca-daemon
+  (privileged store writer). Per the §10 responsibilities
+  table, these four are peers — none contains the others.
 - **Layer 5 — clients + projectors**: nexus-cli (the text
-  client), prism (sema → `.rs` projector; linked by forge).
-- **Spec-only (terminal state)**: forge (namespace README).
+  client), lojix-cli (transitional deploy client), prism
+  (sema → `.rs` projector; linked by forge).
 
-Currently `forge` is CANON-MISSING (not yet scaffolded).
-`criome` is scaffolded; criome has its
-M0 daemon body shipped (ractor-hosted; see `criome/src/lib.rs`
-for the supervision tree). See workspace-manifest in mentci
-for the full per-repo status.
-
-> Some repos in this layout are not yet at terminal shape;
-> see workspace-manifest for current vs. terminal status
-> (e.g., `forge` is currently a working monolith and must not
-> be rewritten — its own AGENTS.md carries the binding
-> warning).
-
-### Three-pillar framing
-
-- **criome** — the runtime (nexus, criome, forge; the
-  daemon graph).
-- **sema** — the records (the heart).
-- **forge** — the artifacts pillar (build, compile, store,
-  deploy; the compiler infrastructure).
-
-criome ⊇ {sema, forge}. nexus is the bridge to legacy text
-(spanning all of criome); not a fourth pillar.
-
-**Lojix family membership** is orthogonal to layer. A crate is
-forge-family iff it participates in the content-addressed
-typed build/store/deploy pipeline. `forge` is the only
-current forge-family daemon.
+Per-repo status (current vs. terminal shape) lives in
+[mentci's workspace-manifest](https://github.com/LiGoldragon/mentci/blob/main/docs/workspace-manifest.md).
 
 **Shelved**: `arbor` (prolly-tree versioning) — post-MVP.
 
@@ -692,8 +693,8 @@ grammar is organised as a **delimiter-family matrix**:
 
 **Every top-level nexus expression is a request.** The head of
 a top-level `( )`-form is a request verb (`Assert`, `Mutate`,
-`Retract`, `Query`, `Subscribe`, `Validate` today; `Compile`
-post-MVP). Nested expressions are record constructions that
+`Retract`, `Query`, `Subscribe`, `Validate` today;
+`BuildRequest` post-MVP). Nested expressions are record constructions that
 the request refers to. Parsing rejects top-level expressions
 that aren't requests.
 
@@ -714,12 +715,12 @@ Foundational rules. Every session follows these.
 
 - **Rust is only an output.** No `.rs` → sema parsing. prism
   emits one-way.
-- **Nix is the build backend until we replace it.** Compile
-  plans become `RunNix` invocations (crane + fenix); forge
-  spawns `nix build`. Direct rustc orchestration is a post-
-  nix-replacement concern. prism emits `.rs` source; forge-
-  daemon assembles the workdir with `Cargo.toml` + `flake.nix`;
-  nix drives the rest.
+- **Nix is the build backend until we replace it.**
+  `BuildRequest` flows become `nix build` invocations (crane +
+  fenix) inside forge. Direct rustc orchestration is a
+  post-nix-replacement concern. prism emits `.rs` source;
+  forge-daemon assembles the workdir with `Cargo.toml` +
+  `flake.nix`; nix drives the rest.
 - **Authored macros are transitional.** In the eventual
   self-hosting state, code-gen patterns are sema rules
   emitted by prism and there are no authored macros. In the
@@ -813,11 +814,13 @@ Foundational rules. Every session follows these.
   the blake3 of its canonical rkyv encoding.
 - **A binary is just a path.** No `Launch` verb; store entries
   are real files.
-- **Criomed is the overlord** of arca. Tracks
-  reachability; signs tokens; directs GC.
-- **forge is for effects sema can't do.** Its inputs are plan
-  records; its outputs are outcome records. It never sees an
-  Opus directly.
+- **criome is the overlord** of arca. Tracks reachability;
+  signs the capability tokens arca-daemon verifies; directs
+  GC. arca-daemon enforces; criome authorises.
+- **forge is for effects sema can't do.** Its inputs are the
+  records criome forwards (Graphs + Nodes + Edges +
+  Derivations); its outputs are outcome records criome
+  asserts back into sema.
 - **No backward compat.** The engine is being born. Rename,
   move, restructure freely until Li declares a compatibility
   boundary.
@@ -874,8 +877,9 @@ rejection here — not just the acceptance elsewhere. Past
 recurring wrong frames: aski-as-input, personal-scale,
 global-database, federation, boundary-as-tension,
 bit-for-bit-identity, legibility-axis, sema-as-data-store,
-four-daemon topology, ingester-for-Rust, arca-as-
-blob-DB, banner-wrong-reports.
+ingester-for-Rust, arca-as-blob-DB, banner-wrong-reports,
+opus-as-compilation-unit (the flow-graph IS the program;
+`Graph` is the record kind).
 
 ### Responsibilities table — criome / forge / arca-daemon
 
