@@ -49,17 +49,17 @@ impl State {
         }
     }
 
-    fn find_nodes(&self, query: &NodeQuery) -> Vec<Node> {
+    fn find_nodes(&self, query: &NodeQuery) -> Vec<(signal::Slot, Node)> {
         self.decode_kind::<Node>(kinds::NODE)
             .into_iter()
-            .filter(|node| Self::matches_pattern_field(&node.name, &query.name))
+            .filter(|(_, node)| Self::matches_pattern_field(&node.name, &query.name))
             .collect()
     }
 
-    fn find_edges(&self, query: &EdgeQuery) -> Vec<Edge> {
+    fn find_edges(&self, query: &EdgeQuery) -> Vec<(signal::Slot, Edge)> {
         self.decode_kind::<Edge>(kinds::EDGE)
             .into_iter()
-            .filter(|edge| {
+            .filter(|(_, edge)| {
                 Self::matches_pattern_field(&edge.from, &query.from)
                     && Self::matches_pattern_field(&edge.to, &query.to)
                     && Self::matches_pattern_field(&edge.kind, &query.kind)
@@ -67,26 +67,27 @@ impl State {
             .collect()
     }
 
-    fn find_graphs(&self, query: &GraphQuery) -> Vec<Graph> {
+    fn find_graphs(&self, query: &GraphQuery) -> Vec<(signal::Slot, Graph)> {
         self.decode_kind::<Graph>(kinds::GRAPH)
             .into_iter()
-            .filter(|graph| Self::matches_pattern_field(&graph.title, &query.title))
+            .filter(|(_, graph)| Self::matches_pattern_field(&graph.title, &query.title))
             .collect()
     }
 
-    fn decode_kind<T>(&self, expected_tag: u8) -> Vec<T>
+    fn decode_kind<T>(&self, expected_tag: u8) -> Vec<(signal::Slot, T)>
     where
         T: rkyv::Archive,
         T::Archived: for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>
             + rkyv::Deserialize<T, rkyv::api::high::HighDeserializer<rkyv::rancor::Error>>,
     {
         let mut decoded = Vec::new();
-        for (_slot, bytes) in self.sema.iter().unwrap_or_default() {
+        for (slot, bytes) in self.sema.iter().unwrap_or_default() {
             if bytes.first().copied() != Some(expected_tag) {
                 continue;
             }
             if let Ok(value) = rkyv::from_bytes::<T, rkyv::rancor::Error>(&bytes[1..]) {
-                decoded.push(value);
+                let slot_u: u64 = slot.into();
+                decoded.push((signal::Slot::from(slot_u), value));
             }
         }
         decoded
