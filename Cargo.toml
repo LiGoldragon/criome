@@ -5,7 +5,7 @@ edition      = "2024"
 rust-version = "1.85"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/LiGoldragon/criome"
-description  = "criome — sema's engine. Receives signal frames over UDS from nexus; runs the validator pipeline (schema → refs → invariants → permissions → write → cascade); applies accepted mutations to sema; dispatches lojix-schema verbs to the lojix daemon for effects."
+description  = "criome — the state-engine around sema. Receives signal frames over UDS; runs the validator pipeline (schema → refs → invariants → permissions → write → cascade); applies accepted mutations to sema; forwards effect-bearing signal verbs to the lojix daemon."
 
 [lib]
 name = "criome"
@@ -22,7 +22,6 @@ path = "src/bin/handle_frame.rs"
 [dependencies]
 signal       = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
 sema         = { git = "https://github.com/LiGoldragon/sema", branch = "main" }
-lojix-schema = { git = "https://github.com/LiGoldragon/lojix-schema", branch = "main" }
 ractor       = { version = "0.15", features = ["async-trait"] }
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
 thiserror    = "2"

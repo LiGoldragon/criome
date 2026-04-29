@@ -269,8 +269,8 @@ Current signal::Request verbs (per
 `Handshake`, `Assert`, `Mutate`, `Retract`, `AtomicBatch`,
 `Query`, `Subscribe`, `Validate`. `Compile` (referenced
 elsewhere in this doc) is a **planned** post-MVP verb that
-will trigger the lojix-schema dispatch pipeline; it is not
-in the M0 wire today.
+criome forwards to lojix once accepted; it is not in the M0
+wire today.
 
 **Every edit is a request.** criome is the arbiter; assertions,
 mutations, retractions can all be rejected. This is the
@@ -317,7 +317,7 @@ are the authoritative type system today). Once the
      │         │   for lojix-store GC
      │         │ • never touches binary bytes itself
      └────┬────┘
-          │ rkyv (lojix-schema — concrete "do this" verbs)
+          │ signal (rkyv) — effect-bearing verbs forwarded to lojix
           ▼
      ┌──────────┐   owns lojix-store directory
      │  lojix  │   (lojix family; thin executor; no evaluation)
@@ -327,12 +327,14 @@ are the authoritative type system today). Once the
      │          │   • StoreWriter + StoreReaderPool (store-entry
      │          │     placement + path lookup + index updates)
      │          │   • FileMaterialiser (store entries → workdir)
-     │          │ • receives concrete plans: RunNix (primary
-     │          │   compile + build), RunNixosRebuild (deploy),
-     │          │   PutStoreEntry, GetStorePath, MaterializeFiles, …
-     │          │ • invokes nix (crane + fenix) against the workdir
-     │          │   prism emitted; output lands in /nix/store during
-     │          │   the bootstrap era
+     │          │ • receives effect-bearing signal verbs from
+     │          │   criome — build (records → bundle), deploy
+     │          │   (nixos-rebuild), store-entry operations
+     │          │   (get/put/materialize/delete)
+     │          │ • links prism (records → .rs source) and
+     │          │   invokes nix (crane + fenix) against the
+     │          │   emitted workdir; output lands in /nix/store
+     │          │   during the bootstrap era
      │          │ • replies {output-hash, warnings, wall_ms}
      └──────────┘
 ```
@@ -447,13 +449,14 @@ and in mentci's reports; this file only names.
   to a sema snapshot. Internal to criome.
 - **Frame / Body / Request / Reply** — signal envelope and
   protocol verbs (lives in [signal](https://github.com/LiGoldragon/signal)).
-- **lojix-schema verbs** — concrete execution in criome→lojix
-  direction: **RunNix** (primary compile + package builder,
-  via crane + fenix), **BundleIntoLojixStore** (copy /nix/store
-  output into lojix-store with RPATH rewrite, returns blake3
-  hash), RunNixosRebuild (deploy), PutStoreEntry, GetStorePath,
-  MaterializeFiles, DeleteStoreEntry. No `CompileRequest {
-  opus: OpusId }` — criome plans; lojix executes.
+- **lojix-bound signal verbs** — effect-bearing requests
+  criome forwards to lojix: **build** (records →
+  `CompiledBinary` outcome via crane + fenix +
+  RPATH-rewrite-into-lojix-store), **deploy**
+  (nixos-rebuild), **store-entry operations**
+  (get / put / materialize / delete). No `CompileRequest {
+  opus: OpusId }` at the wire — criome forwards records
+  directly; lojix runs prism + nix + bundle internally.
 
 ---
 
@@ -510,19 +513,19 @@ Edit-time (requests accumulate):
 Run-time (plan dispatch):
 - User issues a Compile request against an Opus record.
 - criome reads the Opus + transitive OpusDeps from sema.
-- criome **forwards the records to lojix** via a typed
-  `lojix-schema` verb (criome itself runs nothing — see §10
-  "criome communicates; it never runs").
+- criome **forwards the records to lojix** as a signal verb
+  (criome itself runs nothing — see §10 "criome communicates;
+  it never runs").
 - lojix-daemon links `prism` and runs the full pipeline
-  internally: prism emits `.rs` from the records →
-  lojix-daemon assembles the scratch workdir (`.rs` +
-  `Cargo.toml` + `flake.nix` + crane glue) → NixRunner spawns
-  `nix build` (nix/crane run cargo + rustc with the
-  fenix-pinned toolchain; proc-macros expand in rustc;
-  output lands in `/nix/store`) → StoreWriter runs
-  `BundleIntoLojixStore` on the nix output (copy-closure,
-  RPATH rewrite via patchelf, deterministic bundle, blake3
-  hash, write tree under `~/.lojix/store/<blake3>/`).
+  internally: prism emits `.rs` from the records → lojix
+  assembles the scratch workdir (`.rs` + `Cargo.toml` +
+  `flake.nix` + crane glue) → NixRunner spawns `nix build`
+  (nix/crane run cargo + rustc with the fenix-pinned
+  toolchain; proc-macros expand in rustc; output lands in
+  `/nix/store`) → StoreWriter copies the closure into
+  lojix-store with RPATH rewrite (patchelf), deterministic
+  bundle, blake3 hash, writes tree under
+  `~/.lojix/store/<blake3>/`.
 - lojix replies with `{ store_entry_hash, narhash,
   wall_ms }`.
 - criome asserts `CompiledBinary { opus, store_entry_hash,
@@ -530,13 +533,10 @@ Run-time (plan dispatch):
   identity is `store_entry_hash`; narhash is kept for nix
   cache lookup.
 
-The exact `lojix-schema` verb that carries the records from
-criome to lojix lands when `lojix-daemon` is wired —
-candidates are a new `Build(records)` verb or a sequence of
-`MaterializeFiles` + `RunNix` + `BundleIntoLojixStore`. The
-load-bearing constraint is unchanged either way: criome's
-role is **forward + await**; lojix runs prism + nix +
-bundle internally.
+The signal verb that carries the records from criome to
+lojix lands when `lojix-daemon` is wired. The load-bearing
+constraint: criome's role is **forward + await**; lojix runs
+prism + nix + bundle internally.
 
 Self-host close:
 - User runs the new binary directly from its lojix-store path.
@@ -569,9 +569,10 @@ this section is the architectural roles.
   `QueryOperation` / `BatchOperation` / `AtomicBatch` /
   `Records`, `Diagnostic`). New record kinds land here as the
   closed enum grows.
-- **Layer 2 — contract crates**: signal (nexus↔criome;
-  requests + replies + handshake), lojix-schema (criome↔lojix;
-  execution verbs).
+- **Layer 2 — contract crate**: signal — the workspace's
+  typed wire protocol (requests + replies + handshake +
+  record kinds). Spoken on every leg: front-ends to criome,
+  and criome to lojix.
 - **Layer 3 — storage**: sema (records DB — redb-backed;
   owned by criome), lojix-store (content-addressed
   filesystem — owned by lojix; includes a reader library).
@@ -582,7 +583,7 @@ this section is the architectural roles.
 - **Spec-only (terminal state)**: lojix (namespace README).
 
 Currently `lojix` is CANON-MISSING (not yet scaffolded).
-`criome` and `lojix-schema` are scaffolded; criome has its
+`criome` is scaffolded; criome has its
 M0 daemon body shipped (ractor-hosted; see `criome/src/lib.rs`
 for the supervision tree). See workspace-manifest in mentci
 for the full per-repo status.
@@ -689,8 +690,8 @@ Foundational rules. Every session follows these.
 - **All-rkyv except nexus text.** The only non-rkyv messaging
   surface is the nexus *text* payload (carried inside a
   client-msg `Send`). Every other wire / storage format —
-  signal, future criome-net, lojix-schema, sema records,
-  lojix-store index entries — is rkyv. No compromise. All
+  signal, future criome-net, sema records, lojix-store index
+  entries — is rkyv. No compromise. All
   rkyv-using crates pin the *same* feature set so archived
   types interop:
   `default-features = false, features = ["std", "bytecheck",

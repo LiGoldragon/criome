@@ -184,7 +184,6 @@ name = "criome"
 version = "0.1.0"
 dependencies = [
  "clap",
- "lojix-schema",
  "ractor",
  "rkyv",
  "sema",
@@ -413,15 +412,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
-]
-
-[[package]]
-name = "lojix-schema"
-version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/lojix-schema?branch=main#d4daf21fc14151447db9b138093fc3013a858c5c"
-dependencies = [
- "rkyv",
- "serde",
 ]
 
 [[package]]
