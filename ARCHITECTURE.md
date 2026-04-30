@@ -792,7 +792,8 @@ aski-as-input, personal-scale, global-database, federation,
 boundary-as-tension, bit-for-bit-identity, legibility-axis,
 sema-as-data-store, ingester-for-Rust, arca-as-blob-DB,
 banner-wrong-reports, opus-as-compilation-unit (the flow-graph IS the
-program; `Graph` is the record kind).
+program; `Graph` is the record kind), nexus-as-storage,
+sema-as-string-store, seed-from-nexus-files.
 
 - **Aski is retired.** mentci / criome does not treat aski as a design
   input. Do not reason from aski axioms (II-L, v0.21 syntax, synth.md,
@@ -824,6 +825,29 @@ program; `Graph` is the record kind).
 - **Nexus is the agent interface.** "Legibility to agents" is not a
   separate design axis. Nexus is how agents (LLMs, humans, scripts)
   interact with criome; text in, criome-validated records out.
+- **Nexus is messages, not storage.** Per Invariant B, nexus is the
+  text request language; its parser produces signal envelopes for
+  criome to validate. It is not a file format, not a serialization
+  format, not a way to persist data. Files of nexus assertions —
+  `bootstrap.nexus`, `genesis.nexus`, `kinds.nexus`, etc. — are a
+  *hack* that lets a human author records by typing them once into
+  a text file and feeding them through a tool. Repeating that
+  pattern for new concerns (localization, configuration, schema
+  evolution, etc.) is wrong. Schema bootstrap is hand-coded in
+  criome's init; domain kinds and other data enter sema through
+  Assert frames at runtime (mentci-egui, agents, scripts) — never
+  by criome reading a `.nexus` file off disk as its source of truth.
+- **Sema is string-free at the schema layer.** Kind, field, and
+  variant identifiers in sema are slot ids — integers in per-kind
+  indexes — never strings. User-facing display names ("Node",
+  "label", "Validates") and per-language translations live in a
+  separate **localization store** distinct from sema and arca,
+  loaded by whichever components render or parse human-facing text.
+  Sema records carry numerical references (slot ids), primitive
+  scalars, and user-data text content (e.g. a free-form `Label`
+  field on a domain record), but never schema-identity strings.
+  The localization store's owner (daemon/library/component shape)
+  is open — see §11.
 
 ### 10.2 Responsibilities table — criome / forge / arca-daemon
 
@@ -882,6 +906,7 @@ be settled when the relevant component is wired.
 | GUI repo name | "mentci" remains the working name in design docs until that repo is created |
 | mentci flake structure | per-host NixOS module surface composing all four daemons |
 | World-fact / operational / authz category names | machina is the code category; the others are still open |
+| Localization store owner | a separate component (daemon/library/parallel record-engine instance) holds per-language display names mapped from slot ids. Distinct from sema (string-free) and arca (blob-only). Owner shape, naming, and protocol are open |
 
 ---
 
