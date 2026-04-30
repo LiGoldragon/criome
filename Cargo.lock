@@ -642,7 +642,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sema"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/sema?branch=main#10ec864feae665fd71bbf972a59ee1ebde1f2b22"
+source = "git+https://github.com/LiGoldragon/sema?branch=main#ed2388159c0758e71fdf3a8656d5c5c73426aa73"
 dependencies = [
  "redb",
  "rkyv",
@@ -652,7 +652,7 @@ dependencies = [
 [[package]]
 name = "signal"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal?branch=main#7ed8acdcd9f10274624d48e80e362c1d2bfa3a21"
+source = "git+https://github.com/LiGoldragon/signal?branch=main#543193b853f7e4668482441807159ca184918a96"
 dependencies = [
  "nota-codec",
  "rkyv",

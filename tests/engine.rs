@@ -158,7 +158,7 @@ fn unimplemented_mutate_verb_returns_e0099_diagnostic() {
 #[test]
 fn unimplemented_retract_verb_returns_e0099_diagnostic() {
     let (engine, path) = temp_engine();
-    let retract = request_frame(Request::Retract(RetractOperation {
+    let retract = request_frame(Request::Retract(RetractOperation::Node {
         slot: Slot::from(50u64),
         expected_rev: None,
     }));

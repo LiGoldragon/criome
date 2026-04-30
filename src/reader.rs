@@ -49,14 +49,14 @@ impl State {
         }
     }
 
-    fn find_nodes(&self, query: &NodeQuery) -> Vec<(signal::Slot, Node)> {
+    fn find_nodes(&self, query: &NodeQuery) -> Vec<(signal::Slot<Node>, Node)> {
         self.decode_kind::<Node>(kinds::NODE)
             .into_iter()
             .filter(|(_, node)| Self::matches_pattern_field(&node.name, &query.name))
             .collect()
     }
 
-    fn find_edges(&self, query: &EdgeQuery) -> Vec<(signal::Slot, Edge)> {
+    fn find_edges(&self, query: &EdgeQuery) -> Vec<(signal::Slot<Edge>, Edge)> {
         self.decode_kind::<Edge>(kinds::EDGE)
             .into_iter()
             .filter(|(_, edge)| {
@@ -67,14 +67,14 @@ impl State {
             .collect()
     }
 
-    fn find_graphs(&self, query: &GraphQuery) -> Vec<(signal::Slot, Graph)> {
+    fn find_graphs(&self, query: &GraphQuery) -> Vec<(signal::Slot<Graph>, Graph)> {
         self.decode_kind::<Graph>(kinds::GRAPH)
             .into_iter()
             .filter(|(_, graph)| Self::matches_pattern_field(&graph.title, &query.title))
             .collect()
     }
 
-    fn decode_kind<T>(&self, expected_tag: u8) -> Vec<(signal::Slot, T)>
+    fn decode_kind<T>(&self, expected_tag: u8) -> Vec<(signal::Slot<T>, T)>
     where
         T: rkyv::Archive,
         T::Archived: for<'a> rkyv::bytecheck::CheckBytes<rkyv::api::high::HighValidator<'a, rkyv::rancor::Error>>
@@ -87,7 +87,7 @@ impl State {
             }
             if let Ok(value) = rkyv::from_bytes::<T, rkyv::rancor::Error>(&bytes[1..]) {
                 let slot_u: u64 = slot.into();
-                decoded.push((signal::Slot::from(slot_u), value));
+                decoded.push((signal::Slot::<T>::from(slot_u), value));
             }
         }
         decoded
