@@ -8,7 +8,7 @@ This repo's `ARCHITECTURE.md` is the **project-wide canonical doc**. Invariants 
 
 **The engine.** Validator pipeline + sema host. Receives signal frames from nexus, dispatches verbs through a ractor supervision tree, applies accepted mutations to sema.
 
-The supervision tree lives in [src/lib.rs](src/lib.rs)'s doc comment. Ractor patterns are in lore (`rust/ractor.md`); criome is the canonical example.
+The supervision tree lives in `src/lib.rs`'s doc comment. Ractor patterns are in lore (`rust/ractor.md`); criome is the canonical example.
 
 ---
 
