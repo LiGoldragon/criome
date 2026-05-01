@@ -14,6 +14,6 @@ The supervision tree lives in [src/lib.rs](src/lib.rs)'s doc comment. Ractor pat
 
 ## Carve-outs worth knowing
 
-- **`engine::State` carries the sync façade** ([`State::handle_frame`](src/engine.rs)). The actor wraps it for async use; the [`criome-handle-frame`](src/bin/handle_frame.rs) one-shot binary and the integration tests construct `State::new(sema)` directly. Don't duplicate the dispatch — every verb flows through `State::handle_*` whether async or sync.
-- **`Reader` is a worker pool** sized by `sema::Sema::reader_count()` (default 4). Round-robin via `Arc<AtomicUsize>`. Don't replace with a factory — uncontended atomics + a flat `Vec<ActorRef>` is the right shape here.
-- **The closed Rust enum is the authoritative type system today.** New record kinds land by adding the typed struct + the closed-enum variant in [signal](https://github.com/LiGoldragon/signal), then propagating through the hand-coded dispatch here. Records-driven schema (the eventual `prism` self-host loop) is post-M0 work.
+- **`engine::State` carries the sync façade** ([`State::handle_frame`](src/engine.rs)). The actor wraps it for async use; the [`criome-handle-frame`](src/bin/handle_frame.rs) one-shot binary and the integration tests construct `State::new(sema)` directly. Every verb flows through `State::handle_*` whether async or sync — single canonical dispatch path.
+- **`Reader` is a worker pool** sized by `sema::Sema::reader_count()` (default 4). Round-robin via `Arc<AtomicUsize>`. Uncontended atomics + a flat `Vec<ActorRef>` is the right shape.
+- **The closed Rust enum is the authoritative type system today.** New record kinds land by adding the typed struct + the closed-enum variant in signal, then propagating through the hand-coded dispatch here. Records-driven schema (the eventual `prism` self-host loop) is post-M0 work.

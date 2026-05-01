@@ -12,8 +12,8 @@
 > describes how the niches fit. Both layers are needed; this file is the
 > apex.
 
-Criome runs on top of [CriomOS](https://github.com/LiGoldragon/CriomOS).
-Development happens in [mentci](https://github.com/LiGoldragon/mentci);
+Criome runs on top of CriomOS.
+Development happens in mentci;
 deployment composes from there too.
 
 ---
@@ -712,11 +712,10 @@ feature until Subscribe ships rather than poll while waiting.
 ```
 
 Layer N depends on layers below it. Per-repo status (current vs.
-terminal shape) lives in [mentci's
-workspace-manifest](https://github.com/LiGoldragon/mentci/blob/main/docs/workspace-manifest.md).
+terminal shape) lives in workspace's `docs/workspace-manifest.md`.
 
 **Deployment is nix-based, aggregated from mentci.** Each canonical
-crate publishes its own flake; `mentci/flake.nix` defines NixOS modules
+crate publishes its own flake; `workspace/flake.nix` defines NixOS modules
 + service specs composing the four daemons.
 `nixos-rebuild --flake mentci#<host>` is the deploy. lojix-cli covers
 this path during the transitional phase; eventually criome drives
@@ -748,8 +747,8 @@ narrow use). New features land as delimiter-matrix slots or
 Pascal-named records — **never new sigils**.
 
 Detailed grammar shape lives in
-[nexus](https://github.com/LiGoldragon/nexus) and
-[nota](https://github.com/LiGoldragon/nota).
+nexus and
+nota.
 
 ---
 
@@ -768,10 +767,10 @@ Foundational rules — every session follows these.
 | Delete wrong reports; don't banner | Banners invite agents to relitigate. |
 | Sema is all we are concerned with | Everything else orbits sema. |
 | Text only crosses nexus | All internal traffic is rkyv. |
-| All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See [lore/rust/rkyv.md](https://github.com/LiGoldragon/lore/blob/main/rust/rkyv.md). |
-| Push, not pull | Producers expose subscriptions; consumers subscribe. No polling fallback ever. See [lore/programming/push-not-pull.md](https://github.com/LiGoldragon/lore/blob/main/programming/push-not-pull.md). |
+| All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See lore/rust/rkyv.md. |
+| Push, not pull | Producers expose subscriptions; consumers subscribe. No polling fallback ever. See lore/programming/push-not-pull.md. |
 | criome communicates; it never runs | Effect-bearing work lives in dedicated components dispatched via typed verbs. The failure mode this rule closes: agents bundling features into criome until it's a monolith no LLM can hold in context. |
-| One capability, one crate, one repo | Adding a feature defaults to a *new* crate. See [lore/programming/micro-components.md](https://github.com/LiGoldragon/lore/blob/main/programming/micro-components.md). |
+| One capability, one crate, one repo | Adding a feature defaults to a *new* crate. See lore/programming/micro-components.md. |
 | Every edit is a request | criome validates; requests can be rejected. The hallucination wall. |
 | Bootstrap rung by rung | No "before the engine runs" mode; criome runs from the first instant, sema starts empty, nexus messages populate it (including seed records via `genesis.nexus`, fed through nexus by the launcher). |
 | References are slot-refs | Records store `Slot(u64)`; index resolves to current hash + display name. |
@@ -782,74 +781,45 @@ Foundational rules — every session follows these.
 | No backward compat | Rename, move, restructure freely until Li declares a boundary. |
 | No ETAs | Describe the work; don't schedule it. |
 | Sigils as last resort | New features are delimiter-matrix slots or Pascal-named records. |
-| One artifact per repo | Per [lore/rust/style.md](https://github.com/LiGoldragon/lore/blob/main/rust/style.md). |
+| One artifact per repo | Per lore/rust/style.md. |
 
-### 10.1 Rejected framings (reject-loud)
+### 10.1 Categories of records
 
-When a framing is considered and rejected, state the rejection here —
-not just the acceptance elsewhere. Past recurring wrong frames:
-aski-as-input, personal-scale, global-database, federation,
-boundary-as-tension, bit-for-bit-identity, legibility-axis,
-sema-as-data-store, ingester-for-Rust, arca-as-blob-DB,
-banner-wrong-reports, opus-as-compilation-unit (the flow-graph IS the
-program; `Graph` is the record kind), nexus-as-storage,
-sema-as-string-store, seed-from-nexus-files.
+Records in sema split by **category** — the separation is intrinsic
+to the records' nature, not a schema choice.
 
-- **Aski is retired.** mentci / criome does not treat aski as a design
-  input. Do not reason from aski axioms (II-L, v0.21 syntax, synth.md,
-  compile-pipeline framing) to current sema architecture. Shared
-  surface features (delimiter-family matrix, case rules) are
-  coincidence, not lineage.
-- **Scope is world-supersession, not personal-scale.** CriomOS +
-  criome aim to supersede proprietary operating systems and computing
-  stacks globally; mentci is intended to become the universal UI
-  replacing today's fragmented software interfaces. Framings like
-  "personal-scale," "craftsperson workshop," "self-hosted-self"
-  underestimate the project.
-- **Sema is local; reality is subjective.** There is no global sema,
-  no federated-global database, no single logical truth. Each criome
-  holds a subjective view; instances communicate, agree, disagree, and
-  negotiate to reach agreement. "Global database," "global blockchain,"
-  "federated global sema" are wrong.
-- **Categories are intrinsic.** Code records and world-fact records
-  cannot share a category — the separation is a fact of reality, not
-  a schema choice. The code category is named **machina** (the subset
-  of sema that compiles to Rust in v1). The native checker over
-  machina records is **machina-chk** (not "semachk" — the check is
-  not over all of sema). Names for world-fact, operational, and authz
-  categories are still open.
-- **Self-hosting close is normal software engineering.** The engine
-  works correctly, canonical crates authored as records. Bit-for-bit
-  identity with the bootstrap version is not a bar — new rustc
-  versions aren't byte-identical to predecessors either.
-- **Nexus is the agent interface.** "Legibility to agents" is not a
-  separate design axis. Nexus is how agents (LLMs, humans, scripts)
-  interact with criome; text in, criome-validated records out.
-- **Nexus is messages, not storage.** Per Invariant B, nexus is the
-  text request language; its parser produces signal envelopes for
-  criome to validate. It is not a file format, not a serialization
-  format, not a way to persist data. Files of nexus assertions —
-  `bootstrap.nexus`, `genesis.nexus`, `kinds.nexus`, etc. — are a
-  *hack* that lets a human author records by typing them once into
-  a text file and feeding them through a tool. Repeating that
-  pattern for new concerns (localization, configuration, schema
-  evolution, etc.) is wrong. Schema bootstrap is hand-coded in
-  criome's init; domain kinds and other data enter sema through
-  Assert frames at runtime (mentci-egui, agents, scripts) — never
-  by criome reading a `.nexus` file off disk as its source of truth.
-- **Sema is string-free at the schema layer.** Kind, field, and
-  variant identifiers in sema are slot ids — integers in per-kind
-  indexes — never strings. User-facing display names ("Node",
-  "label", "Validates") and per-language translations live in a
-  separate **localization store** distinct from sema and arca,
-  loaded by whichever components render or parse human-facing text.
-  Sema records carry numerical references (slot ids), primitive
-  scalars, and user-data text content (e.g. a free-form `Label`
-  field on a domain record), but never schema-identity strings.
-  The localization store's owner (daemon/library/component shape)
-  is open — see §11.
+- **machina** — the code category. The subset of sema that compiles
+  to Rust in v1. The native checker over machina records is
+  `machina-chk`. machina records are what prism reads and emits.
+- **world-fact, operational, access-control** — categories whose
+  names are still open (see §11).
 
-### 10.2 Responsibilities table — criome / forge / arca-daemon
+### 10.2 Sema's string discipline
+
+Schema identifiers (kind, field, variant) in sema are slot ids —
+integers in per-kind indexes. Display names and per-language
+translations live in a **localization store** distinct from sema
+and arca, loaded by whichever components render or parse human-
+facing text. Sema records carry numerical references (slot ids),
+primitive scalars, and user-data text content (e.g. a free-form
+`Label` field on a domain record); the schema layer stays
+string-free. The localization store's owner (daemon, library,
+parallel record-engine instance) is open — see §11.
+
+### 10.3 Bootstrap and runtime data flow
+
+criome runs from the first instant of execution. Sema starts
+empty; criome's init constructs the bootstrap kinds (Struct,
+Enum, Field, Variant, TypeExpression, Localization, Language,
+Slot, primitives) directly as records, populating sema before
+opening the UDS listener.
+
+After init, every record entering sema arrives as a signal
+Assert frame from a connected client (mentci-egui, agents,
+scripts, nexus-cli). The wire is signal end-to-end; no on-disk
+text file feeds sema as a source of truth.
+
+### 10.4 Responsibilities table — criome / forge / arca-daemon
 
 The criome-runs-nothing rule made concrete. Each row is one concern;
 columns mark which daemon owns it.
@@ -915,16 +885,16 @@ be settled when the relevant component is wired.
 - **No deployment topology.** Whether components compile into one
   binary, many binaries, or talk over a network is left open. The
   architecture is *source-organization*, not deployment (per
-  [lore/programming/micro-components.md](https://github.com/LiGoldragon/lore/blob/main/programming/micro-components.md)).
+  lore/programming/micro-components.md).
 - **No nexus-text grammar additions.** The sigil for `BuildRequest` is
   TBD; nexus parser+renderer wire-in is a thin layer covered in
-  [nexus/ARCHITECTURE.md](https://github.com/LiGoldragon/nexus/blob/main/ARCHITECTURE.md).
+  nexus/ARCHITECTURE.md.
 - **No M6 self-host close.** That's the next layer — criome's own
   request flow expressed as records, prism emits criome from them,
   recompile, loop closes. Mechanism shown here is the prerequisite.
 - **No mentci UI screens.** The UI's visual design (egui widgets,
   theming) is out of scope here. mentci's role as workspace umbrella +
-  meta-deploy aggregator is in [mentci/ARCHITECTURE.md](https://github.com/LiGoldragon/mentci/blob/main/ARCHITECTURE.md).
+  meta-deploy aggregator is in workspace/ARCHITECTURE.md.
 - **No CriomOS / horizon-rs / lojix-cli deploy flow internals.** Those
   are an existing parallel track; lojix-cli migrates to a thin
   signal-speaking client of forge during phases B–E.
@@ -942,7 +912,7 @@ be settled when the relevant component is wired.
 This file is the golden document. Edits are deliberate and surgical.
 
 1. **Cross-repo report links are sparing.** Decision histories live in
-   [mentci's reports/](https://github.com/LiGoldragon/mentci/tree/main/reports);
+   mentci's reports/;
    they may be cited when load-bearing for a reader, but never as
    required reading. The architecture stands on its own.
 2. **Prose + diagrams only.** Type sketches, field lists, enum
