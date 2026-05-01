@@ -780,7 +780,7 @@ Foundational rules — every session follows these.
 | criome is the overlord of arca | Tracks reachability, signs capability tokens; arca-daemon enforces. |
 | forge is for effects sema can't do | Inputs: records criome forwards (Graphs + Nodes + Edges + Derivations). Outputs: outcome records criome asserts back. |
 | Free to restructure | Rename, move, restructure until Li declares a compatibility boundary. |
-| Schedules live outside the docs | Describe the work; agents do not estimate. |
+| Schedules live outside the docs | Describe the work; agents leave estimation to humans on demand. |
 | New features are delimiter-matrix slots or Pascal-named records | Sigils land as a last resort. |
 | One artifact per repo | Per lore/rust/style.md. |
 
@@ -877,34 +877,31 @@ be settled when the relevant component is wired.
 | GUI repo (mentci-egui) status | first incarnation of the user-facing UI; skeleton-as-design today |
 | workspace flake structure | per-host NixOS module surface composing all four daemons |
 | World-fact / operational / authz category names | machina is the code category; the others are still open |
+| `machina-chk` shape | the native checker over machina records — own crate, internal module, or post-MVP — TBD |
 | Localization store owner | a separate component (daemon/library/parallel record-engine instance) holds per-language display names mapped from slot ids. Distinct from sema (string-free) and arca (blob-only). Owner shape, naming, and protocol are open |
 
 ---
 
-## 12 · What's NOT here (intentionally)
+## 12 · Scope of this file (other concerns live elsewhere)
 
-- **No deployment topology.** Whether components compile into one
-  binary, many binaries, or talk over a network is left open. The
-  architecture is *source-organization*, not deployment (per
-  lore/programming/micro-components.md).
-- **No nexus-text grammar additions.** The sigil for `BuildRequest` is
-  TBD; nexus parser+renderer wire-in is a thin layer covered in
-  nexus/ARCHITECTURE.md.
-- **No M6 self-host close.** That's the next layer — criome's own
-  request flow expressed as records, prism emits criome from them,
-  recompile, loop closes. Mechanism shown here is the prerequisite.
-- **No mentci-egui UI screens.** The UI's visual design (egui widgets,
-  theming) is out of scope here. The workspace meta-repo's role as
+- **Deployment topology** is left open (lore/programming/micro-components.md).
+  This file describes *source-organization*; whether components compile
+  into one binary, many binaries, or talk over a network lives downstream.
+- **Nexus-text grammar additions** for new verbs (e.g. the sigil for
+  `BuildRequest`) live in nexus/ARCHITECTURE.md.
+- **M6 self-host close** — criome's own request flow expressed as records,
+  prism emitting criome from them, recompile, loop closes — is the next
+  layer; the mechanism shown here is the prerequisite.
+- **mentci-egui UI screens** (visual design, egui widgets, theming) live
+  in mentci-egui's own docs. The workspace meta-repo's role as
   meta-deploy aggregator is in workspace/ARCHITECTURE.md.
-- **No CriomOS / horizon-rs / lojix-cli deploy flow internals.** Those
-  are an existing parallel track; lojix-cli migrates to a thin
-  signal-speaking client of forge during phases B–E.
-- **No actor-level wiring inside any daemon.** Per-actor structure
-  (NixRunner, StoreWriter, ArcaDepositor, FileMaterialiser; criome's
-  Connection / Listener / Dispatcher) lives in each repo's own
-  `ARCHITECTURE.md` and src/.
-- **No field lists.** Per §13, type sketches live in skeleton code
-  in the relevant repo, not here.
+- **CriomOS / horizon-rs / lojix-cli deploy flow internals** live in
+  CriomOS's docs. lojix-cli migrates to a thin signal-speaking client
+  of forge during phases B–E.
+- **Actor-level wiring inside any daemon** (NixRunner, StoreWriter,
+  ArcaDepositor, FileMaterialiser; criome's Connection / Listener /
+  Dispatcher) lives in each repo's own `ARCHITECTURE.md` and src/.
+- **Field lists** live in skeleton code in the relevant repo, per §13.
 
 ---
 
