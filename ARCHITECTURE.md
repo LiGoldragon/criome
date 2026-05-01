@@ -13,8 +13,8 @@
 > apex.
 
 Criome runs on top of CriomOS.
-Development happens in mentci;
-deployment composes from there too.
+Development happens in the `workspace` meta-repo; deployment
+composes from there too.
 
 ---
 
@@ -113,8 +113,9 @@ crates sit underneath, consumed by every participant.
 ```
 
 **Build backend (this era):** nix via crane + fenix. fenix pins the
-toolchain; crane builds. **Deploy:** nix flakes aggregated from mentci
-(`nixos-rebuild --flake mentci#<host>`); see §8.
+toolchain; crane builds. **Deploy:** nix flakes aggregated from
+the `workspace` meta-repo (`nixos-rebuild --flake workspace#<host>`);
+see §8.
 
 ---
 
@@ -652,7 +653,7 @@ USER  NEXUS    CRIOME            FORGE                  ARCA-DAEMON     SEMA
 - **arca-daemon:** verify token, blake3 of exactly-what-was-staged,
   atomic move, update per-store index, reply with the hash.
 
-### 7.4 Subscribe (M2+ — push, never pull)
+### 7.4 Subscribe (M2+ — push)
 
 ```
 CLIENT             CRIOME                                       SEMA
@@ -714,12 +715,12 @@ feature until Subscribe ships rather than poll while waiting.
 Layer N depends on layers below it. Per-repo status (current vs.
 terminal shape) lives in workspace's `docs/workspace-manifest.md`.
 
-**Deployment is nix-based, aggregated from mentci.** Each canonical
-crate publishes its own flake; `workspace/flake.nix` defines NixOS modules
-+ service specs composing the four daemons.
-`nixos-rebuild --flake mentci#<host>` is the deploy. lojix-cli covers
-this path during the transitional phase; eventually criome drives
-deploys via signal-forge `Deploy` verbs.
+**Deployment is nix-based, aggregated from the `workspace` meta-repo.**
+Each canonical crate publishes its own flake; `workspace/flake.nix`
+defines NixOS modules + service specs composing the four daemons.
+`nixos-rebuild --flake workspace#<host>` is the deploy. lojix-cli
+covers this path during the transitional phase; eventually criome
+drives deploys via signal-forge `Deploy` verbs.
 
 **Shelved:** `arbor` (prolly-tree versioning) — post-MVP.
 
@@ -758,29 +759,29 @@ Foundational rules — every session follows these.
 
 | Rule | Why |
 |---|---|
-| Rust is only an output | No `.rs` → sema parsing path. prism emits one-way. |
+| Rust is only an output | sema changes via signal requests; prism emits Rust source one-way. |
 | Nix is the build backend until we replace it | `BuildRequest` flows become `nix build` invocations (crane + fenix). Direct rustc is post-replacement. |
-| Authored macros are transitional | Eventual self-hosting state has no authored macros; bootstrap era may use them. Third-party macros call freely in both eras. |
+| Authored macros are transitional | Eventual self-hosting state has no authored macros; bootstrap era uses them. Third-party macros call freely in both eras. |
 | Skeleton-as-design | New design starts as compiled types + trait signatures + `todo!()`. Reports are for WHY; skeleton code is for WHAT. |
-| Per-repo `ARCHITECTURE.md` at root | matklad pattern. Points at this file, doesn't duplicate. |
+| Per-repo `ARCHITECTURE.md` at root | matklad pattern. Each per-repo doc points at this file; this file is the apex. |
 | AGENTS.md / CLAUDE.md shim | One source of truth, read by both Codex and Claude Code. |
-| Delete wrong reports; don't banner | Banners invite agents to relitigate. |
+| Replace wrong reports cleanly | The successor stands alone; jj/git history preserves the prior shape. |
 | Sema is all we are concerned with | Everything else orbits sema. |
-| Text only crosses nexus | All internal traffic is rkyv. |
+| Text crosses only at nexus | All internal traffic is rkyv. |
 | All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See lore/rust/rkyv.md. |
-| Push, not pull | Producers expose subscriptions; consumers subscribe. No polling fallback ever. See lore/programming/push-not-pull.md. |
-| criome communicates; it never runs | Effect-bearing work lives in dedicated components dispatched via typed verbs. The failure mode this rule closes: agents bundling features into criome until it's a monolith no LLM can hold in context. |
-| One capability, one crate, one repo | Adding a feature defaults to a *new* crate. See lore/programming/micro-components.md. |
-| Every edit is a request | criome validates; requests can be rejected. The hallucination wall. |
-| Bootstrap rung by rung | No "before the engine runs" mode; criome runs from the first instant, sema starts empty, nexus messages populate it (including seed records via `genesis.nexus`, fed through nexus by the launcher). |
+| Producers push, consumers subscribe | The subscription primitive is the contract. See lore/programming/push-not-pull.md. |
+| criome communicates | Effect-bearing work lives in dedicated components (forge, arca-daemon, prism), dispatched via typed verbs. |
+| One capability, one crate, one repo | Adding a feature lands as a new crate. See lore/programming/micro-components.md. |
+| Every edit is a request | criome validates; the validator may decline. The hallucination wall. |
+| Bootstrap rung by rung | criome runs from the first instant; sema starts empty; criome's init constructs the bootstrap kinds before opening the UDS listener; domain records flow in as signal frames at runtime. |
 | References are slot-refs | Records store `Slot(u64)`; index resolves to current hash + display name. |
 | Content-addressing is non-negotiable | Record identity is the blake3 of its canonical rkyv encoding. |
-| A binary is just a path | No `Launch` verb; store entries are real files. |
+| A binary is just a path | Store entries are real files; `exec` is direct. |
 | criome is the overlord of arca | Tracks reachability, signs capability tokens; arca-daemon enforces. |
 | forge is for effects sema can't do | Inputs: records criome forwards (Graphs + Nodes + Edges + Derivations). Outputs: outcome records criome asserts back. |
-| No backward compat | Rename, move, restructure freely until Li declares a boundary. |
-| No ETAs | Describe the work; don't schedule it. |
-| Sigils as last resort | New features are delimiter-matrix slots or Pascal-named records. |
+| Free to restructure | Rename, move, restructure until Li declares a compatibility boundary. |
+| Schedules live outside the docs | Describe the work; agents do not estimate. |
+| New features are delimiter-matrix slots or Pascal-named records | Sigils land as a last resort. |
 | One artifact per repo | Per lore/rust/style.md. |
 
 ### 10.1 Categories of records
@@ -873,8 +874,8 @@ be settled when the relevant component is wired.
 | Per-kind sema tables | physical layout in redb (replaces M0's 1-byte discriminator) |
 | Subscribe payload format | what arrives on the stream — snapshot delta or full record? |
 | `mentci-lib`'s exact API | precise type names + connection lifecycle (auto-reconnect, handshake retry) |
-| GUI repo name | "mentci" remains the working name in design docs until that repo is created |
-| mentci flake structure | per-host NixOS module surface composing all four daemons |
+| GUI repo (mentci-egui) status | first incarnation of the user-facing UI; skeleton-as-design today |
+| workspace flake structure | per-host NixOS module surface composing all four daemons |
 | World-fact / operational / authz category names | machina is the code category; the others are still open |
 | Localization store owner | a separate component (daemon/library/parallel record-engine instance) holds per-language display names mapped from slot ids. Distinct from sema (string-free) and arca (blob-only). Owner shape, naming, and protocol are open |
 
@@ -892,8 +893,8 @@ be settled when the relevant component is wired.
 - **No M6 self-host close.** That's the next layer — criome's own
   request flow expressed as records, prism emits criome from them,
   recompile, loop closes. Mechanism shown here is the prerequisite.
-- **No mentci UI screens.** The UI's visual design (egui widgets,
-  theming) is out of scope here. mentci's role as workspace umbrella +
+- **No mentci-egui UI screens.** The UI's visual design (egui widgets,
+  theming) is out of scope here. The workspace meta-repo's role as
   meta-deploy aggregator is in workspace/ARCHITECTURE.md.
 - **No CriomOS / horizon-rs / lojix-cli deploy flow internals.** Those
   are an existing parallel track; lojix-cli migrates to a thin
@@ -912,20 +913,19 @@ be settled when the relevant component is wired.
 This file is the golden document. Edits are deliberate and surgical.
 
 1. **Cross-repo report links are sparing.** Decision histories live in
-   mentci's reports/;
-   they may be cited when load-bearing for a reader, but never as
-   required reading. The architecture stands on its own.
+   workspace's `reports/`; they may be cited when load-bearing for a
+   reader. The architecture stands on its own.
 2. **Prose + diagrams only.** Type sketches, field lists, enum
-   variants belong in skeleton code (compiler-checked) in the relevant
-   repo, or in mentci's reports.
-3. **Update this file first**, then the affected repos, then a report
-   only if the decision carries a journey worth recording.
-4. **If a framing is rejected, name the rejection in §10.1.** Stating
-   only the acceptance lets agents rediscover the wrong frame.
-5. **If a report is superseded, delete it.** Don't banner. Mentci's
-   AGENTS.md carries the rollover discipline.
-6. **Skeleton-as-design over prose-as-design.** Prefer compiler-checked
-   types in the relevant repo over prose here.
+   variants belong in skeleton code (compiler-checked) in the
+   relevant repo, or in workspace's `reports/`.
+3. **Update this file first**, then the affected repos, then a
+   report only if the decision carries a journey worth recording.
+4. **State the architecture positively.** Describe what IS;
+   git/jj history preserves the path the doc took to get there.
+5. **Replace superseded reports cleanly.** workspace's AGENTS.md
+   carries the rollover discipline.
+6. **Skeleton-as-design over prose-as-design.** Prefer
+   compiler-checked types in the relevant repo over prose here.
 
 ---
 
