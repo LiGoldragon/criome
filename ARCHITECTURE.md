@@ -768,10 +768,10 @@ Foundational rules — every session follows these.
 | Delete wrong reports; don't banner | Banners invite agents to relitigate. |
 | Sema is all we are concerned with | Everything else orbits sema. |
 | Text only crosses nexus | All internal traffic is rkyv. |
-| All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See [tools-documentation/rust/rkyv.md](https://github.com/LiGoldragon/tools-documentation/blob/main/rust/rkyv.md). |
-| Push, not pull | Producers expose subscriptions; consumers subscribe. No polling fallback ever. See [tools-documentation/programming/push-not-pull.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/push-not-pull.md). |
+| All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See [lore/rust/rkyv.md](https://github.com/LiGoldragon/lore/blob/main/rust/rkyv.md). |
+| Push, not pull | Producers expose subscriptions; consumers subscribe. No polling fallback ever. See [lore/programming/push-not-pull.md](https://github.com/LiGoldragon/lore/blob/main/programming/push-not-pull.md). |
 | criome communicates; it never runs | Effect-bearing work lives in dedicated components dispatched via typed verbs. The failure mode this rule closes: agents bundling features into criome until it's a monolith no LLM can hold in context. |
-| One capability, one crate, one repo | Adding a feature defaults to a *new* crate. See [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md). |
+| One capability, one crate, one repo | Adding a feature defaults to a *new* crate. See [lore/programming/micro-components.md](https://github.com/LiGoldragon/lore/blob/main/programming/micro-components.md). |
 | Every edit is a request | criome validates; requests can be rejected. The hallucination wall. |
 | Bootstrap rung by rung | No "before the engine runs" mode; criome runs from the first instant, sema starts empty, nexus messages populate it (including seed records via `genesis.nexus`, fed through nexus by the launcher). |
 | References are slot-refs | Records store `Slot(u64)`; index resolves to current hash + display name. |
@@ -782,7 +782,7 @@ Foundational rules — every session follows these.
 | No backward compat | Rename, move, restructure freely until Li declares a boundary. |
 | No ETAs | Describe the work; don't schedule it. |
 | Sigils as last resort | New features are delimiter-matrix slots or Pascal-named records. |
-| One artifact per repo | Per [tools-documentation/rust/style.md](https://github.com/LiGoldragon/tools-documentation/blob/main/rust/style.md). |
+| One artifact per repo | Per [lore/rust/style.md](https://github.com/LiGoldragon/lore/blob/main/rust/style.md). |
 
 ### 10.1 Rejected framings (reject-loud)
 
@@ -915,7 +915,7 @@ be settled when the relevant component is wired.
 - **No deployment topology.** Whether components compile into one
   binary, many binaries, or talk over a network is left open. The
   architecture is *source-organization*, not deployment (per
-  [tools-documentation/programming/micro-components.md](https://github.com/LiGoldragon/tools-documentation/blob/main/programming/micro-components.md)).
+  [lore/programming/micro-components.md](https://github.com/LiGoldragon/lore/blob/main/programming/micro-components.md)).
 - **No nexus-text grammar additions.** The sigil for `BuildRequest` is
   TBD; nexus parser+renderer wire-in is a thin layer covered in
   [nexus/ARCHITECTURE.md](https://github.com/LiGoldragon/nexus/blob/main/ARCHITECTURE.md).

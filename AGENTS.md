@@ -1,14 +1,16 @@
-# Agent instructions
+# Agent instructions — criome
 
-Repo role: **the engine** — the validator pipeline + sema host. Receives signal frames from nexus, dispatches verbs through a ractor supervision tree, applies accepted mutations to sema.
+You **MUST** read AGENTS.md at `github:ligoldragon/lore` — the workspace contract.
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) — *the project-wide canonical doc*. Invariants A–D, the request flow, the three-daemon shape, the two-stores split. Project-wide architecture lives here, not duplicated elsewhere.
+This repo's `ARCHITECTURE.md` is the **project-wide canonical doc**. Invariants A–D, request flow, three-daemon shape, two-stores split. Project-wide architecture lives here, not duplicated elsewhere.
 
-Workspace conventions live in [mentci/AGENTS.md](https://github.com/LiGoldragon/mentci/blob/main/AGENTS.md) — beauty, methods on types, full-English naming, `-daemon` binary suffix, S-expression commit messages, jj + always-push.
+## Repo role
 
-Ractor patterns (one actor per file, four-piece template, mailbox semantics, supervision) live in [tools-documentation/rust/ractor.md](https://github.com/LiGoldragon/tools-documentation/blob/main/rust/ractor.md). criome is the canonical example.
+**The engine.** Validator pipeline + sema host. Receives signal frames from nexus, dispatches verbs through a ractor supervision tree, applies accepted mutations to sema.
 
-The supervision tree lives in [src/lib.rs](src/lib.rs)'s doc comment.
+The supervision tree lives in [src/lib.rs](src/lib.rs)'s doc comment. Ractor patterns are in lore (`rust/ractor.md`); criome is the canonical example.
+
+---
 
 ## Carve-outs worth knowing
 
