@@ -26,7 +26,7 @@ protocol.**
 
 - **`sema`** is the workspace's typed-database **library** —
   used by every state-bearing component (criome here; persona-router,
-  persona-orchestrate, persona-harness, future mentci across the rest
+  persona-mind, persona-harness, future mentci across the rest
   of the workspace). Not a daemon; a Rust crate. See
   sema/ARCHITECTURE.md.
 - **`criome`** is the daemon at the center of the sema-ecosystem —
@@ -454,7 +454,7 @@ src/.
 
 Note: the **sema library** also backs the records databases of
 state-bearing components elsewhere in the workspace (persona-router's
-router.redb, persona-orchestrate's orchestrate.redb, etc.). Those
+router.redb, persona-mind's mind.redb, etc.). Those
 component databases are not part of the sema-ecosystem's records;
 they are state owned by their respective components. The
 sema-ecosystem only governs criome's records database in this
