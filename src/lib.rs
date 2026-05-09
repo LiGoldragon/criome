@@ -1,8 +1,10 @@
-//! criome — sema's engine.
+//! criome — the daemon at the center of the sema-ecosystem.
 //!
+//! Owns the typed records database (Graph/Node/Edge/
+//! Derivation/CompiledBinary) backed by the [`sema`] library.
 //! Receives [`signal::Frame`] envelopes from clients (the
-//! nexus daemon over UDS, or any signal-speaking peer)
-//! and dispatches them through a ractor supervision tree:
+//! nexus daemon over UDS, or any signal-speaking peer) and
+//! dispatches them through a ractor supervision tree:
 //!
 //! ```text
 //! Daemon (root)

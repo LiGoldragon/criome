@@ -20,19 +20,31 @@ composes from there too.
 
 ## 0 · TL;DR
 
-**Sema is the database** — typed, content-addressed records.
-**Criome is the state-engine around sema** — validates, persists,
-communicates. Everything else orbits.
+**The sema-ecosystem is a coherent stack of components built around
+typed records, content-addressed artifacts, and a typed wire
+protocol.**
 
-- **criome** runs nothing — receives signal, validates, writes to sema,
-  forwards typed verbs.
-- **forge** is the executor — links prism, runs nix, bundles outputs.
-- **arca-daemon** is the privileged store writer — verifies tokens,
+- **`sema`** is the workspace's typed-database **library** —
+  used by every state-bearing component (criome here; persona-router,
+  persona-orchestrate, persona-harness, future mentci across the rest
+  of the workspace). Not a daemon; a Rust crate. See
+  sema/ARCHITECTURE.md.
+- **`criome`** is the daemon at the center of the sema-ecosystem —
+  it owns the **records database** (the typed Graph/Node/Edge/
+  Derivation/CompiledBinary records this ecosystem reasons about),
+  managed through sema. It validates incoming signal requests,
+  persists accepted mutations through its sema-managed database,
+  forwards effect-bearing verbs, and signs capability tokens. Runs
+  nothing — effect-bearing work is dispatched as typed verbs.
+- **`forge`** is the executor — links prism, runs nix, bundles outputs.
+- **`arca-daemon`** is the privileged store writer — verifies tokens,
   computes hashes, atomic-moves into the canonical store.
-- **nexus** is the text↔signal gateway. Future clients (GUI editor,
+- **`nexus`** is the text↔signal gateway. Future clients (GUI editor,
   mentci-lib consumers, agents) speak signal directly.
-- **signal** is the wire on every leg, with `signal-forge` and
-  `signal-arca` layered atop for audience-scoped isolation.
+- **`signal`** is the sema-ecosystem's record vocabulary atop the
+  shared **`signal-core`** wire kernel; **`signal-forge`** and
+  **`signal-arca`** layer effect-bearing verbs on top for
+  audience-scoped isolation.
 
 The flow-graph IS the program: a `Graph` record holding `Node` records
 linked by `Edge` records (`Contains` for membership, `DependsOn` for
@@ -47,21 +59,21 @@ crates sit underneath, consumed by every participant.
 
 ```
                 ┌─────────────────────────────────────┐
-                │           STATE CLUSTER             │
+                │       CRIOME (validator daemon)     │
                 │                                     │
                 │   ┌─────────────────────────────┐   │
                 │   │           criome            │   │
-                │   │       (state-engine)        │   │
-                │   │  validates · forwards ·     │   │
-                │   │  persists · communicates    │   │
+                │   │   (validator · forwards ·   │   │
+                │   │    persists · signs)        │   │
                 │   │  ─────────────────────────  │   │
                 │   │       runs nothing          │   │
                 │   └──────────────┬──────────────┘   │
-                │                  │ writes/reads     │
+                │                  │ via sema lib     │
                 │                  ▼                  │
                 │   ┌─────────────────────────────┐   │
-                │   │            sema             │   │
-                │   │     (records DB; redb)      │   │
+                │   │      criome.redb            │   │
+                │   │  (records database; typed   │   │
+                │   │   tables managed by sema)   │   │
                 │   └─────────────────────────────┘   │
                 └──────────────────┬──────────────────┘
                                    │
@@ -103,13 +115,14 @@ crates sit underneath, consumed by every participant.
                        │   └────────────────┘   │
                        └────────────────────────┘
 
-    ┌─── wire-type crates ────┐    ┌─── library crates ────┐
-    │   signal                │    │   prism               │
-    │   signal-forge          │    │   arca (reader lib)   │
-    │   signal-arca           │    │   mentci-lib          │
-    │   nota / -codec / -derive│   │   sema (consumed by   │
-    │                         │    │             criome)   │
-    └─────────────────────────┘    └───────────────────────┘
+    ┌─── wire-type crates ────┐    ┌─── library crates ─────────┐
+    │   signal-core (kernel)  │    │   sema (state kernel;       │
+    │   signal                │    │     consumed by every       │
+    │   signal-forge          │    │     state-bearing component)│
+    │   signal-arca           │    │   prism                     │
+    │   nota / -codec / -derive│   │   arca (reader lib)         │
+    │                         │    │   mentci-lib                │
+    └─────────────────────────┘    └─────────────────────────────┘
 ```
 
 **Build backend (this era):** nix via crane + fenix. fenix pins the
@@ -166,13 +179,23 @@ verification mechanism for snapshots/audits, not the primary reference
 type. `Edge.from: Slot` is the correct shape; do not try to make it
 `Hash`.
 
-### Invariant C — Sema is the concern; everything orbits
+### Invariant C — Typed records are the concern; everything orbits
 
-If a component does not serve sema directly, it is not core.
-criome = sema's engine / guardian. nexus = sema's text-request
-translator. forge = executor for effects sema can't perform directly —
-outcomes return as sema. prism = sema → `.rs` projector. arca =
-artifact files, referenced *from* sema.
+If a component does not serve the sema-ecosystem's typed records
+directly, it is not core. **`sema` is the typed-database library
+that holds them; criome is the daemon that owns the
+sema-ecosystem's records database.** nexus = the text-request
+translator over those records. forge = executor for effects criome
+can't perform directly — outcomes return as records criome asserts.
+prism = records → `.rs` projector. arca = artifact files,
+referenced *from* records.
+
+The shift from earlier framings: sema-the-library is shared across
+the whole workspace (every state-bearing component links it and
+owns its own redb file); the sema-ecosystem's *records* — the
+typed Graph/Node/Edge/Derivation/CompiledBinary kinds this
+ecosystem reasons about — live in criome's database. Per
+`~/primary/reports/designer/92-sema-as-database-library-architecture-revamp.md`.
 
 ### Invariant D — Perfect specificity
 
@@ -347,10 +370,13 @@ protocol.
            │ signal (rkyv)
            ▼
       ┌─────────┐
-      │ criome  │  sema's engine — validates · applies · cascades.
+      │ criome  │  the sema-ecosystem's records-engine — validates ·
+      │         │  applies · cascades. Owns its records database
+      │         │  (criome.redb), managed through the sema library.
       │         │  • receives every request; checks validity
-      │         │  • writes accepted mutations to sema
-      │         │  • cascades within sema (no derived state outside)
+      │         │  • writes accepted mutations through sema typed tables
+      │         │  • cascades within criome's records (no derived state
+      │         │    outside)
       │         │  • fires subscriptions on commits
       │         │  • forwards effect-bearing verbs to forge
       │         │  • signs capability tokens; tracks reachability
@@ -400,24 +426,25 @@ src/.
 
 ```
    ┌──────────────────────────┐         ┌──────────────────────────┐
-   │           sema           │         │           arca           │
-   │      records database    │         │  content-addressed FS    │
+   │   criome's records DB    │         │           arca           │
+   │   (criome.redb)          │         │  content-addressed FS    │
    │                          │         │                          │
    │  Owner: criome           │         │  Owner: arca-daemon      │
-   │  Backend: redb           │         │  Backend: real files     │
-   │  Keying: blake3 of       │         │  Keying: blake3 of       │
-   │    canonical rkyv        │         │    canonical encoding    │
-   │  Reference: Slot(u64)    │         │  Reference: blake3 hash  │
-   │                          │         │  Stores: multi (system / │
-   │  ┌────────────────────┐  │         │    user-X / project-Y)   │
-   │  │ Graph              │  │         │                          │
-   │  │ Node               │  │         │  ┌────────────────────┐  │
+   │  Backed by: sema library │         │  Backend: real files     │
+   │  Backend: redb           │         │  Keying: blake3 of       │
+   │  Keying: blake3 of       │         │    canonical encoding    │
+   │    canonical rkyv        │         │  Reference: blake3 hash  │
+   │  Reference: Slot(u64)    │         │  Stores: multi (system / │
+   │                          │         │    user-X / project-Y)   │
+   │  ┌────────────────────┐  │         │                          │
+   │  │ Graph              │  │         │  ┌────────────────────┐  │
+   │  │ Node               │  │         │  │ <blake3>/<files>   │  │
    │  │ Edge               │  │ ──ref──▶│  │ <blake3>/<files>   │  │
-   │  │ Derivation         │  │         │  │ <blake3>/<files>   │  │
-   │  │ CompiledBinary ────┼──┼─hash──▶ │  │ ...                │  │
-   │  │ SlotBinding        │  │         │  └────────────────────┘  │
-   │  │ ChangeLogEntry     │  │         │                          │
-   │  └────────────────────┘  │         │  index.redb (per store)  │
+   │  │ Derivation         │  │         │  │ ...                │  │
+   │  │ CompiledBinary ────┼──┼─hash──▶ │  └────────────────────┘  │
+   │  │ SlotBinding        │  │         │                          │
+   │  │ ChangeLogEntry     │  │         │  index.redb (per store;  │
+   │  └────────────────────┘  │         │   also via sema lib)     │
    │                          │         │   blake3 → { path,       │
    │  Per-kind change-logs    │         │              metadata,   │
    │  are ground truth;       │         │              reachability}│
@@ -425,19 +452,34 @@ src/.
    └──────────────────────────┘         └──────────────────────────┘
 ```
 
-### sema — records database
+Note: the **sema library** also backs the records databases of
+state-bearing components elsewhere in the workspace (persona-router's
+router.redb, persona-orchestrate's orchestrate.redb, etc.). Those
+component databases are not part of the sema-ecosystem's records;
+they are state owned by their respective components. The
+sema-ecosystem only governs criome's records database in this
+diagram. See sema/ARCHITECTURE.md for the library's full surface and
+`~/primary/reports/designer/92-sema-as-database-library-architecture-revamp.md`
+for the cross-workspace framing.
 
-- **Backend:** redb-backed, content-addressed records keyed by blake3
-  of canonical rkyv encoding.
+### criome's records database — backed by sema
+
+- **Backend:** redb file (criome.redb) managed through the sema
+  library — typed `Table<K, V: Archive>` constants, closure-scoped
+  txns, schema-version guard. Records are content-addressed by
+  blake3 of canonical rkyv encoding.
 - **Reference model:** records store **slot-refs**, not content
-  hashes. Sema's index maps each slot to its current content hash plus
-  a bitemporal display-name binding (`SlotBinding` records). Content
-  edits update the slot's current-hash (no ripple-rehash). Renames
-  update the slot's display-name (no record rewrites).
-- **Change log:** per-kind. Each record-kind has its own redb table
-  keyed by `(Slot, seq)`. Per-kind logs are ground truth; index tables
-  and global revision index are derivable.
-- **Scope:** slots are **global** (not graph-scoped); one name per slot.
+  hashes. The records database's index maps each slot to its current
+  content hash plus a bitemporal display-name binding (`SlotBinding`
+  records). Content edits update the slot's current-hash (no
+  ripple-rehash). Renames update the slot's display-name (no record
+  rewrites).
+- **Change log:** per-kind. Each record-kind has its own typed
+  `Table<(Slot, seq), Record>` in criome.redb. Per-kind logs are
+  ground truth; index tables and global revision index are
+  derivable.
+- **Scope:** slots are **global** within criome's records database
+  (not graph-scoped); one name per slot.
 
 ### arca — content-addressed filesystem
 
@@ -766,14 +808,14 @@ Foundational rules — every session follows these.
 | Per-repo `ARCHITECTURE.md` at root | matklad pattern. Each per-repo doc points at this file; this file is the apex. |
 | AGENTS.md / CLAUDE.md shim | One source of truth, read by both Codex and Claude Code. |
 | Replace wrong reports cleanly | The successor stands alone; jj/git history preserves the prior shape. |
-| Sema is all we are concerned with | Everything else orbits sema. |
+| Typed records are what we are concerned with | The sema-ecosystem's records (Graph/Node/Edge/Derivation/CompiledBinary…) live in criome's database; sema-the-library is the typed-database substrate every state-bearing component uses, including criome. |
 | Text crosses only at nexus | All internal traffic is rkyv. |
 | All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See lore/rust/rkyv.md. |
 | Producers push, consumers subscribe | The subscription primitive is the contract. See lore/programming/push-not-pull.md. |
 | criome communicates | Effect-bearing work lives in dedicated components (forge, arca-daemon, prism), dispatched via typed verbs. |
 | One capability, one crate, one repo | Adding a feature lands as a new crate. See lore/programming/micro-components.md. |
 | Every edit is a request | criome validates; the validator may decline. The hallucination wall. |
-| Bootstrap rung by rung | criome runs from the first instant; sema starts empty; criome's init constructs the bootstrap kinds before opening the UDS listener; domain records flow in as signal frames at runtime. |
+| Bootstrap rung by rung | criome runs from the first instant; criome's records database starts empty; criome's init constructs the bootstrap kinds before opening the UDS listener; domain records flow in as signal frames at runtime. |
 | References are slot-refs | Records store `Slot(u64)`; index resolves to current hash + display name. |
 | Content-addressing is non-negotiable | Record identity is the blake3 of its canonical rkyv encoding. |
 | A binary is just a path | Store entries are real files; `exec` is direct. |
@@ -809,16 +851,17 @@ parallel record-engine instance) is open — see §11.
 
 ### 10.3 Bootstrap and runtime data flow
 
-criome runs from the first instant of execution. Sema starts
-empty; criome's init constructs the bootstrap kinds (Struct,
-Enum, Field, Variant, TypeExpression, Localization, Language,
-Slot, primitives) directly as records, populating sema before
-opening the UDS listener.
+criome runs from the first instant of execution. Criome's records
+database starts empty (or opens a previous one through sema's
+schema-version guard); criome's init constructs the bootstrap kinds
+(Struct, Enum, Field, Variant, TypeExpression, Localization,
+Language, Slot, primitives) directly as records, populating its
+records database before opening the UDS listener.
 
-After init, every record entering sema arrives as a signal
-Assert frame from a connected client (mentci-egui, agents,
-scripts, nexus-cli). The wire is signal end-to-end; no on-disk
-text file feeds sema as a source of truth.
+After init, every record entering criome's database arrives as a
+signal Assert frame from a connected client (mentci-egui, agents,
+scripts, nexus-cli). The wire is signal end-to-end; no on-disk text
+file feeds the records database as a source of truth.
 
 ### 10.4 Responsibilities table — criome / forge / arca-daemon
 
@@ -828,8 +871,8 @@ columns mark which daemon owns it.
 | Concern | criome | forge | arca-d |
 |---|:---:|:---:|:---:|
 | Validates request (schema / refs / perms / invariants) | ✓ | — | — |
-| Reads from sema | ✓ | — | — |
-| Writes to sema | ✓ | — | — |
+| Reads from its records database (via sema lib) | ✓ | — | — |
+| Writes to its records database (via sema lib) | ✓ | — | — |
 | Forwards typed signal verbs to other components | ✓ | — | — |
 | Awaits replies from forge / arca-daemon | ✓ | — | — |
 | Signs capability tokens (criome holds the key) | ✓ | — | — |
@@ -878,7 +921,7 @@ be settled when the relevant component is wired.
 | workspace flake structure | per-host NixOS module surface composing all four daemons |
 | World-fact / operational / authz category names | machina is the code category; the others are still open |
 | `machina-chk` shape | the native checker over machina records — own crate, internal module, or post-MVP — TBD |
-| Localization store owner | a separate component (daemon/library/parallel record-engine instance) holds per-language display names mapped from slot ids. Distinct from sema (string-free) and arca (blob-only). Owner shape, naming, and protocol are open |
+| Localization store owner | a separate component (daemon/library/parallel record-engine instance) holds per-language display names mapped from slot ids. Distinct from criome's records database (string-free) and arca (blob-only). Owner shape, naming, and protocol are open |
 
 ---
 
