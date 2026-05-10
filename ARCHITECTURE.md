@@ -13,10 +13,15 @@
 > apex.
 
 > **Pragmatic vs ideal.** This document describes Criome's *eventual*
-> shape — the universal validator/coordinator that encompasses
-> everything (replaces Git, code editor, SSH, web; encompasses
-> auth/security, identity, validation across the stack). The
-> implementation today is **narrower**: pragmatic Criome is the
+> shape: the **universal computing paradigm**, expressed in Sema —
+> replacing Git, code editor, SSH, and the web; encompassing
+> programming, version control, network identity, validation, and
+> auth/security across the stack. Auth/identity in particular is
+> realized as Criome's **quorum-signature multi-sig system** —
+> infinitely programmable multi-sig access on any object — which
+> obsoletes today's ClaviFaber-shaped key-generation shims (and the
+> legacy systems they serve) when the OS itself is written in Sema.
+> The implementation today is **narrower**: pragmatic Criome is the
 > sema-ecosystem records validator (Graph/Node/Edge/Derivation/
 > CompiledBinary), one realization step toward the ideal. Sections
 > below blend pragmatic-today and eventual-ideal descriptions. When
