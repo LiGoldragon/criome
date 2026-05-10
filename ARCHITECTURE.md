@@ -12,6 +12,21 @@
 > describes how the niches fit. Both layers are needed; this file is the
 > apex.
 
+> **Pragmatic vs ideal.** This document describes Criome's *eventual*
+> shape — the universal validator/coordinator that encompasses
+> everything (replaces Git, code editor, SSH, web; encompasses
+> auth/security, identity, validation across the stack). The
+> implementation today is **narrower**: pragmatic Criome is the
+> sema-ecosystem records validator (Graph/Node/Edge/Derivation/
+> CompiledBinary), one realization step toward the ideal. Sections
+> below blend pragmatic-today and eventual-ideal descriptions. When
+> reasoning about current implementation, verify against source
+> (`src/`, `tests/`); when reasoning about long-term shape, this
+> document is the apex. See `~/primary/ESSENCE.md` §"Pragmatic now,
+> ideal later — different things, different names" for the framing
+> and `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`
+> for one concrete consequence.
+
 Criome runs on top of CriomOS.
 Development happens in the `workspace` meta-repo; deployment
 composes from there too.
