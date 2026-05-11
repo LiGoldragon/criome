@@ -12,23 +12,24 @@
 > describes how the niches fit. Both layers are needed; this file is the
 > apex.
 
-> **Pragmatic vs ideal.** This document describes Criome's *eventual*
-> shape: the **universal computing paradigm**, expressed in Sema —
-> replacing Git, code editor, SSH, and the web; encompassing
+> **Scope: eventual, not today.** This document describes Criome's
+> *eventual* shape: the **universal computing paradigm**, expressed
+> in Sema — replacing Git, code editor, SSH, and the web; encompassing
 > programming, version control, network identity, validation, and
 > auth/security across the stack. Auth/identity in particular is
 > realized as Criome's **quorum-signature multi-sig system** —
 > infinitely programmable multi-sig access on any object — which
 > obsoletes today's ClaviFaber-shaped key-generation shims (and the
 > legacy systems they serve) when the OS itself is written in Sema.
-> The implementation today is **narrower**: pragmatic Criome is the
-> sema-ecosystem records validator (Graph/Node/Edge/Derivation/
-> CompiledBinary), one realization step toward the ideal. Sections
-> below blend pragmatic-today and eventual-ideal descriptions. When
-> reasoning about current implementation, verify against source
+> Today's implementation is **narrower**: today's `criome` daemon is
+> the sema-ecosystem records validator (Graph/Node/Edge/Derivation/
+> CompiledBinary), one realization step toward the eventual form —
+> built rightly for its current scope, not as a draft of the eventual.
+> Sections below blend today's-shape and eventual-shape descriptions.
+> When reasoning about current implementation, verify against source
 > (`src/`, `tests/`); when reasoning about long-term shape, this
-> document is the apex. See `~/primary/ESSENCE.md` §"Pragmatic now,
-> ideal later — different things, different names" for the framing
+> document is the apex. See `~/primary/ESSENCE.md` §"Today and
+> eventually — different things, different names" for the framing
 > and `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`
 > for one concrete consequence.
 
