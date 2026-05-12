@@ -6,82 +6,60 @@
 
 ## What criome is
 
-Criome is the **state engine** around sema. It receives typed
-requests (signal frames), validates them, writes to sema,
-forwards effect-bearing work to dedicated executors. **Criome
-runs nothing** — every effect (subprocess spawn, blob write,
-external tool invocation, code emission) is dispatched as a
-typed verb to a dedicated component (forge, arca-daemon, prism)
-and never performed in-process.
+Criome is the workspace's **BLS-signature authentication and
+attestation substrate**. A single Kameo daemon holding criome's
+own root keypair, an identity registry, and an attestation
+audit log. It signs typed attestations over content records
+(channel grants, archive fingerprints, authorization decisions,
+privilege elevations); it verifies signatures against the
+registry; it serves identity lookups via a push subscription.
 
-Read `ARCHITECTURE.md` for the apex map: the three runtime
-clusters, the flow-graph-is-the-program model, the rules table
-in §10. This skill captures intent that isn't fully there.
+Read `ARCHITECTURE.md` for this repo's shape. Read
+`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
+for the design that motivates it.
 
 ---
 
-## Intent
+## Today vs eventually
 
-**Criome and sema are meant to be eventually impossible to
-improve.**
+Today's criome is **narrow and Spartan**. The eventual `Criome`
+(per `~/primary/ESSENCE.md` §"Today and eventually") subsumes
+everything — validation, identity, programming, version control,
+network identity, web request handling — expressed in Sema.
+Today's Spartan criome is one step toward that eventual shape,
+bringing forward the auth/identity slice and nothing else.
 
-> *"I am much more interested in a good design than in producing
-> it quickly — criome and sema are meant to be eventually
-> impossible to improve, so I value clarity, correctness, and
-> introspection above production volume, speed, and time to
-> market."*
->
-> — Li, 2026-04-29
-
-What this commits the project to:
-
-- **Clarity** — the design reads cleanly to a careful reader.
-  The structure of the system is the documentation of itself.
-- **Correctness** — every typed boundary names exactly what
-  flows through it; nothing accidental survives the type
-  system. The type system is the hallucination wall, not just
-  the validator.
-- **Introspection** — the engine reveals itself to those
-  building it. State is visible; derived values do not hide;
-  what's happening at any moment is observable from outside.
-- **Beauty** — beauty in the operative sense: not pretty, but
-  right. Ugliness is evidence the underlying problem is
-  unsolved.
-
-When two of these conflict, the earlier wins. When deadline
-pressure pulls toward "small/quick" instead of "the durable
-shape," intent wins. The right shape now is worth more than a
-wrong shape sooner; unbuilding a wrong shape costs more than
-the speed it bought.
+When working here, hold the distinction: today's code serves
+today's narrow scope; the eventual encompassment is described in
+ESSENCE and `~/primary/reports/designer/114-persona-vision-as-of-2026-05-11.md`
+§3.2, not in this repo.
 
 ---
 
 ## Hard invariants for an agent working here
 
-These are non-negotiable. Any change that violates one is
-wrong.
-
-- **Criome runs nothing.** Effect-bearing work is dispatched as
-  typed verbs; never spawned in-process. If you find yourself
-  about to spawn a subprocess from criome, stop — the work
-  belongs in forge or arca-daemon.
-- **Sema is the only state.** Every concept the engine reasons
-  about is a sema record. No parallel datastore.
-- **Text crosses only at nexus's boundary.** Internal wire is
-  rkyv. If text appears anywhere except nexus's parser/renderer,
-  it's a bug.
-- **Content-addressing is non-negotiable.** Identity is the
-  blake3 of canonical rkyv encoding. Slots provide
-  follow-this-thing semantics on top of the immutable identity.
+- **Out-of-band attestations only.** Attestations are separate
+  records in `signal-criome` that reference content records;
+  they never embed proof fields inside the content records. This
+  preserves `signal-persona-auth`'s discipline.
 - **Closed enums at every typed boundary.** No `Unknown`
-  variant, no string-tagged dispatch, no generic-record
-  fallback.
-- **Sigil budget is closed.** New features land as
-  delimiter-matrix slots or PascalCase records — never new
-  sigils.
-- **Skeleton-as-design.** New design lands as compiled types +
-  trait signatures + `todo!()`, not as prose blocks claiming
-  "here's what the type would look like."
+  variant; no string-tagged dispatch; no generic-record
+  fallback. Per `~/primary/ESSENCE.md` §"Perfect specificity at
+  boundaries".
+- **One redb, one writer.** `StoreKernel` owns `criome.redb`;
+  every other store actor routes through it.
+- **Push, not poll.** Identity-update consumers subscribe; they
+  do not poll. Per `~/primary/skills/push-not-pull.md`.
+- **Kameo, not ractor.** Direct Kameo per
+  `~/primary/skills/kameo.md`. `Self IS the actor`; no ZST
+  marker types; data lives on the actor.
+- **No private keypair custody other than criome's root.**
+  Personas, agents, developers, hosts custody their own
+  private keys. Criome holds only the *public* halves in its
+  registry.
+- **Skeleton-as-design.** New design lands as compiled
+  types + trait signatures + `todo!()`, not as prose in this
+  repo.
 
 ---
 
@@ -89,40 +67,50 @@ wrong.
 
 Criome owns:
 
-- The validator pipeline.
-- The slot-allocation policy (slot ranges, freelist, content-
-  hash binding semantics).
-- The dispatch from signal verbs to executor components.
-- The §10 rules table (the project-wide invariants table).
+- The `Identity` enum vocabulary (`Persona`, `Agent`, `Host`,
+  `Developer`, `Cluster`) — closed.
+- The attestation envelope format and signing/verification API.
+- The identity registry storage shape (in `criome.redb`).
+- The signing/verification API contract surface.
+- The `criome.pub` public-material publication conventions.
 
 Criome does **not** own:
 
-- Record types (those live in signal).
-- Artifact bytes (those live in arca).
-- Build/runtime execution (that's forge).
-- Text parsing/rendering (that's nexus).
-
-When a question crosses one of these boundaries, the answer
-lives in the owning repo's `skills.md` / `ARCHITECTURE.md`.
+- Content record types (those live in `signal-persona-mind`,
+  `signal-persona`, `signal-forge`, etc.).
+- Per-persona / per-agent private keys.
+- Audit-policy decisions (the persona-audit policy engine is a
+  separate component, to be designed in a follow-up report).
+- Sema-ecosystem records validation (deferred to eventual
+  Criome).
+- ClaviFaber's per-host key generation (ClaviFaber remains a
+  narrow per-host shim; it feeds criome but criome doesn't own
+  it).
 
 ---
 
 ## See also
 
-- `ARCHITECTURE.md` — the apex map of the sema-ecosystem.
-- `AGENTS.md` — repo-specific carve-outs.
-- sema's `skills.md` — what sema is and what it owns.
-- nexus's `skills.md` — text↔signal gateway.
-- signal's `skills.md` — the rkyv envelope shape.
-- forge's `skills.md` — the executor.
-- arca's `skills.md` — the content-addressed store.
-- prism's `skills.md` — sema → Rust projection.
-- lore's `programming/abstractions.md`,
-  `programming/beauty.md`,
-  `programming/push-not-pull.md`,
-  `programming/micro-components.md` — cross-language
+- `ARCHITECTURE.md` — this repo's shape.
+- `~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
+  — the design.
+- `~/primary/ESSENCE.md` §"Today and eventually" — the scope
   discipline.
-- this workspace's `skills/autonomous-agent.md` — how to act
-  on routine obstacles.
-- this workspace's `skills/skill-editor.md` — how to edit and
-  cross-reference skills.
+- `~/primary/skills/kameo.md` — actor runtime.
+- `~/primary/skills/actor-systems.md` — actor discipline.
+- `~/primary/skills/contract-repo.md` — `signal-criome`'s
+  shape.
+- `~/primary/skills/architectural-truth-tests.md` — witnesses
+  for `ARCHITECTURE.md` §8 constraints.
+- `~/primary/skills/push-not-pull.md` — subscription discipline.
+- `~/primary/skills/rust/storage-and-wire.md` — redb + rkyv
+  discipline.
+- `~/primary/skills/rust/crate-layout.md` — CLIs are daemon
+  clients; one NOTA record in, one out.
+- `/git/github.com/LiGoldragon/clavifaber/ARCHITECTURE.md` —
+  feeds criome's identity registry.
+- `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`
+  — partially superseded on placement; scope discipline
+  preserved.
+- This repo at commit `a3f4173` — archaeology of the prior
+  sema-records-validator skeleton.

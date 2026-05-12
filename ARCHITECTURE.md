@@ -1,993 +1,326 @@
-# Criome — architecture
+# criome — architecture
 
-*Canonical reference for the engine's shape. Edited with extreme care.*
+*Today's `criome` is a **minimal Spartan BLS-signature
+authentication and attestation substrate** for the Persona
+ecosystem. Identity registry, sign/verify primitives, and
+typed attestations over channel grants, archive fingerprints,
+authorization decisions, and privilege elevations.*
 
-> **🚨 REQUIRED READING for every agent and human working in any
-> sema-ecosystem repo. 🚨**
->
-> Read this file in full before touching any component (criome, signal,
-> signal-forge, signal-arca, sema, nexus, nexus-cli, forge, arca, prism,
-> mentci-lib, lojix-cli, the GUI repo, or any future canonical crate).
-> Per-repo `ARCHITECTURE.md` files describe each repo's niche; this file
-> describes how the niches fit. Both layers are needed; this file is the
-> apex.
+> **Scope: today, not eventually.** This document describes
+> today's narrow `criome` daemon. The **eventual** `Criome`
+> is the universal computing paradigm expressed in Sema —
+> replacing Git, the editor, SSH, and the web; encompassing
+> programming, version control, network identity, validation,
+> and auth/security across the stack. Today's Spartan criome
+> is one step toward that eventual shape, bringing forward
+> the auth/identity slice. See
+> `~/primary/ESSENCE.md` §"Today and eventually — different
+> things, different names" and
+> `~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`.
 
-> **Scope: eventual, not today.** This document describes Criome's
-> *eventual* shape: the **universal computing paradigm**, expressed
-> in Sema — replacing Git, code editor, SSH, and the web; encompassing
-> programming, version control, network identity, validation, and
-> auth/security across the stack. Auth/identity in particular is
-> realized as Criome's **quorum-signature multi-sig system** —
-> infinitely programmable multi-sig access on any object — which
-> obsoletes today's ClaviFaber-shaped key-generation shims (and the
-> legacy systems they serve) when the OS itself is written in Sema.
-> Today's implementation is **narrower**: today's `criome` daemon is
-> the sema-ecosystem records validator (Graph/Node/Edge/Derivation/
-> CompiledBinary), one realization step toward the eventual form —
-> built rightly for its current scope, not as a draft of the eventual.
-> Sections below blend today's-shape and eventual-shape descriptions.
-> When reasoning about current implementation, verify against source
-> (`src/`, `tests/`); when reasoning about long-term shape, this
-> document is the apex. See `~/primary/ESSENCE.md` §"Today and
-> eventually — different things, different names" for the framing
-> and `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`
-> for one concrete consequence.
-
-Criome runs on top of CriomOS.
-Development happens in the `workspace` meta-repo; deployment
-composes from there too.
+> **Archaeology note.** Prior to this rewrite, today's
+> `criome` was the sema-ecosystem records validator
+> (Graph/Node/Edge/Derivation/CompiledBinary). That skeleton
+> (validator pipeline, ractor supervision tree, sema-records
+> tables) is preserved at commit **`a3f4173`**
+> (`architecture: reframe marker as scope discipline …`).
+> The sema-records validator function is **deferred to
+> eventual Criome**; today's daemon does not carry it.
 
 ---
 
 ## 0 · TL;DR
 
-**The sema-ecosystem is a coherent stack of components built around
-typed records, content-addressed artifacts, and a typed wire
-protocol.**
-
-- **`sema`** is the workspace's typed-database **library** —
-  used by every state-bearing component (criome here; persona-router,
-  persona-mind, persona-harness, future mentci across the rest
-  of the workspace). Not a daemon; a Rust crate. See
-  sema/ARCHITECTURE.md.
-- **`criome`** is the daemon at the center of the sema-ecosystem —
-  it owns the **records database** (the typed Graph/Node/Edge/
-  Derivation/CompiledBinary records this ecosystem reasons about),
-  managed through sema. It validates incoming signal requests,
-  persists accepted mutations through its sema-managed database,
-  forwards effect-bearing verbs, and signs capability tokens. Runs
-  nothing — effect-bearing work is dispatched as typed verbs.
-- **`forge`** is the executor — links prism, runs nix, bundles outputs.
-- **`arca-daemon`** is the privileged store writer — verifies tokens,
-  computes hashes, atomic-moves into the canonical store.
-- **`nexus`** is the text↔signal gateway. Future clients (GUI editor,
-  mentci-lib consumers, agents) speak signal directly.
-- **`signal`** is the sema-ecosystem's record vocabulary atop the
-  shared **`signal-core`** wire kernel; **`signal-forge`** and
-  **`signal-arca`** layer effect-bearing verbs on top for
-  audience-scoped isolation.
-
-The flow-graph IS the program: a `Graph` record holding `Node` records
-linked by `Edge` records (`Contains` for membership, `DependsOn` for
-deps). prism projects graphs to Rust; nix builds; arca holds.
+- **One Kameo-based daemon** holding criome's own root BLS
+  keypair, an identity registry, and an attestation audit
+  log in `criome.redb` (via `sema-db`).
+- **Three responsibilities**: **sign** content with
+  criome's root key, **verify** signatures against
+  registered identities, **register/lookup** typed
+  identities (Persona, Agent, Host, Developer, Cluster).
+- **Wire**: `signal-criome` contract crate (depends on
+  `signal-core`, not on `signal`). Closed `CriomeRequest`
+  / `CriomeReply` enums. One NOTA record in, one NOTA
+  record out at the CLI boundary.
+- **Out-of-band only.** Attestations live as separate
+  records that reference content records (a
+  `ChannelGrantAttestation` references a
+  `signal-persona-mind::ChannelGrant`). Content records
+  do not carry embedded proof fields; the
+  `signal-persona-auth` discipline ("origin context, not
+  proof material") stays inviolate.
+- **Cluster-trust runtime functionality is folded in.**
+  ClaviFaber's per-host `PublicKeyPublication` feeds into
+  criome's identity registry, registering each host. This
+  subsumes the cluster-trust-runtime placement work named
+  in `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`.
 
 ---
 
-## 1 · The engine in one map
+## 1 · Topology
 
-Three runtime clusters speak via typed protocols. Wire-type and library
-crates sit underneath, consumed by every participant.
+```mermaid
+flowchart TB
+    cli["criome CLI<br/>(one NOTA record in, one out)"]
+    socket["/var/run/criome/criome.sock<br/>(mode 0660, group persona)"]
+    root["CriomeRoot (Kameo runtime root)"]
+    signer["AttestationSigner<br/>(holds root keypair; signs)"]
+    verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
+    registry["IdentityRegistry<br/>(Identity ↔ PublicKey)"]
+    store["StoreKernel<br/>(sole owner of criome.redb)"]
+    db["criome.redb<br/>(via sema-db library)"]
+    audit["AuditLog<br/>(append-only attestation history)"]
 
-```
-                ┌─────────────────────────────────────┐
-                │       CRIOME (validator daemon)     │
-                │                                     │
-                │   ┌─────────────────────────────┐   │
-                │   │           criome            │   │
-                │   │   (validator · forwards ·   │   │
-                │   │    persists · signs)        │   │
-                │   │  ─────────────────────────  │   │
-                │   │       runs nothing          │   │
-                │   └──────────────┬──────────────┘   │
-                │                  │ via sema lib     │
-                │                  ▼                  │
-                │   ┌─────────────────────────────┐   │
-                │   │      criome.redb            │   │
-                │   │  (records database; typed   │   │
-                │   │   tables managed by sema)   │   │
-                │   └─────────────────────────────┘   │
-                └──────────────────┬──────────────────┘
-                                   │
-                signal  ───────────┼─── + signal-forge
-                (front-end verbs)  │     (effect-bearing)
-                                   │
-            ┌──────────────────────┼──────────────────────┐
-            │                      │                      │
-            ▼                      ▼                      ▼
-    ┌──────────────┐   ┌────────────────────────┐   ┌────────────┐
-    │  FRONT-ENDS  │   │   EXECUTOR CLUSTER     │   │  DIRECT    │
-    │              │   │                        │   │  SIGNAL    │
-    │  nexus       │   │   ┌────────────────┐   │   │  SPEAKERS  │
-    │  daemon      │   │   │     forge      │   │   │            │
-    │  (text↔sig)  │   │   │ links prism;   │   │   │  agents,   │
-    │      ▲       │   │   │ runs nix;      │   │   │  scripts,  │
-    │      │ text  │   │   │ bundles to     │   │   │  CI,       │
-    │      ▼       │   │   │ ~/.arca/       │   │   │  harnesses │
-    │  nexus-cli   │   │   │ _staging/      │   │   └────────────┘
-    │              │   │   └────────┬───────┘   │
-    │  GUI repo    │   │            │ signal-   │
-    │  (egui)      │   │            │ arca      │
-    │      ▲       │   │            ▼           │
-    │      │ uses  │   │   ┌────────────────┐   │
-    │      ▼       │   │   │  arca-daemon   │   │
-    │  mentci-lib  │   │   │ verifies token │   │
-    │  (gesture→   │   │   │ computes hash  │   │
-    │   signal)    │   │   │ atomic-move    │   │
-    │              │   │   │ into store     │   │
-    │  + alt UIs   │   │   └────────┬───────┘   │
-    └──────────────┘   │            │           │
-                       │            ▼           │
-                       │   ┌────────────────┐   │
-                       │   │ ~/.arca/       │   │
-                       │   │ _staging/      │   │
-                       │   │ <store>/       │   │
-                       │   │  <blake3>/...  │   │
-                       │   │  index.redb    │   │
-                       │   └────────────────┘   │
-                       └────────────────────────┘
-
-    ┌─── wire-type crates ────┐    ┌─── library crates ─────────┐
-    │   signal-core (kernel)  │    │   sema (state kernel;       │
-    │   signal                │    │     consumed by every       │
-    │   signal-forge          │    │     state-bearing component)│
-    │   signal-arca           │    │   prism                     │
-    │   nota / -codec / -derive│   │   arca (reader lib)         │
-    │                         │    │   mentci-lib                │
-    └─────────────────────────┘    └─────────────────────────────┘
+    cli --> socket
+    socket --> root
+    root --> signer
+    root --> verifier
+    root --> registry
+    signer --> store
+    verifier --> registry
+    registry --> store
+    store --> db
+    signer --> audit
+    audit --> store
 ```
 
-**Build backend (this era):** nix via crane + fenix. fenix pins the
-toolchain; crane builds. **Deploy:** nix flakes aggregated from
-the `workspace` meta-repo (`nixos-rebuild --flake workspace#<host>`);
-see §8.
+Direct Kameo per `~/primary/skills/kameo.md`. `Self IS the
+actor` everywhere. Blocking BLS operations (keypair load,
+sign, verify) live in `AttestationSigner` /
+`AttestationVerifier` via `DelegatedReply` + `spawn_blocking`
+(Template 1 in `~/primary/skills/kameo.md` §"Blocking-plane
+templates"), or on a dedicated thread (Template 2) when the
+work is hot enough.
 
 ---
 
-## 2 · Four invariants
+## 2 · Owned
 
-Load-bearing. Everything downstream depends on them.
+- The `criome.redb` durable store and its mind-specific
+  Sema-db layer.
+- Criome's own root BLS keypair (loaded from
+  `/etc/criome/root.key` at startup; private material
+  mode 0600).
+- The closed `Identity` enum vocabulary: `Persona`,
+  `Agent`, `Host`, `Developer`, `Cluster`.
+- The signing/verification API surface against `blst`.
+- The attestation audit log (append-only,
+  cryptographically witnessed).
+- The `criome.pub` public-material publication for
+  consumers to verify criome-issued attestations.
 
-### Invariant A — Rust is only an output
+## 3 · Not owned
 
-Sema changes **only** in response to nexus requests. There is **no**
-`.rs` → sema parsing path. No ingester. prism projects sema → `.rs`
-one-way for rustc/cargo; nothing in the engine ever reads that text
-back. External tools may do whatever they want in user-space, but only
-nexus requests reach the engine.
-
-### Invariant B — Nexus is a language, not a record format
-
-Sema is rkyv (binary, content-addressed). **Signal is criome's rkyv
-request protocol** — every client speaks signal to criome. **Nexus is
-one front-end** — the text request language whose parser produces
-signal envelopes (the parse is mechanical). Future clients may speak
-signal directly without going through nexus. There are no "nexus
-records." There is sema (rkyv records of typed kinds defined in
-signal), and there are signal messages (rkyv envelopes carrying
-language IR). The analogy is SQL-and-a-DB: SQL is one text request
-language; stored rows are in the DB's on-disk format. No one calls a
-row a "SQL record."
-
-**Criome's wire is signal, end-to-end.** Text never crosses criome's
-boundary in either direction. The nexus daemon owns all text
-translation. Failure modes involving text streams (truncation,
-mid-render crashes) live entirely at the daemon ↔ client leg; criome
-itself only emits complete signal frames.
-
-**Nexus is a request language, not a programming language.** No
-variables, no scoping, no evaluation, no cross-request state. Each
-top-level expression is one self-describing request with literal
-values. Pattern binds (`@x` inside `(\| ... \|)`) exist for matching
-during querying — they never appear in assertion positions, never
-carry state across requests. Dependent edits are the *client's*
-orchestration concern.
-
-**Slots are user-facing identity, hashes are version-locking.** Records
-reference each other by `Slot` (mutable identity that follows the
-current version). Content edits update the slot's binding; references
-keep working — no Merkle-DAG ripple. Hashes are an optional
-verification mechanism for snapshots/audits, not the primary reference
-type. `Edge.from: Slot` is the correct shape; do not try to make it
-`Hash`.
-
-### Invariant C — Typed records are the concern; everything orbits
-
-If a component does not serve the sema-ecosystem's typed records
-directly, it is not core. **`sema` is the typed-database library
-that holds them; criome is the daemon that owns the
-sema-ecosystem's records database.** nexus = the text-request
-translator over those records. forge = executor for effects criome
-can't perform directly — outcomes return as records criome asserts.
-prism = records → `.rs` projector. arca = artifact files,
-referenced *from* records.
-
-The shift from earlier framings: sema-the-library is shared across
-the whole workspace (every state-bearing component links it and
-owns its own redb file); the sema-ecosystem's *records* — the
-typed Graph/Node/Edge/Derivation/CompiledBinary kinds this
-ecosystem reasons about — live in criome's database. Per
-`~/primary/reports/designer/92-sema-as-database-library-architecture-revamp.md`.
-
-### Invariant D — Perfect specificity
-
-Every typed boundary in the system names exactly what flows through
-it. No wrapper enums that mix concerns; no string-tagged dynamic
-dispatch; no generic-record fallback. Each verb's payload type is the
-precise shape it operates on; each record kind is a closed Rust type
-defined in signal — the authoritative type system today. Once `prism`
-lands, those typed structs will be projected from records; until then,
-new kinds land by hand.
-
-The engine speaks in narrow, named types — `AssertOperation::Node`,
-`MutateOperation::Edge { slot, new, expected_rev }`,
-`Records::Graph(Vec<Graph>)` — never `Request(GenericRecord)` or
-`Records(Vec<AnyKind>)`. A query is its own kind paired with the
-instance kind it queries; an `Unknown` escape hatch does not exist;
-reply payloads are typed per query. The type system is the
-hallucination wall, not just the validator.
-
-The principle generates concrete rules:
-- **Closed enums at the wire.** Adding a kind = adding the typed
-  struct + the closed-enum variant in signal + recompiling.
-- **Per-verb payload types.** `AssertOperation` ≠ `MutateOperation` ≠
-  `QueryOperation`; each carries a different shape per kind.
-- **Typed query results.** A Node-query reply is
-  `Records::Node(Vec<Node>)`, not a heterogeneous list.
-- **No `Unknown` variant.** Closed-enum exhaustiveness is load-bearing;
-  rebuilds bring the world forward together.
+- Content records (`ChannelGrant`,
+  `AuthorizationRequest`, `ArchiveAttestation`'s referent
+  hash, `PrivilegeElevationRequest`) — those live in their
+  respective `signal-persona-*` contract crates.
+- Per-persona / per-agent / per-developer private
+  keypairs — criome holds only the *public* halves.
+- Audit-policy decisions about prompt safety — the
+  persona-audit policy engine is a separate component to
+  be designed in a follow-up report. Criome signs the
+  *verdict*; the policy engine produces the verdict.
+- Sema-ecosystem records validation (Graph/Node/Edge/
+  Derivation/CompiledBinary) — deferred to eventual
+  Criome.
+- Effect-bearing dispatch (forge, arca-daemon, prism) —
+  these belonged to the prior records-validator framing;
+  they leave today's criome's surface.
+- Key rotation orchestration — out of scope for the
+  Spartan first cut.
 
 ---
 
-## 3 · The wire protocol family
+## 4 · Wire vocabulary
 
-Signal is the messaging system of the workspace. Layered protocols
-re-use signal's envelope/handshake/auth and contribute their own
-typed verbs.
+The contract crate is `signal-criome` (separate repo, see
+its own `ARCHITECTURE.md` when created). Closed enums:
 
-### 3.1 Layering
+```text
+CriomeRequest
+  | Sign(SignRequest)
+  | VerifyAttestation(VerifyRequest)
+  | RegisterIdentity(IdentityRegistration)
+  | RevokeIdentity(IdentityRevocation)
+  | LookupIdentity(IdentityLookup)
+  | AttestArchive(ArchiveAttestationRequest)
+  | AttestChannelGrant(ChannelGrantAttestationRequest)
+  | AttestAuthorization(AuthorizationAttestationRequest)
+  | SubscribeIdentityUpdates(IdentitySubscription)
 
-```
-       ┌─────────────────────┐    ┌──────────────────────┐
-       │    signal-forge     │    │     signal-arca      │
-       │  criome  ↔  forge   │    │  writers ↔ arca-d    │
-       │ Build · Deploy ·    │    │  Deposit · Release   │
-       │ store-entry verbs   │    │  Token · ...         │
-       └──────────┬──────────┘    └──────────┬───────────┘
-                  │                          │
-                  └────────────┬─────────────┘
-                               │
-                ┌──────────────▼──────────────┐
-                │           signal            │
-                │  Frame · handshake · auth   │
-                │  records · front-end verbs  │
-                │      (every wire leg)       │
-                └─────────────────────────────┘
-```
-
-**Why layered, not parallel.** Front-ends depend only on `signal`.
-forge depends on signal + signal-forge + signal-arca. arca-daemon
-depends on signal + signal-arca. Builder-internal field churn (refining
-`BuildOutcome`, evolving capability tokens) recompiles only the
-audience that depends on it. A unified single-crate signal would force
-every front-end to recompile on every protocol tweak.
-
-The Frame envelope, handshake, auth, and capability-token encoding
-live once in signal; only the verbs differ per layer.
-
-### 3.2 signal::Request — verbs every client speaks to criome
-
-```
-signal::Request
-│
-├─ Handshake(HandshakeRequest)         ── must be first on the conn
-│
-├── EDIT (mutating sema) ──
-├─ Assert(AssertOperation)
-├─ Mutate(MutateOperation)
-├─ Retract(RetractOperation)
-├─ AtomicBatch(AtomicBatch)
-│
-├── READ ──
-├─ Query(QueryOperation)               ── one-shot read
-├─ Subscribe(QueryOperation)           ── push-subscription [M2+]
-│
-├── DRY-RUN ──
-├─ Validate(ValidateOperation)         ── would-be outcome, no commit
-│
-└── DISPATCH ──
-   └─ BuildRequest(BuildRequestOp)     ── compile a graph [post-MVP]
-
-
-signal::Reply
-│
-├─ HandshakeAccepted / HandshakeRejected
-├─ Outcome(OutcomeMessage)             ── one OutcomeMessage per edit
-├─ Outcomes(Vec<OutcomeMessage>)       ── per-position for batches
-└─ Records(Records)                    ── typed per-kind result
+CriomeReply
+  | SignReceipt(SignReceipt)
+  | VerificationResult(VerificationResult)
+  | IdentityReceipt(IdentityReceipt)
+  | IdentitySnapshot(IdentitySnapshot)
+  | AttestationReceipt(AttestationReceipt)
+  | IdentityUpdate(IdentityUpdate)
+  | Rejection(Rejection)
 ```
 
-Replies pair to requests by **position** on the connection (FIFO). No
-correlation IDs.
-
-### 3.3 signal-forge::Request — criome → forge
-
-```
-signal-forge::Request
-│
-├─ Build(BuildSpec)                    ── records → CompiledBinary
-│   └─ BuildSpec {
-│        target: Slot,                 ── Graph the user named
-│        graph:  Graph,                ── the actual records
-│        nodes:  Vec<Node>,
-│        edges:  Vec<Edge>,
-│        capability_token: Token,      ── criome-signed
-│        ... (TBD)
-│     }
-│
-├─ Deploy(DeploySpec)                  ── nixos-rebuild on host
-│
-└─ store-entry control plane           ── put / materialize / delete
-                                          (reads do not need a verb;
-                                           consumers open arca's
-                                           index DB directly)
-
-
-signal-forge::Reply
-│
-├─ BuildOk { arca_hash, narhash, wall_ms }
-├─ DeployOk { generation, wall_ms }
-└─ Failed { code, message }
-```
-
-### 3.4 signal-arca::Request — writers → arca-daemon
-
-```
-signal-arca::Request
-│
-├─ Deposit(DepositSpec)                ── take ownership of staged
-│   └─ DepositSpec {                      content
-│        staging_id:       StagingId,
-│        target_store:     StoreId,
-│        capability_token: Token,      ── criome-signed
-│     }
-│
-└─ ReleaseToken(TokenId)               ── relinquish a capability
-
-
-signal-arca::Reply
-│
-├─ DepositOk { blake3, bytes }
-└─ Failed { code, message }
-```
-
-forge is the most active writer of these verbs today; future writers
-(uploads, document ingestion, anything blob-shaped) speak the same
-protocol.
+Full request/reply per-variant shapes, the `Identity`
+enum, and the `Attestation` record layout live in
+`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
+§3–§4.
 
 ---
 
-## 4 · The four daemons
+## 5 · State and ownership
 
-```
-       nexus text (humans, LLMs, nexus-cli, scripts)
-         ▲ │
-         │ ▼
-      ┌─────────┐
-      │  nexus  │  text ↔ rkyv translator. Validates syntax +
-      │ daemon  │  protocol version; forwards requests to criome;
-      │         │  serialises replies back to text. Stateless modulo
-      │         │  in-flight request correlations.
-      └────┬────┘
-           │ signal (rkyv)
-           ▼
-      ┌─────────┐
-      │ criome  │  the sema-ecosystem's records-engine — validates ·
-      │         │  applies · cascades. Owns its records database
-      │         │  (criome.redb), managed through the sema library.
-      │         │  • receives every request; checks validity
-      │         │  • writes accepted mutations through sema typed tables
-      │         │  • cascades within criome's records (no derived state
-      │         │    outside)
-      │         │  • fires subscriptions on commits
-      │         │  • forwards effect-bearing verbs to forge
-      │         │  • signs capability tokens; tracks reachability
-      │         │  • never touches binary bytes itself
-      └────┬────┘
-           │ signal-forge (rkyv)
-           ▼
-      ┌─────────┐
-      │  forge  │  build + deploy executor. Thin; no evaluation.
-      │ daemon  │  • links prism (records → .rs)
-      │         │  • spawns nix (crane + fenix)
-      │         │  • bundles closure (RPATH rewrite, det. timestamps)
-      │         │  • writes bundled tree into ~/.arca/_staging/
-      │         │  • performs nixos-rebuild for Deploy
-      │         │  • replies { arca_hash, narhash, wall_ms }
-      └────┬────┘
-           │ signal-arca (rkyv)
-           ▼
-      ┌──────────────┐
-      │ arca-daemon  │  privileged writer for arca stores.
-      │              │  • verifies criome-signed capability tokens
-      │              │  • computes blake3 of staged content
-      │              │  • atomic-moves into ~/.arca/<store>/<blake3>/
-      │              │  • updates per-store redb index
-      │              │  • manages multi-store ACL
-      │              │  • replies { blake3 }
-      └──────────────┘
-```
+Single redb file (`criome.redb`), opened only by
+`StoreKernel`. Tables (named here; precise schema in
+operator's implementation):
 
-**Invariants (text/data flow):**
-
-- Text crosses only at nexus's boundary. All internal traffic is rkyv.
-- No daemon-to-daemon path routes bulk data through criome — bytes
-  travel forge → arca's `_staging/` → arca-daemon's atomic move.
-- criome never sees compiled binary bytes; only their hashes (as
-  slot-refs resolved to blake3 via sema).
-- There is no `Launch` protocol verb. Store entries are real files at
-  hash-derived paths; you `exec` them from a shell.
-
-Per-actor wiring (NixRunner, StoreWriter, ArcaDepositor,
-FileMaterialiser, ...) lives in each repo's own `ARCHITECTURE.md` and
-src/.
-
----
-
-## 5 · Two stores
-
-```
-   ┌──────────────────────────┐         ┌──────────────────────────┐
-   │   criome's records DB    │         │           arca           │
-   │   (criome.redb)          │         │  content-addressed FS    │
-   │                          │         │                          │
-   │  Owner: criome           │         │  Owner: arca-daemon      │
-   │  Backed by: sema library │         │  Backend: real files     │
-   │  Backend: redb           │         │  Keying: blake3 of       │
-   │  Keying: blake3 of       │         │    canonical encoding    │
-   │    canonical rkyv        │         │  Reference: blake3 hash  │
-   │  Reference: Slot(u64)    │         │  Stores: multi (system / │
-   │                          │         │    user-X / project-Y)   │
-   │  ┌────────────────────┐  │         │                          │
-   │  │ Graph              │  │         │  ┌────────────────────┐  │
-   │  │ Node               │  │         │  │ <blake3>/<files>   │  │
-   │  │ Edge               │  │ ──ref──▶│  │ <blake3>/<files>   │  │
-   │  │ Derivation         │  │         │  │ ...                │  │
-   │  │ CompiledBinary ────┼──┼─hash──▶ │  └────────────────────┘  │
-   │  │ SlotBinding        │  │         │                          │
-   │  │ ChangeLogEntry     │  │         │  index.redb (per store;  │
-   │  └────────────────────┘  │         │   also via sema lib)     │
-   │                          │         │   blake3 → { path,       │
-   │  Per-kind change-logs    │         │              metadata,   │
-   │  are ground truth;       │         │              reachability}│
-   │  index tables derivable. │         │                          │
-   └──────────────────────────┘         └──────────────────────────┘
-```
-
-Note: the **sema library** also backs the records databases of
-state-bearing components elsewhere in the workspace (persona-router's
-router.redb, persona-mind's mind.redb, etc.). Those
-component databases are not part of the sema-ecosystem's records;
-they are state owned by their respective components. The
-sema-ecosystem only governs criome's records database in this
-diagram. See sema/ARCHITECTURE.md for the library's full surface and
-`~/primary/reports/designer/92-sema-as-database-library-architecture-revamp.md`
-for the cross-workspace framing.
-
-### criome's records database — backed by sema
-
-- **Backend:** redb file (criome.redb) managed through the sema
-  library — typed `Table<K, V: Archive>` constants, closure-scoped
-  txns, schema-version guard. Records are content-addressed by
-  blake3 of canonical rkyv encoding.
-- **Reference model:** records store **slot-refs**, not content
-  hashes. The records database's index maps each slot to its current
-  content hash plus a bitemporal display-name binding (`SlotBinding`
-  records). Content edits update the slot's current-hash (no
-  ripple-rehash). Renames update the slot's display-name (no record
-  rewrites).
-- **Change log:** per-kind. Each record-kind has its own typed
-  `Table<(Slot, seq), Record>` in criome.redb. Per-kind logs are
-  ground truth; index tables and global revision index are
-  derivable.
-- **Scope:** slots are **global** within criome's records database
-  (not graph-scoped); one name per slot.
-
-### arca — content-addressed filesystem
-
-- **Multi-store:** arca-daemon manages multiple stores under
-  `~/.arca/<store-name>/<blake3>/` for access control. Stores are
-  filesystem-read-only to consumers; only arca-daemon writes.
-- **Write-only staging:** writers deposit into
-  `~/.arca/_staging/<deposit-id>/` and cannot read or modify
-  afterwards. arca-daemon hashes exactly what's there (no TOCTOU race).
-- **Capability tokens:** every deposit carries a criome-signed token
-  referencing a sema authz record + target store + validity window.
-  arca-daemon verifies signature; rejects expired or malformed tokens.
-- **Index DB:** per-store redb mapping `blake3 → { path, metadata,
-  reachability }`. arca-daemon writes; readers open read-only.
-- **No typing.** The type of a store entry is known only through the
-  sema record that references its hash.
-- **Reads are local.** Consumers open arca's index DB directly under
-  filesystem read permissions — no daemon round-trip, no protocol verb.
-
-### Why arca from day one
-
-Dogfooding the real interface now reveals what it actually needs;
-deferred implementations rot. The gradualist path "nix builds; arca
-stores; loosen dep on nix over time" is strictly safer than "nix
-forever until Big Bang replace."
-
-### Relationship
-
-Sema records carry `StoreEntryRef` (blake3) fields pointing at arca
-entries. criome maintains the reachability view and signs the
-capability tokens that authorise GC; arca-daemon enforces. Binaries
-are `exec`'d directly from their store path (no extraction, no copy,
-no `Launch` verb).
-
----
-
-## 6 · Type families
-
-The flow-graph IS the program. A `Graph` record holds `Node` records
-via `Contains` edges and depends on other graphs via `DependsOn` edges.
-
-```
-                      ┌─────────────┐
-                      │    Graph    │
-                      │ (program /  │
-                      │  build      │
-                      │   target)   │
-                      └──┬───┬──────┘
-                         │   │
-              Contains   │   │   DependsOn
-                edges    │   │   edges
-                         │   │
-              ┌──────────┘   └──────────┐
-              ▼                         ▼
-      ┌─────────────┐            ┌─────────────┐
-      │    Node     │            │    Graph    │     (or)
-      │ Source/     │            └─────────────┘
-      │ Transformer/│                  │
-      │ Sink/       │                  │ DependsOn
-      │ Junction/   │                  ▼
-      │ Supervisor/ │            ┌─────────────┐
-      │  ...        │            │ Derivation  │
-      └─────────────┘            │ (nix escape │
-                                 │  hatch)     │
-                                 └─────────────┘
-```
-
-| Kind | What it is | Where defined |
+| Table | Key | Value |
 |---|---|---|
-| `Graph` | flow-graph; user-authored program / build-target | signal/flow.rs |
-| `Node` | one computational unit (Source/Transformer/Sink/Junction/Supervisor + future kinds) | signal/flow.rs |
-| `Edge` | typed connection carrying `RelationKind` | signal/flow.rs |
-| `RelationKind` | Flow / DependsOn / Contains / References / Produces / Consumes / Calls / Implements / IsA | signal/flow.rs |
-| `Derivation` | non-pure escape hatch (nix flake output / inline expression) | signal (planned) |
-| `CompiledBinary` | outcome record asserted after a Build flow | signal (planned) |
-| `Slot` / `SlotBinding` | identity + current-hash + display-name index | signal/slot.rs + sema |
-| `RawPattern` / `PatternExpr` | wire form (user names) / resolved form (slot-refs) | signal / criome internal |
-| `Frame` / `Body` / `Request` / `Reply` | wire envelope + verbs | signal |
+| `identities` | `PublicKey` (BLS) | `Identity` (Persona / Agent / Host / Developer / Cluster) + metadata |
+| `revocations` | `PublicKey` | revocation record + timestamp |
+| `attestations` | `(SignerPubkey, IssuedAt)` | full `Attestation` record (audit trail) |
+| `meta` | `()` | schema-version guard per `sema-db` discipline |
 
-Concrete field lists live in skeleton code per repo, not here.
+The version-skew guard runs at boot and hard-fails on
+mismatch (per
+`~/primary/skills/rust/storage-and-wire.md` §"Schema discipline").
 
 ---
 
-## 7 · Flows
+## 6 · Trust model and key distribution
 
-Four canonical flows. All show messages between components; internal
-actor wiring is per-repo.
+- Criome's root public key is materialized to
+  `/etc/criome/root.pub` (mode 0644) at deploy time by
+  the deployment chain. Every consumer (router,
+  lojix-cli, forge) reads this file at startup to
+  bootstrap signature verification.
+- Per-persona / per-agent / per-developer / per-host
+  identities are registered in criome via the
+  `RegisterIdentity` request, which itself must be signed
+  by an already-registered Developer identity (or, at
+  cluster bootstrap, by criome's root). The registration
+  message includes the new identity's public key.
+- Public-key distribution to verifiers is **pushed** via
+  `SubscribeIdentityUpdates` (per
+  `~/primary/skills/push-not-pull.md`). Verifiers cache
+  the current snapshot and apply deltas.
+- Private keypair custody for other identities lives
+  with those identities (personas hold their own;
+  developers use HSMs or gpg-agent; etc.). Criome does
+  not custody private keypairs other than its own root.
 
-### 7.1 Edit (M0)
-
-```
-USER         NEXUS-CLI      NEXUS DAEMON       CRIOME           SEMA
- │              │                │               │                │
- │ (Assert      │                │               │                │
- │   (Node "X"))│                │               │                │
- │ ── text ────▶│                │               │                │
- │              │ ── UDS text ──▶│               │                │
- │              │                │ parse →       │                │
- │              │                │ signal::      │                │
- │              │                │  Request::    │                │
- │              │                │  Assert(Node…)│                │
- │              │                │ ── UDS rkyv ─▶│                │
- │              │                │               │ validate:      │
- │              │                │               │  schema/refs/  │
- │              │                │               │  perms/inv.    │
- │              │                │               │ ── write ─────▶│
- │              │                │               │ ◀── ack ───────│
- │              │                │ ◀── Reply ────│                │
- │              │                │   Outcome(Ok) │                │
- │              │ ◀── UDS text ──│               │                │
- │ ◀── text ────│                │               │                │
-```
-
-mentci-lib clients skip nexus daemon — they speak signal directly to
-criome.
-
-### 7.2 Query (M0)
-
-```
-CLIENT          CRIOME             SEMA
- │                │                 │
- │ Query(NodeQuery│                 │
- │   { name: ?* })│                 │
- │ ── UDS rkyv ──▶│                 │
- │                │ scan Node table │
- │                │ filter by name  │
- │                │ ── read ───────▶│
- │                │ ◀── Vec<Node> ──│
- │ ◀── Reply ─────│                 │
- │  Records::Node │                 │
- │   (Vec<Node>)  │                 │
-```
-
-### 7.3 Build (post-MVP — the milestone flow)
-
-```
-USER  NEXUS    CRIOME            FORGE                  ARCA-DAEMON     SEMA
- │      │        │                  │                        │           │
- │Build │        │                  │                        │           │
- │Reqst │        │                  │                        │           │
- │─text▶│        │                  │                        │           │
- │      │parse → │                  │                        │           │
- │      │signal::│                  │                        │           │
- │      │ Build- │                  │                        │           │
- │      │ Request│                  │                        │           │
- │      │  {Slot}│                  │                        │           │
- │      │─rkyv──▶│                  │                        │           │
- │      │        │ validate target  │                        │           │
- │      │        │ resolve: Graph?  │                        │           │
- │      │        │ ◀──── read graph + transitive ────────────────────────│
- │      │        │       (DependsOn graphs + Contains nodes + edges)     │
- │      │        │ sign capability  │                        │           │
- │      │        │  token (target   │                        │           │
- │      │        │  store + scope)  │                        │           │
- │      │        │                  │                        │           │
- │      │        │ signal-forge::   │                        │           │
- │      │        │  Build{records,  │                        │           │
- │      │        │   cap_token}     │                        │           │
- │      │        │── UDS rkyv ─────▶│                        │           │
- │      │        │                  │ ┌── inside forge ────┐ │           │
- │      │        │                  │ │ prism: emit .rs    │ │           │
- │      │        │                  │ │ FileMaterialiser:  │ │           │
- │      │        │                  │ │  workdir to disk   │ │           │
- │      │        │                  │ │ NixRunner:         │ │           │
- │      │        │                  │ │  spawn nix build   │ │           │
- │      │        │                  │ │ StoreWriter:       │ │           │
- │      │        │                  │ │  RPATH-rewrite +   │ │           │
- │      │        │                  │ │  det. timestamps   │ │           │
- │      │        │                  │ │  → ~/.arca/        │ │           │
- │      │        │                  │ │     _staging/<id>/ │ │           │
- │      │        │                  │ └────────┬───────────┘ │           │
- │      │        │                  │          │             │           │
- │      │        │                  │ ArcaDepositor:         │           │
- │      │        │                  │ signal-arca::          │           │
- │      │        │                  │  Deposit{staging_id,   │           │
- │      │        │                  │   target_store,        │           │
- │      │        │                  │   cap_token}           │           │
- │      │        │                  │── UDS rkyv ───────────▶│           │
- │      │        │                  │                        │ verify    │
- │      │        │                  │                        │  token    │
- │      │        │                  │                        │ scan      │
- │      │        │                  │                        │  staging  │
- │      │        │                  │                        │ blake3    │
- │      │        │                  │                        │ atomic    │
- │      │        │                  │                        │  move →   │
- │      │        │                  │                        │  <store>/ │
- │      │        │                  │                        │  <blake3>/│
- │      │        │                  │                        │ index ++  │
- │      │        │                  │ ◀─ DepositOk{blake3} ──│           │
- │      │        │ ◀── BuildOk ─────│                        │           │
- │      │        │   { arca_hash,   │                        │           │
- │      │        │     narhash,     │                        │           │
- │      │        │     wall_ms }    │                        │           │
- │      │        │ assert           │                        │           │
- │      │        │ CompiledBinary{  │                        │           │
- │      │        │   graph, store,  │                        │           │
- │      │        │   arca_hash, ...}│                        │           │
- │      │        │ ── write ────────────────────────────────────────────▶│
- │      │        │ ◀── ack ─────────────────────────────────────────────  │
- │      │ ◀── Re-│                  │                        │           │
- │      │ ply Ok │                  │                        │           │
- │ ◀text│        │                  │                        │           │
-```
-
-**Roles:**
-
-- **criome:** validate, read records, sign capability token, forward
-  to forge over signal-forge, await, assert outcome record, reply.
-  No subprocess, no file write, no external tool, no prism link.
-- **forge:** receive records, link prism, write workdir, run nix,
-  bundle to arca's `_staging/`, ask arca-daemon to take ownership.
-  Does NOT compute the canonical blake3 — arca-daemon does.
-- **arca-daemon:** verify token, blake3 of exactly-what-was-staged,
-  atomic move, update per-store index, reply with the hash.
-
-### 7.4 Subscribe (M2+ — push)
-
-```
-CLIENT             CRIOME                                       SEMA
- │                   │                                            │
- │ Subscribe(...)    │                                            │
- │ ── UDS rkyv ─────▶│                                            │
- │                   │ register subscription                      │
- │                   │ ◀── any matching write ────────────────────│
- │ ◀── push: Records │                                            │
- │ ◀── push: Records │ ◀── any matching write ────────────────────│
- │     ...           │                                            │
- │ (close socket)    │                                            │
- │ ─── EOF ─────────▶│ subscription dies with the connection      │
-```
-
-No initial snapshot — issue a `Query` first if you want current state.
-Per push-not-pull discipline, clients **defer** their real-time
-feature until Subscribe ships rather than poll while waiting.
+ClaviFaber feeds into criome via the same
+`signal-clavifaber` channel named in
+`~/primary/reports/designer/110-cluster-trust-runtime-placement.md`.
+Each per-host `PublicKeyPublication` lands as a
+`Identity::Host(HostName)` registration.
 
 ---
 
-## 8 · Repo layout
+## 7 · Integration map
 
+Detailed per-component integration lives in
+`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
+§6. The headline boundaries:
+
+| Component | Crosses to criome via | Purpose |
+|---|---|---|
+| `persona-mind` | `AttestChannelGrant`, `AttestAuthorization` | Mind requests attestations before forwarding decisions to router. |
+| `persona-router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
+| `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
+| `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
+| ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
+| Future `persona-audit` policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
+
+---
+
+## 8 · Constraints
+
+Each load-bearing constraint becomes a witness test per
+`~/primary/skills/architectural-truth-tests.md`. Test
+seeds live in
+`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
+§9. The headline constraints:
+
+- The `criome` CLI accepts exactly one NOTA request
+  record and prints exactly one NOTA reply record.
+- The daemon owns `criome.redb`; the CLI never opens it.
+- Signing requires a registered signer identity.
+- Tampered or revoked or expired signatures fail
+  verification with typed reasons.
+- The verifier subscribes to identity updates (push, not
+  poll).
+- `signal-criome` does not depend on `signal` (the
+  sema-ecosystem vocabulary).
+- Content records (e.g., `ChannelGrant`) do not carry
+  embedded proof fields; attestations live in separate
+  records.
+- Channel grants without a valid attestation do not
+  install in router.
+- Archive deployments without a valid attestation abort
+  in lojix-cli.
+
+---
+
+## 9 · Code map
+
+The current `src/` reflects the prior
+sema-records-validator shape (commit `a3f4173`). It is
+**due for full rewrite** per
+`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
+§7. The target code map after operator's implementation
+lands:
+
+```text
+src/lib.rs                 crate re-exports + module entry
+src/main.rs                #[tokio::main] daemon entry
+src/error.rs               typed Error enum (thiserror)
+src/actors/root.rs         CriomeRoot Kameo runtime root
+src/actors/signer.rs       AttestationSigner actor
+src/actors/verifier.rs     AttestationVerifier actor
+src/actors/registry.rs     IdentityRegistry actor
+src/actors/store.rs        StoreKernel + criome.redb tables
+src/text.rs                NOTA projection (one record in/out)
+src/transport.rs           Unix-socket Signal-frame transport
+src/command.rs             CLI client process-boundary logic
+tests/*.rs                 round-trip + architectural-truth tests
 ```
-   ┌─────────────────────────────────────────────────────────┐
- 5 │  CLIENTS + PROJECTORS                                   │
-   │  nexus-cli   lojix-cli (transitional)   prism (lib)     │
-   └────▲──────────────▲────────────────────▲────────────────┘
-        │              │                    │ linked by forge
-   ┌────┴──────────────┴────────────────────┴────────────────┐
- 4 │  DAEMONS                                                │
-   │  nexus     criome     forge     arca-daemon             │
-   │  (peers — none contains the others; see §10 table)      │
-   └────▲──────────▲──────────▲──────────▲───────────────────┘
-        │          │          │          │
-   ┌────┴──────────┴──────────┴──────────┴───────────────────┐
- 3 │  STORAGE                                                │
-   │  sema (criome-owned)        arca (arca-daemon-owned)    │
-   └────▲────────────────────────▲───────────────────────────┘
-        │                        │
-   ┌────┴────────────────────────┴───────────────────────────┐
- 2 │  CONTRACT CRATES                                        │
-   │  signal       signal-forge       signal-arca            │
-   │  (every leg) (criome↔forge)      (writers↔arca-d)       │
-   └────▲────────────────────────────────────────────────────┘
-        │
-   ┌────┴────────────────────────────────────────────────────┐
- 1 │  SCHEMA VOCABULARY                                      │
-   │  signal — typed record kinds (Node / Edge / Graph / …)  │
-   │  + IR (AssertOperation / MutateOperation / …)           │
-   └────▲────────────────────────────────────────────────────┘
-        │
-   ┌────┴────────────────────────────────────────────────────┐
- 0 │  TEXT GRAMMARS + CODEC                                  │
-   │  nota (spec)  nexus (spec)  nota-codec  nota-derive     │
-   └─────────────────────────────────────────────────────────┘
-```
 
-Layer N depends on layers below it. Per-repo status (current vs.
-terminal shape) lives in workspace's `docs/workspace-manifest.md`.
-
-**Deployment is nix-based, aggregated from the `workspace` meta-repo.**
-Each canonical crate publishes its own flake; `workspace/flake.nix`
-defines NixOS modules + service specs composing the four daemons.
-`nixos-rebuild --flake workspace#<host>` is the deploy. lojix-cli
-covers this path during the transitional phase; eventually criome
-drives deploys via signal-forge `Deploy` verbs.
-
-**Shelved:** `arbor` (prolly-tree versioning) — post-MVP.
+Cargo dependencies after the rewrite: `signal-core`,
+`signal-criome`, `kameo`, `sema-db`, `tokio`, `thiserror`,
+`clap`, `rkyv`, `blst`, `blake3`, `nota-codec`,
+`nota-derive`. **Drops** `signal`, `sema`, `ractor` (the
+prior shape's deps).
 
 ---
 
-## 9 · Grammar shape
+## See also
 
-Nota is a strict subset of nexus. A single lexer (in nota-codec)
-handles both, gated by a dialect knob. The grammar is a
-**delimiter-family matrix**:
-
-- Outer character picks the family — records `( )`, composites `{ }`,
-  evaluation `[ ]`, flow `< >`.
-- Pipe count picks the abstraction level — none for concrete, one for
-  abstracted/pattern, two for committed/scoped.
-
-**Every top-level nexus expression is a request.** The head of a
-top-level `( )`-form is a request verb (`Assert`, `Mutate`, `Retract`,
-`Query`, `Subscribe`, `Validate` today; `BuildRequest` post-MVP).
-Parsing rejects top-level expressions that aren't requests.
-
-**Sigil budget is closed.** Six total: `;;` (comment), `#` (byte-literal
-prefix), `~` (mutate), `@` (bind), `!` (negate), `=` (bind-alias,
-narrow use). New features land as delimiter-matrix slots or
-Pascal-named records — **never new sigils**.
-
-Detailed grammar shape lives in
-nexus and
-nota.
-
----
-
-## 10 · Rules
-
-Foundational rules — every session follows these.
-
-| Rule | Why |
-|---|---|
-| Rust is only an output | sema changes via signal requests; prism emits Rust source one-way. |
-| Nix is the build backend until we replace it | `BuildRequest` flows become `nix build` invocations (crane + fenix). Direct rustc is post-replacement. |
-| Authored macros are transitional | Eventual self-hosting state has no authored macros; bootstrap era uses them. Third-party macros call freely in both eras. |
-| Skeleton-as-design | New design starts as compiled types + trait signatures + `todo!()`. Reports are for WHY; skeleton code is for WHAT. |
-| Per-repo `ARCHITECTURE.md` at root | matklad pattern. Each per-repo doc points at this file; this file is the apex. |
-| AGENTS.md / CLAUDE.md shim | One source of truth, read by both Codex and Claude Code. |
-| Replace wrong reports cleanly | The successor stands alone; jj/git history preserves the prior shape. |
-| Typed records are what we are concerned with | The sema-ecosystem's records (Graph/Node/Edge/Derivation/CompiledBinary…) live in criome's database; sema-the-library is the typed-database substrate every state-bearing component uses, including criome. |
-| Text crosses only at nexus | All internal traffic is rkyv. |
-| All-rkyv except nexus text | Same pinned feature set workspace-wide (rkyv 0.8, std + bytecheck + little_endian + pointer_width_32 + unaligned). See lore/rust/rkyv.md. |
-| Producers push, consumers subscribe | The subscription primitive is the contract. See lore/programming/push-not-pull.md. |
-| criome communicates | Effect-bearing work lives in dedicated components (forge, arca-daemon, prism), dispatched via typed verbs. |
-| One capability, one crate, one repo | Adding a feature lands as a new crate. See lore/programming/micro-components.md. |
-| Every edit is a request | criome validates; the validator may decline. The hallucination wall. |
-| Bootstrap rung by rung | criome runs from the first instant; criome's records database starts empty; criome's init constructs the bootstrap kinds before opening the UDS listener; domain records flow in as signal frames at runtime. |
-| References are slot-refs | Records store `Slot(u64)`; index resolves to current hash + display name. |
-| Content-addressing is non-negotiable | Record identity is the blake3 of its canonical rkyv encoding. |
-| A binary is just a path | Store entries are real files; `exec` is direct. |
-| criome is the overlord of arca | Tracks reachability, signs capability tokens; arca-daemon enforces. |
-| forge is for effects sema can't do | Inputs: records criome forwards (Graphs + Nodes + Edges + Derivations). Outputs: outcome records criome asserts back. |
-| Free to restructure | Rename, move, restructure until Li declares a compatibility boundary. |
-| Schedules live outside the docs | Describe the work; agents leave estimation to humans on demand. |
-| New features are delimiter-matrix slots or Pascal-named records | Sigils land as a last resort. |
-| One artifact per repo | Per lore/rust/style.md. |
-
-### 10.1 Categories of records
-
-Records in sema split by **category** — the separation is intrinsic
-to the records' nature, not a schema choice.
-
-- **machina** — the code category. The subset of sema that compiles
-  to Rust in v1. The native checker over machina records is
-  `machina-chk`. machina records are what prism reads and emits.
-- **world-fact, operational, access-control** — categories whose
-  names are still open (see §11).
-
-### 10.2 Sema's string discipline
-
-Schema identifiers (kind, field, variant) in sema are slot ids —
-integers in per-kind indexes. Display names and per-language
-translations live in a **localization store** distinct from sema
-and arca, loaded by whichever components render or parse human-
-facing text. Sema records carry numerical references (slot ids),
-primitive scalars, and user-data text content (e.g. a free-form
-`Label` field on a domain record); the schema layer stays
-string-free. The localization store's owner (daemon, library,
-parallel record-engine instance) is open — see §11.
-
-### 10.3 Bootstrap and runtime data flow
-
-criome runs from the first instant of execution. Criome's records
-database starts empty (or opens a previous one through sema's
-schema-version guard); criome's init constructs the bootstrap kinds
-(Struct, Enum, Field, Variant, TypeExpression, Localization,
-Language, Slot, primitives) directly as records, populating its
-records database before opening the UDS listener.
-
-After init, every record entering criome's database arrives as a
-signal Assert frame from a connected client (mentci-egui, agents,
-scripts, nexus-cli). The wire is signal end-to-end; no on-disk text
-file feeds the records database as a source of truth.
-
-### 10.4 Responsibilities table — criome / forge / arca-daemon
-
-The criome-runs-nothing rule made concrete. Each row is one concern;
-columns mark which daemon owns it.
-
-| Concern | criome | forge | arca-d |
-|---|:---:|:---:|:---:|
-| Validates request (schema / refs / perms / invariants) | ✓ | — | — |
-| Reads from its records database (via sema lib) | ✓ | — | — |
-| Writes to its records database (via sema lib) | ✓ | — | — |
-| Forwards typed signal verbs to other components | ✓ | — | — |
-| Awaits replies from forge / arca-daemon | ✓ | — | — |
-| Signs capability tokens (criome holds the key) | ✓ | — | — |
-| Persists outcome records (e.g. `CompiledBinary`) | ✓ | — | — |
-| Spawns subprocesses (nix, nixos-rebuild) | — | ✓ | — |
-| Links `prism` (the code-emission library) | — | ✓ | — |
-| Runs `nix build` via crane + fenix | — | ✓ | — |
-| Bundles closures (RPATH rewrite + deterministic timestamps) | — | ✓ | — |
-| Performs `nixos-rebuild` (deploy) | — | ✓ | — |
-| Writes the bundled tree into arca's `_staging/` | — | ✓ | — |
-| Verifies criome-signed capability tokens | — | — | ✓ |
-| Computes blake3 of staged content | — | — | ✓ |
-| Atomic move from `_staging/` into `<store>/<blake3>/` | — | — | ✓ |
-| Updates per-store redb index | — | — | ✓ |
-| Manages multi-store ACL (sole writer of canonical store dirs) | — | — | ✓ |
-
-If a future contributor finds themselves adding "spawn", "write file
-into a store", "link prism", "run X" to criome, **that's the failure
-mode this rule closes**. Add the capability to forge or arca-daemon —
-or, if it's a new concern with its own bounded context, start a new
-component.
-
----
-
-## 11 · Open shapes
-
-Known unknowns the architecture leaves open. Not blockers — each can
-be settled when the relevant component is wired.
-
-| Item | Open question |
-|---|---|
-| `signal::BuildRequest` payload | beyond `target: Slot` — nix-attr override, target-platform, env knobs |
-| `signal-forge::Build` payload | precise field set including the capability-token field criome signs for forge to present to arca-daemon |
-| `signal-arca::Deposit` payload | precise field set; how staging IDs are minted; whether multiple deposits batch |
-| `signal-arca` repo | needs creation as a peer to signal-forge; same layered shape (depends on signal for envelope/auth) |
-| Capability tokens | criome-signed BLS G1 token shape; one token covers (depositor, target store, validity window); verification logic in arca-daemon |
-| Write-only staging mechanism | filesystem-level (chmod 1733 + per-deposit subdirs?) or process-boundary (SCM_RIGHTS, namespace)? |
-| Multi-store registry | how arca-daemon learns which stores exist and their ACL — sema records read at startup, or pushed via signal-arca? |
-| criome → forge connection module | re-use criome's `Connection` actor for the forge leg, or introduce a `ForgeLink`? |
-| Node-kind enum landing | the 5 first kinds (Source / Transformer / Sink / Junction / Supervisor) need to land in `signal/src/flow.rs` |
-| `RelationKind` control-plane variants | `Supervises`, `EscalatesTo` — exact set when the Supervisor kind lands |
-| Per-kind sema tables | physical layout in redb (replaces M0's 1-byte discriminator) |
-| Subscribe payload format | what arrives on the stream — snapshot delta or full record? |
-| `mentci-lib`'s exact API | precise type names + connection lifecycle (auto-reconnect, handshake retry) |
-| GUI repo (mentci-egui) status | first incarnation of the user-facing UI; skeleton-as-design today |
-| workspace flake structure | per-host NixOS module surface composing all four daemons |
-| World-fact / operational / authz category names | machina is the code category; the others are still open |
-| `machina-chk` shape | the native checker over machina records — own crate, internal module, or post-MVP — TBD |
-| Localization store owner | a separate component (daemon/library/parallel record-engine instance) holds per-language display names mapped from slot ids. Distinct from criome's records database (string-free) and arca (blob-only). Owner shape, naming, and protocol are open |
-
----
-
-## 12 · Scope of this file (other concerns live elsewhere)
-
-- **Deployment topology** is left open (lore/programming/micro-components.md).
-  This file describes *source-organization*; whether components compile
-  into one binary, many binaries, or talk over a network lives downstream.
-- **Nexus-text grammar additions** for new verbs (e.g. the sigil for
-  `BuildRequest`) live in nexus/ARCHITECTURE.md.
-- **M6 self-host close** — criome's own request flow expressed as records,
-  prism emitting criome from them, recompile, loop closes — is the next
-  layer; the mechanism shown here is the prerequisite.
-- **mentci-egui UI screens** (visual design, egui widgets, theming) live
-  in mentci-egui's own docs. The workspace meta-repo's role as
-  meta-deploy aggregator is in workspace/ARCHITECTURE.md.
-- **CriomOS / horizon-rs / lojix-cli deploy flow internals** live in
-  CriomOS's docs. lojix-cli migrates to a thin signal-speaking client
-  of forge during phases B–E.
-- **Actor-level wiring inside any daemon** (NixRunner, StoreWriter,
-  ArcaDepositor, FileMaterialiser; criome's Connection / Listener /
-  Dispatcher) lives in each repo's own `ARCHITECTURE.md` and src/.
-- **Field lists** live in skeleton code in the relevant repo, per §13.
-
----
-
-## 13 · Update policy
-
-This file is the golden document. Edits are deliberate and surgical.
-
-1. **Cross-repo report links are sparing.** Decision histories live in
-   workspace's `reports/`; they may be cited when load-bearing for a
-   reader. The architecture stands on its own.
-2. **Prose + diagrams only.** Type sketches, field lists, enum
-   variants belong in skeleton code (compiler-checked) in the
-   relevant repo, or in workspace's `reports/`.
-3. **Update this file first**, then the affected repos, then a
-   report only if the decision carries a journey worth recording.
-4. **State the architecture positively.** Describe what IS;
-   git/jj history preserves the path the doc took to get there.
-5. **Replace superseded reports cleanly.** workspace's AGENTS.md
-   carries the rollover discipline.
-6. **Skeleton-as-design over prose-as-design.** Prefer
-   compiler-checked types in the relevant repo over prose here.
-
----
-
-*End criome/ARCHITECTURE.md.*
+- `~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md` —
+  the design report this ARCH is the realization target of.
+- `~/primary/ESSENCE.md` §"Today and eventually" — the
+  scope discipline this ARCH applies.
+- `~/primary/reports/designer/110-cluster-trust-runtime-placement.md` —
+  partially superseded on the placement question;
+  scope-discipline framing preserved.
+- `~/primary/reports/designer/114-persona-vision-as-of-2026-05-11.md`
+  §3.2 — eventual-Criome direction this Spartan today is
+  one step toward.
+- `~/primary/reports/designer/125-channel-choreography-and-trust-model.md` —
+  channel grants today carry no proof; attestations
+  attach here.
+- `~/primary/skills/kameo.md` — the actor runtime.
+- `~/primary/skills/actor-systems.md` — the actor
+  discipline.
+- `~/primary/skills/contract-repo.md` — `signal-criome` is
+  a new contract crate.
+- `~/primary/skills/architectural-truth-tests.md` —
+  witnesses for §8.
+- `~/primary/skills/push-not-pull.md` —
+  `SubscribeIdentityUpdates` is push, not poll.
+- `~/primary/skills/micro-components.md` — one
+  capability, one crate, one repo.
+- `/git/github.com/LiGoldragon/clavifaber/ARCHITECTURE.md`
+  — feeds criome's identity registry; ClaviFaber's
+  narrow per-host scope unchanged.
+- This repo at commit `a3f4173` — archaeology of the
+  prior sema-records-validator skeleton + ractor
+  supervision tree + capability-token BLS-G1 stubs.
