@@ -31,13 +31,29 @@ authorization decisions, and privilege elevations.*
 
 ## 0 · TL;DR
 
-- **One Kameo-based daemon** holding criome's own root BLS
-  keypair, an identity registry, and an attestation audit
-  log in `criome.redb` (via `sema-db`).
-- **Three responsibilities**: **sign** content with
-  criome's root key, **verify** signatures against
-  registered identities, **register/lookup** typed
-  identities (Persona, Agent, Host, Developer, Cluster).
+- **Operative principle**: **Criome verifies; Persona
+  decides.** Criome answers *"is this signature valid for
+  this principal under this grant for these bytes?"*
+  Persona answers *"should this prompt be delivered,
+  should this work be executed?"* The boundary is sharp;
+  prompt-audit policy lives in `persona-mind`, not in
+  criome.
+- **One Kameo-based daemon** holding criome's own root
+  keypair, an identity registry, delegation grants, a
+  replay-guard, and an audit event log in `criome.redb`
+  (via `sema-db`).
+- **First milestone is verifier-shaped.** Three primary
+  capabilities: **verify** external signatures (developer
+  release signatures, persona-message signatures), **
+  register/lookup** typed identities (Persona, Agent,
+  Host, Developer, Cluster), **emit attestations** signed
+  by criome's root key only when a witness requires (e.g.,
+  ChannelGrantAttestation from `persona-mind`).
+- **Signature scheme**: closed `SignatureScheme` enum
+  starting with `Ed25519` (via `ed25519-dalek`). BLS12-381
+  variants (via `blst`) land when a concrete
+  quorum/aggregation witness requires them. Single-scheme
+  commit on day one.
 - **Wire**: `signal-criome` contract crate (depends on
   `signal-core`, not on `signal`). Closed `CriomeRequest`
   / `CriomeReply` enums. One NOTA record in, one NOTA
@@ -243,9 +259,17 @@ seeds live in
 - The `criome` CLI accepts exactly one NOTA request
   record and prints exactly one NOTA reply record.
 - The daemon owns `criome.redb`; the CLI never opens it.
-- Signing requires a registered signer identity.
-- Tampered or revoked or expired signatures fail
-  verification with typed reasons.
+- Signed payloads carry **domain separation** — every
+  signature binds a content hash to its purpose
+  (component name, channel role, audience, contract/
+  schema version, expiry). A release signature cannot
+  verify as a persona-message authorization.
+- One-shot delegations and time-bound authorizations are
+  protected by a `replay_guard` table; repeat use of the
+  same `(principal, audience, nonce)` rejects with
+  typed `ReplayAttempted`.
+- Tampered, revoked, expired, or replayed signatures
+  fail verification with typed reasons.
 - The verifier subscribes to identity updates (push, not
   poll).
 - `signal-criome` does not depend on `signal` (the
@@ -257,6 +281,8 @@ seeds live in
   install in router.
 - Archive deployments without a valid attestation abort
   in lojix-cli.
+- Prompt-audit policy code does not live in this repo
+  (it belongs to `persona-mind`).
 
 ---
 
