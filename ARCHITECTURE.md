@@ -49,11 +49,14 @@ authorization decisions, and privilege elevations.*
   Host, Developer, Cluster), **emit attestations** signed
   by criome's root key only when a witness requires (e.g.,
   ChannelGrantAttestation from `persona-mind`).
-- **Signature scheme**: closed `SignatureScheme` enum
-  starting with `Ed25519` (via `ed25519-dalek`). BLS12-381
-  variants (via `blst`) land when a concrete
-  quorum/aggregation witness requires them. Single-scheme
-  commit on day one.
+- **Signature scheme**: **BLS12-381 from day one**, via
+  `blst` (Supranational). Closed `SignatureScheme` enum
+  carries `Bls12_381MinPk` and `Bls12_381MinSig` variants;
+  operator picks one at implementation time per `blst`
+  ergonomics. Committing to BLS at milestone one keeps
+  every Spartan attestation a quorum candidate without a
+  future scheme migration when eventual-Criome's
+  quorum-signature multi-sig lands.
 - **Wire**: `signal-criome` contract crate (depends on
   `signal-core`, not on `signal`). Closed `CriomeRequest`
   / `CriomeReply` enums. One NOTA record in, one NOTA
