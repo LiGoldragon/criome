@@ -41,7 +41,7 @@ authorization decisions, and privilege elevations.*
 - **One Kameo-based daemon** holding criome's own root
   keypair, an identity registry, delegation grants, a
   replay-guard, and an audit event log in `criome.redb`
-  (via `sema-db`).
+  (via the `sema` library).
 - **First milestone is verifier-shaped.** Three primary
   capabilities: **verify** external signatures (developer
   release signatures, persona-message signatures), **
@@ -87,7 +87,7 @@ flowchart TB
     verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
     registry["IdentityRegistry<br/>(Identity ↔ PublicKey)"]
     store["StoreKernel<br/>(sole owner of criome.redb)"]
-    db["criome.redb<br/>(via sema-db library)"]
+    db["criome.redb<br/>(via sema library)"]
     audit["AuditLog<br/>(append-only attestation history)"]
 
     cli --> socket
@@ -115,8 +115,8 @@ work is hot enough.
 
 ## 2 · Owned
 
-- The `criome.redb` durable store and its mind-specific
-  Sema-db layer.
+- The `criome.redb` durable store and its component-local
+  Sema layer.
 - Criome's own root BLS keypair (loaded from
   `/etc/criome/root.key` at startup; private material
   mode 0600).
@@ -193,10 +193,11 @@ operator's implementation):
 
 | Table | Key | Value |
 |---|---|---|
-| `identities` | `PublicKey` (BLS) | `Identity` (Persona / Agent / Host / Developer / Cluster) + metadata |
-| `revocations` | `PublicKey` | revocation record + timestamp |
-| `attestations` | `(SignerPubkey, IssuedAt)` | full `Attestation` record (audit trail) |
-| `meta` | `()` | schema-version guard per `sema-db` discipline |
+| `identities` | typed identity key | `StoredIdentity` with public key, fingerprint, purpose, status |
+| `revocations` | typed identity key | `StoredRevocation` |
+| `attestations` | monotonic slot | `StoredAttestation` |
+| `attestation_next_slot` | singleton key | next monotonic slot |
+| Sema meta | Sema-owned | schema-version and rkyv-format guards |
 
 The version-skew guard runs at boot and hard-fails on
 mismatch (per
@@ -291,33 +292,44 @@ seeds live in
 
 ## 9 · Code map
 
-The current `src/` reflects the prior
-sema-records-validator shape (commit `a3f4173`). It is
-**due for full rewrite** per
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-§7. The target code map after operator's implementation
-lands:
+The current `src/` is the first Kameo daemon skeleton for
+the Spartan BLS-auth substrate:
 
 ```text
 src/lib.rs                 crate re-exports + module entry
-src/main.rs                #[tokio::main] daemon entry
+src/main.rs                CLI/daemon entry
 src/error.rs               typed Error enum (thiserror)
 src/actors/root.rs         CriomeRoot Kameo runtime root
 src/actors/signer.rs       AttestationSigner actor
 src/actors/verifier.rs     AttestationVerifier actor
 src/actors/registry.rs     IdentityRegistry actor
 src/actors/store.rs        StoreKernel + criome.redb tables
-src/text.rs                NOTA projection (one record in/out)
+src/tables.rs              component-local Sema tables
+src/text.rs                Nexus/NOTA projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
 src/command.rs             CLI client process-boundary logic
+src/daemon.rs              Unix-socket daemon wrapper around CriomeRoot
 tests/*.rs                 round-trip + architectural-truth tests
 ```
 
 Cargo dependencies after the rewrite: `signal-core`,
-`signal-criome`, `kameo`, `sema-db`, `tokio`, `thiserror`,
-`clap`, `rkyv`, `blst`, `blake3`, `nota-codec`,
-`nota-derive`. **Drops** `signal`, `sema`, `ractor` (the
-prior shape's deps).
+`signal-criome`, `kameo`, `sema`, `tokio`, `thiserror`,
+`clap`, `rkyv`, `blst`, `blake3`, `nota-codec`.
+**Drops** the retired `signal` and `ractor` dependencies.
+
+Current implementation status:
+
+- `RegisterIdentity`, `LookupIdentity`, `RevokeIdentity`,
+  and `SubscribeIdentityUpdates` route through the Kameo
+  actor tree and the component-local Sema store.
+- `Sign` and attestation requests require a registered
+  signer and persist a typed attestation record, but the
+  signature string is still a skeleton placeholder. The
+  real `blst` key-loading/signing path is the next
+  cryptographic milestone.
+- `VerifyAttestation` checks content equality, known
+  signer, revocation, and public-key match, then reports
+  `InvalidSignature` until real BLS verification lands.
 
 ---
 

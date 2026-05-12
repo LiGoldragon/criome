@@ -1,0 +1,241 @@
+use kameo::actor::{Actor, ActorRef, Spawn};
+use kameo::error::Infallible;
+use kameo::message::{Context, Message};
+use signal_criome::{AuthorizationAttestationRequest, CriomeReply, CriomeRequest, RejectionReason};
+
+use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, signer, store, verifier};
+use crate::{Error, Result, StoreLocation};
+
+pub struct CriomeRoot {
+    registry: ActorRef<registry::IdentityRegistry>,
+    signer: ActorRef<signer::AttestationSigner>,
+    verifier: ActorRef<verifier::AttestationVerifier>,
+}
+
+pub struct Arguments {
+    pub store: StoreLocation,
+}
+
+pub struct SubmitRequest {
+    request: CriomeRequest,
+}
+
+pub struct ReadTopology;
+
+#[derive(Debug, Clone, PartialEq, Eq, kameo::Reply)]
+pub struct CriomeTopology {
+    registry: bool,
+    signer: bool,
+    verifier: bool,
+}
+
+impl Arguments {
+    pub fn new(store: StoreLocation) -> Self {
+        Self { store }
+    }
+}
+
+impl SubmitRequest {
+    pub fn new(request: CriomeRequest) -> Self {
+        Self { request }
+    }
+}
+
+impl CriomeTopology {
+    fn complete() -> Self {
+        Self {
+            registry: true,
+            signer: true,
+            verifier: true,
+        }
+    }
+
+    pub const fn registry(&self) -> bool {
+        self.registry
+    }
+
+    pub const fn signer(&self) -> bool {
+        self.signer
+    }
+
+    pub const fn verifier(&self) -> bool {
+        self.verifier
+    }
+}
+
+impl CriomeRoot {
+    fn new(
+        registry: ActorRef<registry::IdentityRegistry>,
+        signer: ActorRef<signer::AttestationSigner>,
+        verifier: ActorRef<verifier::AttestationVerifier>,
+    ) -> Self {
+        Self {
+            registry,
+            signer,
+            verifier,
+        }
+    }
+
+    pub async fn start(arguments: Arguments) -> Result<ActorRef<Self>> {
+        let actor_reference = Self::spawn(arguments);
+        actor_reference.wait_for_startup().await;
+        Ok(actor_reference)
+    }
+
+    pub async fn stop(actor_reference: ActorRef<Self>) -> Result<()> {
+        actor_reference
+            .stop_gracefully()
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        actor_reference.wait_for_shutdown().await;
+        Ok(())
+    }
+
+    async fn submit(&self, request: CriomeRequest) -> CriomeReply {
+        match request {
+            CriomeRequest::Sign(request) => {
+                self.ask_signer(signer::SignContent::new(request)).await
+            }
+            CriomeRequest::VerifyAttestation(request) => {
+                self.ask_verifier(verifier::VerifyAttestation::new(request))
+                    .await
+            }
+            CriomeRequest::RegisterIdentity(request) => {
+                self.ask_registry(registry::RegisterIdentity::new(request))
+                    .await
+            }
+            CriomeRequest::RevokeIdentity(request) => {
+                self.ask_registry(registry::RevokeIdentity::new(request))
+                    .await
+            }
+            CriomeRequest::LookupIdentity(request) => {
+                self.ask_registry(registry::LookupIdentity::new(request))
+                    .await
+            }
+            CriomeRequest::AttestArchive(request) => {
+                self.ask_signer(signer::AttestArchive::new(request)).await
+            }
+            CriomeRequest::AttestChannelGrant(request) => {
+                self.ask_signer(signer::AttestChannelGrant::new(request))
+                    .await
+            }
+            CriomeRequest::AttestAuthorization(request) => {
+                let AuthorizationAttestationRequest {
+                    authorization_content,
+                    source,
+                    audit_context,
+                } = request;
+                self.ask_signer(signer::AttestAuthorization::new(
+                    authorization_content,
+                    source,
+                    audit_context,
+                ))
+                .await
+            }
+            CriomeRequest::SubscribeIdentityUpdates(_request) => {
+                self.ask_registry(registry::ReadIdentitySnapshot).await
+            }
+        }
+    }
+
+    async fn ask_registry<M>(&self, message: M) -> CriomeReply
+    where
+        registry::IdentityRegistry: kameo::message::Message<M, Reply = CriomeActorReply>,
+        M: Send + 'static,
+    {
+        self.registry
+            .ask(message)
+            .await
+            .map(CriomeActorReply::into_reply)
+            .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+
+    async fn ask_signer<M>(&self, message: M) -> CriomeReply
+    where
+        signer::AttestationSigner: kameo::message::Message<M, Reply = CriomeActorReply>,
+        M: Send + 'static,
+    {
+        self.signer
+            .ask(message)
+            .await
+            .map(CriomeActorReply::into_reply)
+            .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+
+    async fn ask_verifier<M>(&self, message: M) -> CriomeReply
+    where
+        verifier::AttestationVerifier: kameo::message::Message<M, Reply = CriomeActorReply>,
+        M: Send + 'static,
+    {
+        self.verifier
+            .ask(message)
+            .await
+            .map(CriomeActorReply::into_reply)
+            .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+}
+
+impl Actor for CriomeRoot {
+    type Args = Arguments;
+    type Error = Infallible;
+
+    async fn on_start(
+        arguments: Self::Args,
+        actor_reference: ActorRef<Self>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let store = store::StoreKernel::supervise(&actor_reference, arguments.store)
+            .spawn()
+            .await;
+        let registry = registry::IdentityRegistry::supervise(
+            &actor_reference,
+            registry::Arguments {
+                store: store.clone(),
+            },
+        )
+        .spawn()
+        .await;
+        let signer = signer::AttestationSigner::supervise(
+            &actor_reference,
+            signer::Arguments {
+                registry: registry.clone(),
+                store,
+            },
+        )
+        .spawn()
+        .await;
+        let verifier = verifier::AttestationVerifier::supervise(
+            &actor_reference,
+            verifier::Arguments {
+                registry: registry.clone(),
+            },
+        )
+        .spawn()
+        .await;
+
+        Ok(Self::new(registry, signer, verifier))
+    }
+}
+
+impl Message<SubmitRequest> for CriomeRoot {
+    type Reply = CriomeActorReply;
+
+    async fn handle(
+        &mut self,
+        message: SubmitRequest,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        actor_reply(self.submit(message.request).await)
+    }
+}
+
+impl Message<ReadTopology> for CriomeRoot {
+    type Reply = CriomeTopology;
+
+    async fn handle(
+        &mut self,
+        _message: ReadTopology,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        CriomeTopology::complete()
+    }
+}

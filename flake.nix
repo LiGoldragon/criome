@@ -1,49 +1,135 @@
 {
-  description = "criome — sema's engine daemon";
+  description = "criome - Spartan BLS-signature authentication and attestation daemon";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
-    fenix = {
-      url = "github:nix-community/fenix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    nixpkgs.url = "github:LiGoldragon/nixpkgs?ref=main";
+
+    fenix.url = "github:nix-community/fenix";
+    fenix.inputs.nixpkgs.follows = "nixpkgs";
+
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, flake-utils, fenix, crane }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    { self, nixpkgs, fenix, crane }:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      forSystems = function: nixpkgs.lib.genAttrs systems (system: function system);
+
+      mkContext =
+        system:
       let
         pkgs = import nixpkgs { inherit system; };
-        toolchain = fenix.packages.${system}.fromToolchainFile {
-          file = ./rust-toolchain.toml;
-          sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
-        };
+        toolchain = fenix.packages.${system}.stable.withComponents [
+          "cargo"
+          "rustc"
+          "rustfmt"
+          "clippy"
+          "rust-src"
+        ];
         craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
         src = craneLib.cleanCargoSource ./.;
+        cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
         commonArgs = {
-          inherit src;
+          inherit src cargoVendorDir;
           strictDeps = true;
         };
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
       in
       {
-        packages.default = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
-        });
+        inherit pkgs toolchain craneLib src commonArgs cargoArtifacts;
+      };
+    in
+    {
+      packages = forSystems (
+        system:
+        let
+          context = mkContext system;
+        in
+        {
+          default = context.craneLib.buildPackage (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              meta.mainProgram = "criome";
+            }
+          );
+        }
+      );
 
-        checks.default = craneLib.cargoTest (commonArgs // {
-          inherit cargoArtifacts;
-        });
+      checks = forSystems (
+        system:
+        let
+          context = mkContext system;
+        in
+        {
+          default = context.craneLib.cargoTest (context.commonArgs // { inherit (context) cargoArtifacts; });
+          build = context.craneLib.cargoBuild (context.commonArgs // { inherit (context) cargoArtifacts; });
+          test = context.craneLib.cargoTest (context.commonArgs // { inherit (context) cargoArtifacts; });
+          daemon-skeleton = context.craneLib.cargoTest (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              cargoTestExtraArgs = "--test daemon_skeleton";
+            }
+          );
+          criome-uses-kameo-not-ractor = context.pkgs.runCommand "criome-uses-kameo-not-ractor" { } ''
+            set -euo pipefail
 
-        devShells.default = pkgs.mkShell {
-          name = "criome";
-          packages = [
-            pkgs.jujutsu
-            pkgs.pkg-config
-            toolchain
-          ];
-        };
-      }
-    );
+            ${context.pkgs.gnugrep}/bin/grep -F 'kameo' ${./Cargo.toml} > /dev/null
+            ! ${context.pkgs.gnugrep}/bin/grep -R -E '(^|[^[:alnum:]_])ractor([^[:alnum:]_]|$)' ${./Cargo.toml} ${./src}
+            touch "$out"
+          '';
+          criome-signal-criome-contract-boundary = context.pkgs.runCommand "criome-signal-criome-contract-boundary" { } ''
+            set -euo pipefail
+
+            ${context.pkgs.gnugrep}/bin/grep -F 'signal-criome' ${./Cargo.toml} > /dev/null
+            ! ${context.pkgs.gnugrep}/bin/grep -F 'signal       =' ${./Cargo.toml}
+            touch "$out"
+          '';
+          fmt = context.craneLib.cargoFmt { inherit (context) src; };
+          clippy = context.craneLib.cargoClippy (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- -D warnings";
+            }
+          );
+          doc = context.craneLib.cargoDoc (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              RUSTDOCFLAGS = "-D warnings";
+            }
+          );
+        }
+      );
+
+      apps = forSystems (
+        system:
+        {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/criome";
+          };
+        }
+      );
+
+      devShells = forSystems (
+        system:
+        let
+          context = mkContext system;
+        in
+        {
+          default = context.pkgs.mkShell {
+            name = "criome";
+            packages = [
+              context.toolchain
+              context.pkgs.jujutsu
+              context.pkgs.pkg-config
+            ];
+          };
+        }
+      );
+    };
 }

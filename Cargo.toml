@@ -2,28 +2,36 @@
 name         = "criome"
 version      = "0.1.0"
 edition      = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/LiGoldragon/criome"
-description  = "criome — the daemon at the center of the sema-ecosystem. Owns the typed records database (Graph/Node/Edge/Derivation/CompiledBinary) backed by the sema library. Receives signal frames over UDS; runs the validator pipeline (schema → refs → invariants → permissions → write → cascade); persists accepted mutations through sema typed tables; forwards effect-bearing signal verbs to the forge daemon."
+description  = "Spartan BLS-signature authentication and attestation daemon for the Persona ecosystem."
 
 [lib]
 name = "criome"
 path = "src/lib.rs"
 
 [[bin]]
-name = "criome-daemon"
+name = "criome"
 path = "src/main.rs"
 
-[[bin]]
-name = "criome-handle-frame"
-path = "src/bin/handle_frame.rs"
-
 [dependencies]
-signal       = { git = "https://github.com/LiGoldragon/signal", branch = "main" }
-sema         = { git = "https://github.com/LiGoldragon/sema", branch = "main" }
-ractor       = { version = "0.15", features = ["async-trait"] }
-tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-thiserror    = "2"
+blake3       = "1"
+blst         = "0.3"
 clap         = { version = "4", features = ["derive"] }
+kameo        = { version = "0.20", default-features = false, features = ["macros", "tracing"] }
+nota-codec   = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+sema         = { git = "https://github.com/LiGoldragon/sema.git" }
+signal-core  = { git = "https://github.com/LiGoldragon/signal-core.git" }
+signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
+thiserror    = "2"
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused      = { level = "warn", priority = -1 }
+dead_code   = "warn"
