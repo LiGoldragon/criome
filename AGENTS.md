@@ -4,9 +4,7 @@ You **MUST** read AGENTS.md at `github:ligoldragon/lore` — the workspace contr
 
 This repo's `ARCHITECTURE.md` describes **today's Spartan criome**
 — a minimal BLS-signature authentication and attestation substrate
-for the Persona ecosystem. See
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-for the design report this ARCH realizes.
+for the Persona ecosystem.
 
 ## Repo role
 
@@ -26,9 +24,7 @@ This repo currently holds the **prior sema-records-validator
 skeleton** (validator pipeline, ractor supervision tree,
 sema-records tables) at commit `a3f4173`. That code is the
 archaeology of the previous shape; the rewrite to the Spartan
-shape is **operator's first track** per
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-§8.
+shape is **operator's first track**.
 
 Until the rewrite lands, the code in `src/` does not match this
 ARCH. Read the ARCH for the *target*; consult commit `a3f4173`
