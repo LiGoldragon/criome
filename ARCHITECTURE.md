@@ -15,8 +15,7 @@ authorization decisions, and privilege elevations.*
 > is one step toward that eventual shape, bringing forward
 > the auth/identity slice. See
 > `~/primary/ESSENCE.md` §"Today and eventually — different
-> things, different names" and
-> `~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`.
+> things, different names".
 
 > **Archaeology note.** Prior to this rewrite, today's
 > `criome` was the sema-ecosystem records validator
@@ -70,9 +69,7 @@ authorization decisions, and privilege elevations.*
   proof material") stays inviolate.
 - **Cluster-trust runtime functionality is folded in.**
   ClaviFaber's per-host `PublicKeyPublication` feeds into
-  criome's identity registry, registering each host. This
-  subsumes the cluster-trust-runtime placement work named
-  in `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`.
+  criome's identity registry, registering each host.
 
 ---
 
@@ -178,11 +175,6 @@ CriomeReply
   | Rejection(Rejection)
 ```
 
-Full request/reply per-variant shapes, the `Identity`
-enum, and the `Attestation` record layout live in
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-§3–§4.
-
 ---
 
 ## 5 · State and ownership
@@ -227,9 +219,7 @@ mismatch (per
   developers use HSMs or gpg-agent; etc.). Criome does
   not custody private keypairs other than its own root.
 
-ClaviFaber feeds into criome via the same
-`signal-clavifaber` channel named in
-`~/primary/reports/designer/110-cluster-trust-runtime-placement.md`.
+ClaviFaber feeds into criome via a `signal-clavifaber` channel.
 Each per-host `PublicKeyPublication` lands as a
 `Identity::Host(HostName)` registration.
 
@@ -237,9 +227,7 @@ Each per-host `PublicKeyPublication` lands as a
 
 ## 7 · Integration map
 
-Detailed per-component integration lives in
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-§6. The headline boundaries:
+The headline boundaries:
 
 | Component | Crosses to criome via | Purpose |
 |---|---|---|
@@ -255,10 +243,8 @@ Detailed per-component integration lives in
 ## 8 · Constraints
 
 Each load-bearing constraint becomes a witness test per
-`~/primary/skills/architectural-truth-tests.md`. Test
-seeds live in
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-§9. The headline constraints:
+`~/primary/skills/architectural-truth-tests.md`. The headline
+constraints:
 
 - The `criome` CLI accepts exactly one NOTA request
   record and prints exactly one NOTA reply record.
@@ -335,19 +321,8 @@ Current implementation status:
 
 ## See also
 
-- `~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md` —
-  the design report this ARCH is the realization target of.
 - `~/primary/ESSENCE.md` §"Today and eventually" — the
   scope discipline this ARCH applies.
-- `~/primary/reports/designer/110-cluster-trust-runtime-placement.md` —
-  partially superseded on the placement question;
-  scope-discipline framing preserved.
-- `~/primary/reports/designer/114-persona-vision-as-of-2026-05-11.md`
-  §3.2 — eventual-Criome direction this Spartan today is
-  one step toward.
-- `~/primary/reports/designer/125-channel-choreography-and-trust-model.md` —
-  channel grants today carry no proof; attestations
-  attach here.
 - `~/primary/skills/kameo.md` — the actor runtime.
 - `~/primary/skills/actor-systems.md` — the actor
   discipline.
