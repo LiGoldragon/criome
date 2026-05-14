@@ -552,7 +552,7 @@ dependencies = [
 [[package]]
 name = "nota-derive"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-derive.git?branch=main#0d1c24086ae585c84ad92317bb8c463b8cc95697"
+source = "git+https://github.com/LiGoldragon/nota-derive.git?branch=main#e24e50afe110810db50a7eb8f9a7963c6761c0af"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -785,7 +785,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal-core"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-core.git#9f4e20b4917aa1655004b3701ecbf5bce0eac071"
+source = "git+https://github.com/LiGoldragon/signal-core.git#fddfe8a69029bb1a20200b60da6cf7d4d021b3ae"
 dependencies = [
  "nota-codec",
  "rkyv",
@@ -795,7 +795,7 @@ dependencies = [
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#52cfb32bfc896941c01e52818796857e4c992aeb"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#17417f7fee7b2da1c013d7260c9a3dd23a723276"
 dependencies = [
  "blake3",
  "blst",

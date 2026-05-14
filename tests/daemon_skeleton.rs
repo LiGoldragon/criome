@@ -6,10 +6,12 @@ use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology,
 use criome::daemon::CriomeDaemon;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
+use signal_core::{FrameBody, Request, SignalVerb};
 use signal_criome::{
     AuditContext, BlsPublicKey, ContentPurpose, ContentReference, CriomeReply, CriomeRequest,
-    Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce, SignRequest,
+    Frame as CriomeFrame, Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest,
+    PrincipalName, PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
+    SignRequest,
 };
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
@@ -146,6 +148,23 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
         .read_request(&mut reader)
         .expect_err("reply frame must not decode as request");
     assert!(format!("{error}").contains("unexpected signal frame"));
+}
+
+#[test]
+fn criome_frame_codec_rejects_mismatched_signal_verb() {
+    let frame = CriomeFrame::new(FrameBody::Request(Request::unchecked_operation(
+        SignalVerb::Assert,
+        CriomeRequest::LookupIdentity(IdentityLookup {
+            identity: Identity::developer("operator"),
+        }),
+    )));
+    let bytes = frame.encode_length_prefixed().expect("frame encodes");
+    let mut input = bytes.as_slice();
+    let error = CriomeFrameCodec::default()
+        .read_request(&mut input)
+        .expect_err("mismatched verb is rejected");
+
+    assert!(error.to_string().contains("signal verb mismatch"));
 }
 
 #[test]

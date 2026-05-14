@@ -27,7 +27,13 @@ impl CriomeFrameCodec {
 
     pub fn read_request(&self, reader: &mut impl Read) -> Result<CriomeRequest> {
         match self.read_frame(reader)?.into_body() {
-            FrameBody::Request(Request::Operation { payload, .. }) => Ok(payload),
+            FrameBody::Request(request) => {
+                request
+                    .into_payload_checked()
+                    .map_err(|error| Error::UnexpectedSignalFrame {
+                        got: error.to_string(),
+                    })
+            }
             other => Err(Error::UnexpectedSignalFrame {
                 got: format!("{other:?}"),
             }),
@@ -35,7 +41,7 @@ impl CriomeFrameCodec {
     }
 
     pub fn write_request(&self, writer: &mut impl Write, request: CriomeRequest) -> Result<()> {
-        let frame = CriomeFrame::new(FrameBody::Request(Request::assert(request)));
+        let frame = CriomeFrame::new(FrameBody::Request(Request::from_payload(request)));
         self.write_frame(writer, frame)
     }
 
