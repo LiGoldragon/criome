@@ -14,9 +14,7 @@ audit log. It signs typed attestations over content records
 privilege elevations); it verifies signatures against the
 registry; it serves identity lookups via a push subscription.
 
-Read `ARCHITECTURE.md` for this repo's shape. Read
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-for the design that motivates it.
+Read `ARCHITECTURE.md` for this repo's shape.
 
 ---
 
@@ -31,8 +29,7 @@ bringing forward the auth/identity slice and nothing else.
 
 When working here, hold the distinction: today's code serves
 today's narrow scope; the eventual encompassment is described in
-ESSENCE and `~/primary/reports/designer/114-persona-vision-as-of-2026-05-11.md`
-§3.2, not in this repo.
+ESSENCE, not in this repo.
 
 ---
 
@@ -92,8 +89,6 @@ Criome does **not** own:
 ## See also
 
 - `ARCHITECTURE.md` — this repo's shape.
-- `~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-  — the design.
 - `~/primary/ESSENCE.md` §"Today and eventually" — the scope
   discipline.
 - `~/primary/skills/kameo.md` — actor runtime.
@@ -109,8 +104,5 @@ Criome does **not** own:
   clients; one NOTA record in, one out.
 - `/git/github.com/LiGoldragon/clavifaber/ARCHITECTURE.md` —
   feeds criome's identity registry.
-- `~/primary/reports/designer/110-cluster-trust-runtime-placement.md`
-  — partially superseded on placement; scope discipline
-  preserved.
 - This repo at commit `a3f4173` — archaeology of the prior
   sema-records-validator skeleton.

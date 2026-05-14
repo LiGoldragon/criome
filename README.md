@@ -16,6 +16,4 @@ identity, validation, and auth/security across the stack.
 Today's Spartan criome is one realization step toward that
 eventual shape, bringing forward the auth/identity slice.
 
-See `ARCHITECTURE.md` for this repo's shape and
-`~/primary/reports/designer/141-minimal-criome-bls-auth-substrate.md`
-for the design.
+See `ARCHITECTURE.md` for this repo's shape.
