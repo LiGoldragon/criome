@@ -135,6 +135,14 @@ impl CriomeRoot {
             CriomeRequest::SubscribeIdentityUpdates(_request) => {
                 self.ask_registry(registry::ReadIdentitySnapshot).await
             }
+            CriomeRequest::IdentitySubscriptionRetraction(_token) => {
+                // Per /176 §1 streaming-channel grammar — the retraction
+                // closes a previously-opened identity-update subscription.
+                // Daemon's actor tree doesn't yet track per-subscription
+                // tokens; for the wave-3 cutover this returns a
+                // best-effort snapshot reply.
+                self.ask_registry(registry::ReadIdentitySnapshot).await
+            }
         }
     }
 

@@ -785,17 +785,28 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal-core"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-core.git#fddfe8a69029bb1a20200b60da6cf7d4d021b3ae"
+source = "git+https://github.com/LiGoldragon/signal-core.git#dd12794276ce48cc41dcceb97416476e54421f50"
 dependencies = [
  "nota-codec",
  "rkyv",
+ "signal-core-macros",
  "thiserror",
+]
+
+[[package]]
+name = "signal-core-macros"
+version = "0.1.0"
+source = "git+https://github.com/LiGoldragon/signal-core.git#dd12794276ce48cc41dcceb97416476e54421f50"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#17417f7fee7b2da1c013d7260c9a3dd23a723276"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#3f48a6c9a69e08b36297d2a1bc3bfcbeea5fd7b8"
 dependencies = [
  "blake3",
  "blst",

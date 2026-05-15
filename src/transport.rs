@@ -2,10 +2,21 @@ use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use signal_core::{FrameBody, Reply, Request};
-use signal_criome::{CriomeReply, CriomeRequest, Frame as CriomeFrame};
+use signal_core::{
+    ExchangeIdentifier, ExchangeLane, LaneSequence, NonEmpty, Reply, RequestPayload, SessionEpoch,
+    SignalVerb, SubReply,
+};
+use signal_criome::{CriomeFrame, CriomeFrameBody as FrameBody, CriomeReply, CriomeRequest};
 
 use crate::{Error, Result};
+
+fn synthetic_exchange() -> ExchangeIdentifier {
+    ExchangeIdentifier::new(
+        SessionEpoch::new(0),
+        ExchangeLane::Connector,
+        LaneSequence::first(),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CriomeFrameCodec {
@@ -27,12 +38,13 @@ impl CriomeFrameCodec {
 
     pub fn read_request(&self, reader: &mut impl Read) -> Result<CriomeRequest> {
         match self.read_frame(reader)?.into_body() {
-            FrameBody::Request(request) => {
-                request
-                    .into_payload_checked()
-                    .map_err(|error| Error::UnexpectedSignalFrame {
-                        got: error.to_string(),
-                    })
+            FrameBody::Request { request, .. } => {
+                let checked = request
+                    .into_checked()
+                    .map_err(|(reason, _)| Error::UnexpectedSignalFrame {
+                        got: reason.to_string(),
+                    })?;
+                Ok(checked.operations.into_head().payload)
             }
             other => Err(Error::UnexpectedSignalFrame {
                 got: format!("{other:?}"),
@@ -41,13 +53,26 @@ impl CriomeFrameCodec {
     }
 
     pub fn write_request(&self, writer: &mut impl Write, request: CriomeRequest) -> Result<()> {
-        let frame = CriomeFrame::new(FrameBody::Request(Request::from_payload(request)));
+        let frame = CriomeFrame::new(FrameBody::Request {
+            exchange: synthetic_exchange(),
+            request: request.into_request(),
+        });
         self.write_frame(writer, frame)
     }
 
     pub fn read_reply(&self, reader: &mut impl Read) -> Result<CriomeReply> {
         match self.read_frame(reader)?.into_body() {
-            FrameBody::Reply(Reply::Operation(payload)) => Ok(payload),
+            FrameBody::Reply { reply, .. } => match reply {
+                Reply::Accepted { per_operation, .. } => match per_operation.into_head() {
+                    SubReply::Ok { payload, .. } => Ok(payload),
+                    other => Err(Error::UnexpectedSignalFrame {
+                        got: format!("{other:?}"),
+                    }),
+                },
+                Reply::Rejected { reason } => Err(Error::UnexpectedSignalFrame {
+                    got: format!("rejected: {reason}"),
+                }),
+            },
             other => Err(Error::UnexpectedSignalFrame {
                 got: format!("{other:?}"),
             }),
@@ -55,7 +80,13 @@ impl CriomeFrameCodec {
     }
 
     pub fn write_reply(&self, writer: &mut impl Write, reply: CriomeReply) -> Result<()> {
-        let frame = CriomeFrame::new(FrameBody::Reply(Reply::operation(reply)));
+        let frame = CriomeFrame::new(FrameBody::Reply {
+            exchange: synthetic_exchange(),
+            reply: Reply::completed(NonEmpty::single(SubReply::Ok {
+                verb: SignalVerb::Match,
+                payload: reply,
+            })),
+        });
         self.write_frame(writer, frame)
     }
 
