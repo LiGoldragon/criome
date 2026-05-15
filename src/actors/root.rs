@@ -198,8 +198,7 @@ impl CriomeRoot {
 
     async fn ask_subscription<M>(&self, message: M) -> CriomeReply
     where
-        subscription::SubscriptionRegistry:
-            kameo::message::Message<M, Reply = CriomeActorReply>,
+        subscription::SubscriptionRegistry: kameo::message::Message<M, Reply = CriomeActorReply>,
         M: Send + 'static,
     {
         self.subscription

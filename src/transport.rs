@@ -39,11 +39,12 @@ impl CriomeFrameCodec {
     pub fn read_request(&self, reader: &mut impl Read) -> Result<CriomeRequest> {
         match self.read_frame(reader)?.into_body() {
             FrameBody::Request { request, .. } => {
-                let checked = request
-                    .into_checked()
-                    .map_err(|(reason, _)| Error::UnexpectedSignalFrame {
-                        got: reason.to_string(),
-                    })?;
+                let checked =
+                    request
+                        .into_checked()
+                        .map_err(|(reason, _)| Error::UnexpectedSignalFrame {
+                            got: reason.to_string(),
+                        })?;
                 Ok(checked.operations.into_head().payload)
             }
             other => Err(Error::UnexpectedSignalFrame {

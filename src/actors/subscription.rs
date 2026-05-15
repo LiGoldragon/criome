@@ -1,9 +1,11 @@
 use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use signal_criome::{CriomeReply, IdentitySubscriptionToken, RejectionReason};
+use signal_criome::{
+    CriomeReply, IdentitySubscriptionToken, RejectionReason, SubscriptionRetracted,
+};
 
-use crate::actors::{CriomeActorReply, actor_reply, rejection, registry};
+use crate::actors::{CriomeActorReply, actor_reply, registry, rejection};
 
 /// Tracks the set of currently-open `IdentityUpdateStream` subscriptions
 /// by their `IdentitySubscriptionToken`. The retraction handler at the
@@ -50,20 +52,12 @@ impl SubscriptionRegistry {
     }
 
     async fn close_subscription(&mut self, token: IdentitySubscriptionToken) -> CriomeReply {
-        let removed = match self.open.iter().position(|existing| existing == &token) {
+        match self.open.iter().position(|existing| existing == &token) {
             Some(index) => {
                 self.open.remove(index);
-                true
+                CriomeReply::SubscriptionRetracted(SubscriptionRetracted { token })
             }
-            None => false,
-        };
-        if removed {
-            match self.registry.ask(registry::ReadIdentitySnapshot).await {
-                Ok(reply) => reply.into_reply(),
-                Err(_error) => rejection(RejectionReason::MalformedRequest),
-            }
-        } else {
-            rejection(RejectionReason::UnknownIdentity)
+            None => rejection(RejectionReason::UnknownIdentity),
         }
     }
 }
