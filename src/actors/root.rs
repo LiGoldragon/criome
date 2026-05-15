@@ -1,15 +1,21 @@
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use signal_criome::{AuthorizationAttestationRequest, CriomeReply, CriomeRequest, RejectionReason};
+use signal_criome::{
+    AuthorizationAttestationRequest, CriomeReply, CriomeRequest, IdentitySubscriptionToken,
+    RejectionReason,
+};
 
-use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, signer, store, verifier};
+use crate::actors::{
+    CriomeActorReply, actor_reply, registry, rejection, signer, store, subscription, verifier,
+};
 use crate::{Error, Result, StoreLocation};
 
 pub struct CriomeRoot {
     registry: ActorRef<registry::IdentityRegistry>,
     signer: ActorRef<signer::AttestationSigner>,
     verifier: ActorRef<verifier::AttestationVerifier>,
+    subscription: ActorRef<subscription::SubscriptionRegistry>,
 }
 
 pub struct Arguments {
@@ -27,6 +33,7 @@ pub struct CriomeTopology {
     registry: bool,
     signer: bool,
     verifier: bool,
+    subscription: bool,
 }
 
 impl Arguments {
@@ -47,6 +54,7 @@ impl CriomeTopology {
             registry: true,
             signer: true,
             verifier: true,
+            subscription: true,
         }
     }
 
@@ -61,6 +69,10 @@ impl CriomeTopology {
     pub const fn verifier(&self) -> bool {
         self.verifier
     }
+
+    pub const fn subscription(&self) -> bool {
+        self.subscription
+    }
 }
 
 impl CriomeRoot {
@@ -68,11 +80,13 @@ impl CriomeRoot {
         registry: ActorRef<registry::IdentityRegistry>,
         signer: ActorRef<signer::AttestationSigner>,
         verifier: ActorRef<verifier::AttestationVerifier>,
+        subscription: ActorRef<subscription::SubscriptionRegistry>,
     ) -> Self {
         Self {
             registry,
             signer,
             verifier,
+            subscription,
         }
     }
 
@@ -132,16 +146,16 @@ impl CriomeRoot {
                 ))
                 .await
             }
-            CriomeRequest::SubscribeIdentityUpdates(_request) => {
-                self.ask_registry(registry::ReadIdentitySnapshot).await
+            CriomeRequest::SubscribeIdentityUpdates(request) => {
+                let token = IdentitySubscriptionToken {
+                    subscriber: request.subscriber,
+                };
+                self.ask_subscription(subscription::OpenIdentitySubscription { token })
+                    .await
             }
-            CriomeRequest::IdentitySubscriptionRetraction(_token) => {
-                // Per /176 §1 streaming-channel grammar — the retraction
-                // closes a previously-opened identity-update subscription.
-                // Daemon's actor tree doesn't yet track per-subscription
-                // tokens; for the wave-3 cutover this returns a
-                // best-effort snapshot reply.
-                self.ask_registry(registry::ReadIdentitySnapshot).await
+            CriomeRequest::IdentitySubscriptionRetraction(token) => {
+                self.ask_subscription(subscription::CloseIdentitySubscription { token })
+                    .await
             }
         }
     }
@@ -176,6 +190,19 @@ impl CriomeRoot {
         M: Send + 'static,
     {
         self.verifier
+            .ask(message)
+            .await
+            .map(CriomeActorReply::into_reply)
+            .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+
+    async fn ask_subscription<M>(&self, message: M) -> CriomeReply
+    where
+        subscription::SubscriptionRegistry:
+            kameo::message::Message<M, Reply = CriomeActorReply>,
+        M: Send + 'static,
+    {
+        self.subscription
             .ask(message)
             .await
             .map(CriomeActorReply::into_reply)
@@ -219,8 +246,16 @@ impl Actor for CriomeRoot {
         )
         .spawn()
         .await;
+        let subscription = subscription::SubscriptionRegistry::supervise(
+            &actor_reference,
+            subscription::Arguments {
+                registry: registry.clone(),
+            },
+        )
+        .spawn()
+        .await;
 
-        Ok(Self::new(registry, signer, verifier))
+        Ok(Self::new(registry, signer, verifier, subscription))
     }
 }
 

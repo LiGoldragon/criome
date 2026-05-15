@@ -2,6 +2,7 @@ pub mod registry;
 pub mod root;
 pub mod signer;
 pub mod store;
+pub mod subscription;
 pub mod verifier;
 
 use signal_criome::{CriomeReply, Rejection, RejectionReason};

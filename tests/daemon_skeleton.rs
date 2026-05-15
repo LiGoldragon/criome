@@ -6,13 +6,24 @@ use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology,
 use criome::daemon::CriomeDaemon;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
-use signal_core::{FrameBody, Request, SignalVerb};
-use signal_criome::{
-    AuditContext, BlsPublicKey, ContentPurpose, ContentReference, CriomeReply, CriomeRequest,
-    Frame as CriomeFrame, Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest,
-    PrincipalName, PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
-    SignRequest,
+use signal_core::{
+    ExchangeIdentifier, ExchangeLane, LaneSequence, NonEmpty, Operation, Request, SessionEpoch,
+    SignalVerb,
 };
+use signal_criome::{
+    AuditContext, BlsPublicKey, ContentPurpose, ContentReference, CriomeFrame, CriomeFrameBody,
+    CriomeReply, CriomeRequest, Identity, IdentityLookup, IdentityRegistration, KeyPurpose,
+    ObjectDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint, RejectionReason,
+    ReplayNonce, SignRequest,
+};
+
+fn synthetic_exchange() -> ExchangeIdentifier {
+    ExchangeIdentifier::new(
+        SessionEpoch::new(1),
+        ExchangeLane::Connector,
+        LaneSequence::first(),
+    )
+}
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
@@ -63,6 +74,7 @@ async fn criome_root_starts_data_bearing_kameo_children() {
     assert!(topology.registry());
     assert!(topology.signer());
     assert!(topology.verifier());
+    assert!(topology.subscription());
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -152,19 +164,24 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
 
 #[test]
 fn criome_frame_codec_rejects_mismatched_signal_verb() {
-    let frame = CriomeFrame::new(FrameBody::Request(Request::unchecked_operation(
+    let operation = Operation::new(
         SignalVerb::Assert,
         CriomeRequest::LookupIdentity(IdentityLookup {
             identity: Identity::developer("operator"),
         }),
-    )));
+    );
+    let request = Request::from_operations(NonEmpty::single(operation));
+    let frame = CriomeFrame::new(CriomeFrameBody::Request {
+        exchange: synthetic_exchange(),
+        request,
+    });
     let bytes = frame.encode_length_prefixed().expect("frame encodes");
     let mut input = bytes.as_slice();
     let error = CriomeFrameCodec::default()
         .read_request(&mut input)
         .expect_err("mismatched verb is rejected");
 
-    assert!(error.to_string().contains("signal verb mismatch"));
+    assert!(error.to_string().contains("verb/payload mismatch"));
 }
 
 #[test]
