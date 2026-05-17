@@ -81,6 +81,30 @@ authorization decisions, and privilege elevations.*
 
 ---
 
+## Authorization model
+
+- `criome-daemon` receives routed authorization requests, routes
+  signature solicitations, records submitted signatures, and issues an
+  authorization grant when signatures authorize the exact request
+  digest.
+- Criome's authorization state is request state, signature
+  solicitation state, submitted-signature state, grant state, expiry,
+  and replay policy. The daemon does not own a local permission table
+  that grants effects apart from signatures.
+- Permission comes from signatures over the exact request digest. A
+  grant for one request cannot authorize another request.
+- `tui-criome` is a separate stateful TUI signing client. It speaks
+  `signal-criome`, owns a local Sema database for request history,
+  signing decisions, and signing-client key material, receives
+  signature requests, submits signatures or rejections, and can create
+  signed requests for Criome to route.
+- `criome-daemon` keeps its own root keypair for criome-issued
+  attestations. Signing-client private key custody belongs to the
+  signing client, not to the daemon.
+- Lojix effects wait for `AuthorizationGranted`. Pending
+  authorization state is observed through `ObserveAuthorization`, not
+  by polling.
+
 ## 1 · Topology
 
 ```mermaid
