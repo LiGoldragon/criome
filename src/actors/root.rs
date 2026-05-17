@@ -7,7 +7,8 @@ use signal_criome::{
 };
 
 use crate::actors::{
-    CriomeActorReply, actor_reply, registry, rejection, signer, store, subscription, verifier,
+    CriomeActorReply, actor_reply, authorization, registry, rejection, signer, store, subscription,
+    verifier,
 };
 use crate::{Error, Result, StoreLocation};
 
@@ -15,6 +16,7 @@ pub struct CriomeRoot {
     registry: ActorRef<registry::IdentityRegistry>,
     signer: ActorRef<signer::AttestationSigner>,
     verifier: ActorRef<verifier::AttestationVerifier>,
+    authorization: ActorRef<authorization::AuthorizationCoordinator>,
     subscription: ActorRef<subscription::SubscriptionRegistry>,
 }
 
@@ -33,6 +35,7 @@ pub struct CriomeTopology {
     registry: bool,
     signer: bool,
     verifier: bool,
+    authorization: bool,
     subscription: bool,
 }
 
@@ -54,6 +57,7 @@ impl CriomeTopology {
             registry: true,
             signer: true,
             verifier: true,
+            authorization: true,
             subscription: true,
         }
     }
@@ -70,6 +74,10 @@ impl CriomeTopology {
         self.verifier
     }
 
+    pub const fn authorization(&self) -> bool {
+        self.authorization
+    }
+
     pub const fn subscription(&self) -> bool {
         self.subscription
     }
@@ -80,12 +88,14 @@ impl CriomeRoot {
         registry: ActorRef<registry::IdentityRegistry>,
         signer: ActorRef<signer::AttestationSigner>,
         verifier: ActorRef<verifier::AttestationVerifier>,
+        authorization: ActorRef<authorization::AuthorizationCoordinator>,
         subscription: ActorRef<subscription::SubscriptionRegistry>,
     ) -> Self {
         Self {
             registry,
             signer,
             verifier,
+            authorization,
             subscription,
         }
     }
@@ -146,6 +156,30 @@ impl CriomeRoot {
                 ))
                 .await
             }
+            CriomeRequest::AuthorizeSignalCall(request) => {
+                self.ask_authorization(authorization::AuthorizeSignalCall::new(request))
+                    .await
+            }
+            CriomeRequest::ObserveAuthorization(request) => {
+                self.ask_authorization(authorization::ObserveAuthorization::new(request))
+                    .await
+            }
+            CriomeRequest::VerifyAuthorization(request) => {
+                self.ask_authorization(authorization::VerifyAuthorization::new(request))
+                    .await
+            }
+            CriomeRequest::RouteSignatureRequest(request) => {
+                self.ask_authorization(authorization::RouteSignatureRequest::new(request))
+                    .await
+            }
+            CriomeRequest::SubmitSignature(request) => {
+                self.ask_authorization(authorization::SubmitSignature::new(request))
+                    .await
+            }
+            CriomeRequest::RejectAuthorization(request) => {
+                self.ask_authorization(authorization::RejectAuthorization::new(request))
+                    .await
+            }
             CriomeRequest::SubscribeIdentityUpdates(request) => {
                 let token = IdentitySubscriptionToken {
                     subscriber: request.subscriber,
@@ -155,6 +189,10 @@ impl CriomeRoot {
             }
             CriomeRequest::IdentitySubscriptionRetraction(token) => {
                 self.ask_subscription(subscription::CloseIdentitySubscription { token })
+                    .await
+            }
+            CriomeRequest::AuthorizationObservationRetraction(token) => {
+                self.ask_authorization(authorization::CloseAuthorizationObservation::new(token))
                     .await
             }
         }
@@ -190,6 +228,19 @@ impl CriomeRoot {
         M: Send + 'static,
     {
         self.verifier
+            .ask(message)
+            .await
+            .map(CriomeActorReply::into_reply)
+            .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+
+    async fn ask_authorization<M>(&self, message: M) -> CriomeReply
+    where
+        authorization::AuthorizationCoordinator:
+            kameo::message::Message<M, Reply = CriomeActorReply>,
+        M: Send + 'static,
+    {
+        self.authorization
             .ask(message)
             .await
             .map(CriomeActorReply::into_reply)
@@ -232,7 +283,7 @@ impl Actor for CriomeRoot {
             &actor_reference,
             signer::Arguments {
                 registry: registry.clone(),
-                store,
+                store: store.clone(),
             },
         )
         .spawn()
@@ -241,6 +292,14 @@ impl Actor for CriomeRoot {
             &actor_reference,
             verifier::Arguments {
                 registry: registry.clone(),
+            },
+        )
+        .spawn()
+        .await;
+        let authorization = authorization::AuthorizationCoordinator::supervise(
+            &actor_reference,
+            authorization::Arguments {
+                store: store.clone(),
             },
         )
         .spawn()
@@ -254,7 +313,13 @@ impl Actor for CriomeRoot {
         .spawn()
         .await;
 
-        Ok(Self::new(registry, signer, verifier, subscription))
+        Ok(Self::new(
+            registry,
+            signer,
+            verifier,
+            authorization,
+            subscription,
+        ))
     }
 }
 

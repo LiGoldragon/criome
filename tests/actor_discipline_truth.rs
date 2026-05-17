@@ -15,6 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use criome::actors::authorization::AuthorizationCoordinator;
 use criome::actors::registry::IdentityRegistry;
 use criome::actors::root::CriomeRoot;
 use criome::actors::signer::AttestationSigner;
@@ -29,6 +30,7 @@ fn public_actor_nouns_carry_data() {
     assert!(std::mem::size_of::<IdentityRegistry>() > 0);
     assert!(std::mem::size_of::<AttestationSigner>() > 0);
     assert!(std::mem::size_of::<AttestationVerifier>() > 0);
+    assert!(std::mem::size_of::<AuthorizationCoordinator>() > 0);
     assert!(std::mem::size_of::<SubscriptionRegistry>() > 0);
 }
 

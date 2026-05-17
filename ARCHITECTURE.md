@@ -152,12 +152,22 @@ pages, zero-after-use of passphrase bytes, disabled core dumps,
 audit-log discipline — is the rest of the in-user posture; the
 filesystem boundary is the part the OS enforces for us.
 
-**Plaintext passphrase over the owner socket is acceptable within
-this boundary.** Any process that can write the socket already runs
-as the owner, and therefore already has the same in-memory
-inspection capability that would let it read the decrypted master
-key. Transport-level encryption of the passphrase between owner
-client and daemon would add complexity without raising the floor.
+**Owner-session bytes are encrypted before they carry passphrases
+or owner-class traffic.** The owner socket mode `0600` is still the
+load-bearing local authority boundary: a same-UID process can
+already do anything criome can do, while a different-UID process
+cannot write the owner socket. The encrypted owner session is
+defense-in-depth for the cases where a different UID observes bytes
+without owning the socket: bind-time races, runtime-directory
+mistakes, symlink races, or partial-frame protocol bugs.
+
+The owner-signal-criome session starts with an ECDH exchange, derives
+a symmetric session key through HKDF, then carries AEAD-encrypted
+frames. The exact cipher suite belongs to the owner-signal-criome
+contract pass; candidates are Noise XX or a direct X25519 +
+HKDF-blake3 + ChaCha20-Poly1305 / AES-GCM shape. The passphrase may
+be plaintext *inside* the encrypted session; it must not be exposed
+as plaintext socket traffic.
 
 **Cross-host transport is a separate case.** Peer criome daemons on
 different hosts speak across the local boundary. Cross-host
@@ -170,8 +180,8 @@ open design slot.
 
 ```mermaid
 flowchart TB
-    cli["criome CLI<br/>(one NOTA record in, one out)"]
-    socket["/var/run/criome/criome.sock<br/>(mode 0660, group persona)"]
+    cli["criome CLI<br/>(one-shot owner client)"]
+    socket["owner-signal-criome owner socket<br/>(mode 0600, owner user)"]
     root["CriomeRoot (Kameo runtime root)"]
     signer["AttestationSigner<br/>(holds root keypair; signs)"]
     verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
@@ -280,7 +290,15 @@ CriomeRequest
   | AttestArchive(ArchiveAttestationRequest)
   | AttestChannelGrant(ChannelGrantAttestationRequest)
   | AttestAuthorization(AuthorizationAttestationRequest)
+  | AuthorizeSignalCall(SignalCallAuthorization)
+  | ObserveAuthorization(AuthorizationObservation)
+  | VerifyAuthorization(AuthorizationVerification)
+  | RouteSignatureRequest(SignatureSolicitationRoute)
+  | SubmitSignature(SignatureSubmission)
+  | RejectAuthorization(AuthorizationRejection)
   | SubscribeIdentityUpdates(IdentitySubscription)
+  | IdentitySubscriptionRetraction(IdentitySubscriptionToken)
+  | AuthorizationObservationRetraction(AuthorizationObservationToken)
 
 CriomeReply
   | SignReceipt(SignReceipt)
@@ -288,6 +306,16 @@ CriomeReply
   | IdentityReceipt(IdentityReceipt)
   | IdentitySnapshot(IdentitySnapshot)
   | AttestationReceipt(AttestationReceipt)
+  | AuthorizationPending(AuthorizationPending)
+  | AuthorizationGranted(AuthorizationGrant)
+  | AuthorizationDenied(AuthorizationDenied)
+  | AuthorizationExpired(AuthorizationExpired)
+  | AuthorizationUnavailable(AuthorizationUnavailable)
+  | AuthorizationObservationSnapshot(AuthorizationObservationSnapshot)
+  | SignatureRouteReceipt(SignatureRouteReceipt)
+  | SignatureSubmissionReceipt(SignatureSubmissionReceipt)
+  | AuthorizationObservationRetracted(AuthorizationObservationRetracted)
+  | SubscriptionRetracted(SubscriptionRetracted)
   | IdentityUpdate(IdentityUpdate)
   | Rejection(Rejection)
 ```
@@ -329,11 +357,11 @@ mismatch (per
 - Criome's master private key is loaded at startup. If the
   private half is encrypted at rest, the daemon waits for the
   owner to submit the passphrase over owner-signal-criome before
-  the master-key actor reports ready. Plaintext passphrase over
-  the owner socket is acceptable within the local trust boundary
-  (§"Security model — Unix-user as boundary"); standard
-  hardening — `mlock`, zero-after-use, disabled core dumps —
-  applies regardless.
+  the master-key actor reports ready. Owner-session frames are
+  encrypted with an ECDH-derived symmetric key before any
+  passphrase or owner-class operation travels. Standard hardening
+  — `mlock`, zero-after-use, disabled core dumps — applies
+  regardless.
 - Per-persona / per-agent / per-developer / per-host
   identities are registered in criome via the
   `RegisterIdentity` request, which itself must be signed
@@ -456,6 +484,12 @@ constraints:
 - **The daemon's owner socket is mode 0600, owned by the daemon's
   Unix user.** A witness test asserts the socket's mode and owner
   match the configured user at daemon ready.
+- **Owner-session traffic is encrypted.** Passphrase submission,
+  master-key operations, policy mutation, peer-route mutation, and
+  escalation-approval replies travel inside the future
+  owner-signal-criome ECDH/AEAD session. Today's daemon skeleton
+  only has the socket-mode witness; plaintext owner-session handling
+  must not be added while the owner-signal contract is absent.
 - **Master-key plaintext does not leak.** A witness scans the
   daemon process's memory pages for the plaintext passphrase after
   unlock-and-use; the scan finds nothing. (Witness implementation
@@ -499,6 +533,7 @@ src/lib.rs                 crate re-exports + module entry
 src/main.rs                CLI/daemon entry
 src/error.rs               typed Error enum (thiserror)
 src/actors/root.rs         CriomeRoot Kameo runtime root
+src/actors/authorization.rs AuthorizationCoordinator actor
 src/actors/signer.rs       AttestationSigner actor
 src/actors/verifier.rs     AttestationVerifier actor
 src/actors/registry.rs     IdentityRegistry actor
@@ -529,14 +564,18 @@ Current implementation status:
 - `VerifyAttestation` checks content equality, known
   signer, revocation, and public-key match, then reports
   `InvalidSignature` until real BLS verification lands.
-- Routed authorization types are now present in `signal-criome`.
-  The daemon implementation still needs the
-  `AuthorizationCoordinator`, signature solicitation/submission Sema
-  tables, and fake-Criome tests proving Lojix effects cannot start
-  before an `AuthorizationGranted` envelope.
+- `AuthorizationCoordinator` is present as a data-bearing Kameo
+  actor. It records `AuthorizeSignalCall` as durable signing-state,
+  exposes that state through `ObserveAuthorization`, stores
+  signature solicitations/submissions, records signer denials, and
+  rejects `VerifyAuthorization` when the grant digest does not match
+  the requested digest. This is still a skeleton: real policy-table
+  lookup, owner-signal approval, master-key signing, and quorum
+  aggregation are the next authorization milestones.
 - The owner-signal-criome contract is the next contract surface to
   design: passphrase submission, policy mutation, peer-route
-  mutation, escalation-approval prompts and replies. `tui-criome`
+  mutation, escalation-approval prompts and replies, plus the
+  ECDH-handshake-then-AEAD owner-session envelope. `tui-criome`
   becomes a long-running owner client of *this* daemon (not a
   separate daemon, not a separate signing-client component); the
   `criome` CLI is the one-shot owner client.

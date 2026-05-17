@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use sema::{Schema, SchemaVersion, Sema, Table};
 use signal_criome::{
-    Attestation, BlsPublicKey, Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation,
-    KeyPurpose, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
+    Attestation, AuthorizationRequestSlot, AuthorizationStateRecord, BlsPublicKey, Identity,
+    IdentityReceipt, IdentityRegistration, IdentityRevocation, KeyPurpose, PrincipalName,
+    PrincipalStatus, PublicKeyFingerprint, SignatureSolicitationRoute, SignatureSubmission,
 };
 
 use crate::Result;
@@ -15,6 +16,12 @@ const CRIOME_SCHEMA: Schema = Schema {
 const IDENTITIES: Table<&'static str, StoredIdentity> = Table::new("identities");
 const REVOCATIONS: Table<&'static str, StoredRevocation> = Table::new("revocations");
 const ATTESTATIONS: Table<u64, StoredAttestation> = Table::new("attestations");
+const AUTHORIZATION_STATES: Table<&'static str, StoredAuthorizationState> =
+    Table::new("authorization_requests");
+const SIGNATURE_SOLICITATIONS: Table<&'static str, StoredSignatureSolicitation> =
+    Table::new("signature_solicitations");
+const SUBMITTED_SIGNATURES: Table<&'static str, StoredSignatureSubmission> =
+    Table::new("submitted_signatures");
 const ATTESTATION_NEXT_SLOT: Table<&'static str, u64> = Table::new("attestation_next_slot");
 const ATTESTATION_NEXT_SLOT_KEY: &str = "next";
 
@@ -145,6 +152,55 @@ impl StoredAttestation {
     }
 }
 
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredAuthorizationState {
+    state: AuthorizationStateRecord,
+}
+
+impl StoredAuthorizationState {
+    pub fn new(state: AuthorizationStateRecord) -> Self {
+        Self { state }
+    }
+
+    pub fn state(&self) -> &AuthorizationStateRecord {
+        &self.state
+    }
+
+    pub fn into_state(self) -> AuthorizationStateRecord {
+        self.state
+    }
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredSignatureSolicitation {
+    route: SignatureSolicitationRoute,
+}
+
+impl StoredSignatureSolicitation {
+    pub fn new(route: SignatureSolicitationRoute) -> Self {
+        Self { route }
+    }
+
+    pub fn route(&self) -> &SignatureSolicitationRoute {
+        &self.route
+    }
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredSignatureSubmission {
+    submission: SignatureSubmission,
+}
+
+impl StoredSignatureSubmission {
+    pub fn new(submission: SignatureSubmission) -> Self {
+        Self { submission }
+    }
+
+    pub fn submission(&self) -> &SignatureSubmission {
+        &self.submission
+    }
+}
+
 pub struct CriomeTables {
     database: Sema,
 }
@@ -156,6 +212,9 @@ impl CriomeTables {
             IDENTITIES.ensure(transaction)?;
             REVOCATIONS.ensure(transaction)?;
             ATTESTATIONS.ensure(transaction)?;
+            AUTHORIZATION_STATES.ensure(transaction)?;
+            SIGNATURE_SOLICITATIONS.ensure(transaction)?;
+            SUBMITTED_SIGNATURES.ensure(transaction)?;
             ATTESTATION_NEXT_SLOT.ensure(transaction)?;
             Ok(())
         })?;
@@ -222,6 +281,56 @@ impl CriomeTables {
         })?)
     }
 
+    pub fn put_authorization_state(&self, state: &StoredAuthorizationState) -> Result<()> {
+        let key = AuthorizationSlotKey::new(&state.state().request_slot).into_string();
+        self.database.write(|transaction| {
+            AUTHORIZATION_STATES.insert(transaction, key.as_str(), state)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    pub fn authorization_state(
+        &self,
+        slot: &AuthorizationRequestSlot,
+    ) -> Result<Option<StoredAuthorizationState>> {
+        let key = AuthorizationSlotKey::new(slot).into_string();
+        Ok(self
+            .database
+            .read(|transaction| AUTHORIZATION_STATES.get(transaction, key.as_str()))?)
+    }
+
+    pub fn authorization_states(&self) -> Result<Vec<StoredAuthorizationState>> {
+        Ok(self.database.read(|transaction| {
+            Ok(AUTHORIZATION_STATES
+                .iter(transaction)?
+                .into_iter()
+                .map(|(_key, state)| state)
+                .collect())
+        })?)
+    }
+
+    pub fn put_signature_solicitation(
+        &self,
+        solicitation: &StoredSignatureSolicitation,
+    ) -> Result<()> {
+        let key = SignatureSolicitationKey::new(solicitation.route()).into_string();
+        self.database.write(|transaction| {
+            SIGNATURE_SOLICITATIONS.insert(transaction, key.as_str(), solicitation)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    pub fn put_signature_submission(&self, submission: &StoredSignatureSubmission) -> Result<()> {
+        let key = SignatureSubmissionKey::new(submission.submission()).into_string();
+        self.database.write(|transaction| {
+            SUBMITTED_SIGNATURES.insert(transaction, key.as_str(), submission)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     fn next_attestation_slot(&self) -> Result<AttestationSlot> {
         let stored = self.database.read(|transaction| {
             ATTESTATION_NEXT_SLOT.get(transaction, ATTESTATION_NEXT_SLOT_KEY)
@@ -285,5 +394,57 @@ impl IdentityKey {
 
     fn into_string(self) -> String {
         format!("{}:{}", self.kind, self.name)
+    }
+}
+
+struct AuthorizationSlotKey {
+    slot: String,
+}
+
+impl AuthorizationSlotKey {
+    fn new(slot: &AuthorizationRequestSlot) -> Self {
+        Self {
+            slot: slot.as_str().to_string(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.slot
+    }
+}
+
+struct SignatureSolicitationKey {
+    request_slot: String,
+    routed_to: String,
+}
+
+impl SignatureSolicitationKey {
+    fn new(route: &SignatureSolicitationRoute) -> Self {
+        Self {
+            request_slot: route.solicitation.request_slot.as_str().to_string(),
+            routed_to: IdentityKey::new(&route.routed_to).into_string(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        format!("{}:{}", self.request_slot, self.routed_to)
+    }
+}
+
+struct SignatureSubmissionKey {
+    request_slot: String,
+    signer: String,
+}
+
+impl SignatureSubmissionKey {
+    fn new(submission: &SignatureSubmission) -> Self {
+        Self {
+            request_slot: submission.request_slot.as_str().to_string(),
+            signer: IdentityKey::new(&submission.signer).into_string(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        format!("{}:{}", self.request_slot, self.signer)
     }
 }

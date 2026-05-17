@@ -1,4 +1,5 @@
 use std::io::BufReader;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -54,6 +55,7 @@ impl CriomeDaemon {
         }
         let _ = std::fs::remove_file(&self.socket);
         let listener = UnixListener::bind(&self.socket)?;
+        std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o600))?;
         let runtime = tokio::runtime::Runtime::new()?;
         let root = runtime.block_on(CriomeRoot::start(RootArguments::new(self.store)))?;
         Ok(BoundCriomeDaemon {
@@ -97,8 +99,7 @@ impl BoundCriomeDaemon {
     pub fn serve_one(self) -> Result<signal_criome::CriomeReply> {
         let (stream, _address) = self.listener.accept()?;
         let reply = CriomeDaemon::handle_connection(&self.runtime, &self.root, stream)?;
-        self.runtime.block_on(CriomeRoot::stop(self.root))?;
-        let _ = std::fs::remove_file(&self.socket);
+        self.shutdown()?;
         Ok(reply)
     }
 
@@ -107,6 +108,12 @@ impl BoundCriomeDaemon {
             let stream = stream?;
             let _reply = CriomeDaemon::handle_connection(&self.runtime, &self.root, stream)?;
         }
+        Ok(())
+    }
+
+    pub fn shutdown(self) -> Result<()> {
+        self.runtime.block_on(CriomeRoot::stop(self.root))?;
+        let _ = std::fs::remove_file(&self.socket);
         Ok(())
     }
 }

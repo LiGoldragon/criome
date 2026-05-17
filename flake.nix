@@ -87,6 +87,14 @@
             ! ${context.pkgs.gnugrep}/bin/grep -F 'signal       =' ${./Cargo.toml}
             touch "$out"
           '';
+          criome-owner-session-architecture = context.pkgs.runCommand "criome-owner-session-architecture" { } ''
+            set -euo pipefail
+
+            ${context.pkgs.gnugrep}/bin/grep -F 'Owner-session bytes are encrypted' ${./ARCHITECTURE.md} > /dev/null
+            ${context.pkgs.gnugrep}/bin/grep -F 'ECDH' ${./ARCHITECTURE.md} > /dev/null
+            ! ${context.pkgs.gnugrep}/bin/grep -F 'Plaintext passphrase over the owner socket is acceptable' ${./ARCHITECTURE.md}
+            touch "$out"
+          '';
           fmt = context.craneLib.cargoFmt { inherit (context) src; };
           clippy = context.craneLib.cargoClippy (
             context.commonArgs

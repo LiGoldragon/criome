@@ -1,11 +1,14 @@
 use kameo::actor::{Actor, ActorRef};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    Attestation, Identity, IdentityRegistration, IdentityRevocation, PrincipalStatus,
+    Attestation, AuthorizationRequestSlot, AuthorizationStateRecord, Identity,
+    IdentityRegistration, IdentityRevocation, PrincipalStatus, SignatureSolicitationRoute,
+    SignatureSubmission,
 };
 
 use crate::tables::{
-    CriomeTables, StoreLocation, StoredAttestation, StoredIdentity, StoredRevocation,
+    CriomeTables, StoreLocation, StoredAttestation, StoredAuthorizationState, StoredIdentity,
+    StoredRevocation, StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
 pub struct StoreKernel {
@@ -30,6 +33,24 @@ pub struct StoreAttestation {
     attestation: Attestation,
 }
 
+pub struct StoreAuthorizationState {
+    state: AuthorizationStateRecord,
+}
+
+pub struct LookupAuthorizationState {
+    request_slot: AuthorizationRequestSlot,
+}
+
+pub struct ReadAuthorizationSnapshot;
+
+pub struct StoreSignatureSolicitation {
+    route: SignatureSolicitationRoute,
+}
+
+pub struct StoreSignatureSubmission {
+    submission: SignatureSubmission,
+}
+
 #[derive(kameo::Reply)]
 pub struct StoredIdentityReply {
     identity: StoredIdentity,
@@ -48,6 +69,31 @@ pub struct IdentitySnapshotReply {
 #[derive(kameo::Reply)]
 pub struct StoredAttestationReply {
     attestation: StoredAttestation,
+}
+
+#[derive(kameo::Reply)]
+pub struct StoredAuthorizationStateReply {
+    state: StoredAuthorizationState,
+}
+
+#[derive(kameo::Reply)]
+pub struct LookupAuthorizationStateReply {
+    state: Option<StoredAuthorizationState>,
+}
+
+#[derive(kameo::Reply)]
+pub struct AuthorizationSnapshotReply {
+    states: Vec<StoredAuthorizationState>,
+}
+
+#[derive(kameo::Reply)]
+pub struct StoredSignatureSolicitationReply {
+    solicitation: StoredSignatureSolicitation,
+}
+
+#[derive(kameo::Reply)]
+pub struct StoredSignatureSubmissionReply {
+    submission: StoredSignatureSubmission,
 }
 
 impl StoreIdentity {
@@ -74,6 +120,30 @@ impl StoreAttestation {
     }
 }
 
+impl StoreAuthorizationState {
+    pub fn new(state: AuthorizationStateRecord) -> Self {
+        Self { state }
+    }
+}
+
+impl LookupAuthorizationState {
+    pub fn new(request_slot: AuthorizationRequestSlot) -> Self {
+        Self { request_slot }
+    }
+}
+
+impl StoreSignatureSolicitation {
+    pub fn new(route: SignatureSolicitationRoute) -> Self {
+        Self { route }
+    }
+}
+
+impl StoreSignatureSubmission {
+    pub fn new(submission: SignatureSubmission) -> Self {
+        Self { submission }
+    }
+}
+
 impl StoredIdentityReply {
     pub fn into_identity(self) -> StoredIdentity {
         self.identity
@@ -95,6 +165,36 @@ impl IdentitySnapshotReply {
 impl StoredAttestationReply {
     pub fn into_attestation(self) -> StoredAttestation {
         self.attestation
+    }
+}
+
+impl StoredAuthorizationStateReply {
+    pub fn into_state(self) -> StoredAuthorizationState {
+        self.state
+    }
+}
+
+impl LookupAuthorizationStateReply {
+    pub fn into_state(self) -> Option<StoredAuthorizationState> {
+        self.state
+    }
+}
+
+impl AuthorizationSnapshotReply {
+    pub fn into_states(self) -> Vec<StoredAuthorizationState> {
+        self.states
+    }
+}
+
+impl StoredSignatureSolicitationReply {
+    pub fn into_solicitation(self) -> StoredSignatureSolicitation {
+        self.solicitation
+    }
+}
+
+impl StoredSignatureSubmissionReply {
+    pub fn into_submission(self) -> StoredSignatureSubmission {
+        self.submission
     }
 }
 
@@ -138,6 +238,51 @@ impl StoreKernel {
 
     fn store_attestation(&self, attestation: Attestation) -> crate::Result<StoredAttestation> {
         self.tables.put_attestation(attestation)
+    }
+
+    fn store_authorization_state(
+        &self,
+        state: AuthorizationStateRecord,
+    ) -> crate::Result<StoredAuthorizationState> {
+        let stored = StoredAuthorizationState::new(state);
+        self.tables.put_authorization_state(&stored)?;
+        Ok(stored)
+    }
+
+    fn authorization_state(
+        &self,
+        request_slot: &AuthorizationRequestSlot,
+    ) -> crate::Result<Option<StoredAuthorizationState>> {
+        self.tables.authorization_state(request_slot)
+    }
+
+    fn authorization_snapshot(&self) -> crate::Result<Vec<StoredAuthorizationState>> {
+        let mut states = self.tables.authorization_states()?;
+        states.sort_by(|left, right| {
+            left.state()
+                .request_slot
+                .as_str()
+                .cmp(right.state().request_slot.as_str())
+        });
+        Ok(states)
+    }
+
+    fn store_signature_solicitation(
+        &self,
+        route: SignatureSolicitationRoute,
+    ) -> crate::Result<StoredSignatureSolicitation> {
+        let stored = StoredSignatureSolicitation::new(route);
+        self.tables.put_signature_solicitation(&stored)?;
+        Ok(stored)
+    }
+
+    fn store_signature_submission(
+        &self,
+        submission: SignatureSubmission,
+    ) -> crate::Result<StoredSignatureSubmission> {
+        let stored = StoredSignatureSubmission::new(submission);
+        self.tables.put_signature_submission(&stored)?;
+        Ok(stored)
     }
 }
 
@@ -215,6 +360,71 @@ impl Message<StoreAttestation> for StoreKernel {
     ) -> Self::Reply {
         self.store_attestation(message.attestation)
             .map(|attestation| StoredAttestationReply { attestation })
+    }
+}
+
+impl Message<StoreAuthorizationState> for StoreKernel {
+    type Reply = crate::Result<StoredAuthorizationStateReply>;
+
+    async fn handle(
+        &mut self,
+        message: StoreAuthorizationState,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_authorization_state(message.state)
+            .map(|state| StoredAuthorizationStateReply { state })
+    }
+}
+
+impl Message<LookupAuthorizationState> for StoreKernel {
+    type Reply = crate::Result<LookupAuthorizationStateReply>;
+
+    async fn handle(
+        &mut self,
+        message: LookupAuthorizationState,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.authorization_state(&message.request_slot)
+            .map(|state| LookupAuthorizationStateReply { state })
+    }
+}
+
+impl Message<ReadAuthorizationSnapshot> for StoreKernel {
+    type Reply = crate::Result<AuthorizationSnapshotReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadAuthorizationSnapshot,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.authorization_snapshot()
+            .map(|states| AuthorizationSnapshotReply { states })
+    }
+}
+
+impl Message<StoreSignatureSolicitation> for StoreKernel {
+    type Reply = crate::Result<StoredSignatureSolicitationReply>;
+
+    async fn handle(
+        &mut self,
+        message: StoreSignatureSolicitation,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_signature_solicitation(message.route)
+            .map(|solicitation| StoredSignatureSolicitationReply { solicitation })
+    }
+}
+
+impl Message<StoreSignatureSubmission> for StoreKernel {
+    type Reply = crate::Result<StoredSignatureSubmissionReply>;
+
+    async fn handle(
+        &mut self,
+        message: StoreSignatureSubmission,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_signature_submission(message.submission)
+            .map(|submission| StoredSignatureSubmissionReply { submission })
     }
 }
 

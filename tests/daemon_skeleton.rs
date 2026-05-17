@@ -1,4 +1,5 @@
 use std::io::BufReader;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::thread;
 
@@ -11,10 +12,14 @@ use signal_core::{
     SignalVerb,
 };
 use signal_criome::{
-    AuditContext, BlsPublicKey, ContentPurpose, ContentReference, CriomeFrame, CriomeFrameBody,
-    CriomeReply, CriomeRequest, Identity, IdentityLookup, IdentityRegistration, KeyPurpose,
-    ObjectDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint, RejectionReason,
-    ReplayNonce, SignRequest,
+    AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationGrant,
+    AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
+    AuthorizationScope, AuthorizationStatus, AuthorizedSignalVerb, BlsPublicKey, BlsSignature,
+    ContentPurpose, ContentReference, ContractName, CriomeFrame, CriomeFrameBody, CriomeReply,
+    CriomeRequest, Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest,
+    PrincipalName, PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
+    RequiredSignatureThreshold, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
+    SignatureEnvelope, SignatureScheme, TimestampNanos,
 };
 
 fn synthetic_exchange() -> ExchangeIdentifier {
@@ -64,6 +69,53 @@ fn sign_request(name: &str) -> SignRequest {
     }
 }
 
+fn authorization_scope() -> AuthorizationScope {
+    AuthorizationScope::new("deploy-zeus-full-os")
+}
+
+fn contract_name() -> ContractName {
+    ContractName::new("signal-lojix")
+}
+
+fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
+    SignalCallAuthorization {
+        request_digest: ObjectDigest::from_bytes(seed),
+        contract: contract_name(),
+        verb: AuthorizedSignalVerb::Assert,
+        scope: authorization_scope(),
+        requester: Identity::developer("operator"),
+        nonce: ReplayNonce::new("authorization-nonce"),
+        expires_at: None,
+    }
+}
+
+fn signature_envelope() -> SignatureEnvelope {
+    SignatureEnvelope {
+        scheme: SignatureScheme::Bls12_381MinPk,
+        public_key: BlsPublicKey::new("public-key"),
+        signature: BlsSignature::new("signature"),
+    }
+}
+
+fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
+    AuthorizationGrant {
+        authorized_object_digest: ObjectDigest::from_bytes(seed),
+        authorized_contract: contract_name(),
+        authorized_verb: AuthorizedSignalVerb::Assert,
+        authorization_scope: authorization_scope(),
+        policy_satisfaction: AuthorizationPolicySatisfaction {
+            policy_class: AuthorizationPolicyClass::SimpleSelfSigned,
+            required_signature_threshold: RequiredSignatureThreshold::new(1),
+            satisfied_signers: vec![Identity::cluster("criome-master")],
+        },
+        signature_result: SignatureAuthorizationResult::SingleSignature,
+        signatures: vec![signature_envelope()],
+        issued_by: Identity::cluster("criome-master"),
+        issued_at: TimestampNanos::new(1),
+        expires_at: None,
+    }
+}
+
 #[tokio::test]
 async fn criome_root_starts_data_bearing_kameo_children() {
     let root = CriomeRoot::start(RootArguments::new(store_location("topology")))
@@ -74,6 +126,7 @@ async fn criome_root_starts_data_bearing_kameo_children() {
     assert!(topology.registry());
     assert!(topology.signer());
     assert!(topology.verifier());
+    assert!(topology.authorization());
     assert!(topology.subscription());
 
     CriomeRoot::stop(root).await.expect("stop criome root");
@@ -103,6 +156,75 @@ async fn sign_with_unregistered_identity_returns_rejection() {
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
 
+#[tokio::test]
+async fn authorize_signal_call_records_observable_signing_state() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("authorization-pending")))
+        .await
+        .expect("start criome root");
+    let authorization = signal_call_authorization(b"authorize observable request");
+    let request_digest = authorization.request_digest.clone();
+
+    let reply = root
+        .ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
+            authorization,
+        )))
+        .await
+        .expect("submit authorization request")
+        .into_reply();
+    let CriomeReply::AuthorizationPending(pending) = reply else {
+        panic!("expected AuthorizationPending, got {reply:?}");
+    };
+    assert_eq!(pending.request_digest, request_digest);
+    assert!(pending.missing_authorities.is_empty());
+
+    let snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
+            AuthorizationObservation {
+                request_slot: pending.request_slot.clone(),
+            },
+        )))
+        .await
+        .expect("observe authorization")
+        .into_reply();
+    let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
+        panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
+    };
+    assert_eq!(snapshot.states.len(), 1);
+    assert_eq!(snapshot.states[0].request_slot, pending.request_slot);
+    assert_eq!(snapshot.states[0].request_digest, request_digest);
+    assert_eq!(snapshot.states[0].status, AuthorizationStatus::Signing);
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn verify_authorization_rejects_digest_mismatch() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("authorization-mismatch")))
+        .await
+        .expect("start criome root");
+
+    let reply = root
+        .ask(SubmitRequest::new(CriomeRequest::VerifyAuthorization(
+            signal_criome::AuthorizationVerification {
+                request_digest: ObjectDigest::from_bytes(b"request-b"),
+                authorization: authorization_grant(b"request-a"),
+            },
+        )))
+        .await
+        .expect("verify authorization")
+        .into_reply();
+    let CriomeReply::AuthorizationDenied(denied) = reply else {
+        panic!("expected AuthorizationDenied, got {reply:?}");
+    };
+    assert_eq!(denied.denial.source, AuthorizationDenialSource::Policy);
+    assert_eq!(
+        denied.denial.reason,
+        AuthorizationDenialReason::RequestDigestMismatch,
+    );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
 #[test]
 fn criome_daemon_signal_frame_registers_identity() {
     let workspace = fixture_path("daemon-registers");
@@ -125,6 +247,25 @@ fn criome_daemon_signal_frame_registers_identity() {
         })
     );
     assert_eq!(served.join().expect("join daemon"), reply);
+}
+
+#[test]
+fn criome_daemon_owner_socket_is_user_private() {
+    let workspace = fixture_path("socket-mode");
+    let socket = workspace.join("criome.sock");
+    let store = StoreLocation::new(workspace.join("criome.redb"));
+    let daemon = CriomeDaemon::new(&socket, store)
+        .bind()
+        .expect("bind daemon");
+
+    let mode = std::fs::metadata(daemon.socket())
+        .expect("read socket metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+
+    daemon.shutdown().expect("shutdown daemon");
 }
 
 #[test]

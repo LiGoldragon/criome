@@ -1,3 +1,4 @@
+pub mod authorization;
 pub mod registry;
 pub mod root;
 pub mod signer;

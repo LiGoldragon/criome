@@ -55,19 +55,27 @@ ESSENCE, not in this repo.
   Personas, agents, developers, hosts custody their own
   private keys. Criome holds only the *public* halves in its
   registry.
-- **Criome permission comes from signatures.** Lojix submits the
-  exact canonical `signal-lojix` request digest and requested scope;
-  criome routes signature solicitations, records
-  pending/granted/denied authorization state, and issues the
-  authorization envelope when the required signatures arrive.
+- **Criome permission comes from policy plus signatures.** Lojix
+  submits the exact canonical `signal-lojix` request digest and
+  requested scope; criome policy names which signatures count; criome
+  routes signature solicitations, records pending/granted/denied
+  authorization state, and issues the authorization envelope when the
+  required signatures satisfy policy.
 - **Pending authorization is pushed.** Signature gathering may take
   time; clients observe `AuthorizationObservationStream` updates.
   Do not add polling loops for authorization completion.
-- **`tui-criome` owns signing-client state.** Key material, request
-  history, and signing decisions live in a separate stateful TUI
-  component with its own Sema database. That component speaks
-  `signal-criome` to receive signature requests, submit signatures,
-  reject requests, and create signed requests for Criome.
+- **Owner-class operations use `owner-signal-criome`.** The `criome`
+  CLI and `tui-criome` are owner clients of the user's own
+  `criome-daemon`; they do not use ordinary `signal-criome` for
+  passphrase submission, policy mutation, peer-route mutation, or
+  escalation-to-approve replies. `tui-criome` is the long-running
+  owner client for approval prompts, not a separate triad daemon.
+- **Owner sessions are encrypted.** When owner-signal-criome lands,
+  the owner client and daemon perform an ECDH handshake, derive a
+  symmetric session key, and exchange AEAD-encrypted frames before
+  passphrase submission or any owner-class operation. Do not add a
+  plaintext passphrase or owner-command path to the current
+  signal-criome socket skeleton.
 - **Skeleton-as-design.** New design lands as compiled
   types + trait signatures + `todo!()`, not as prose in this
   repo.
@@ -86,7 +94,7 @@ Criome owns:
 - The `criome.pub` public-material publication conventions.
 - Authorization request state, signature solicitation state,
   submitted signature state, authorization grant issuance, expiry,
-  and replay policy.
+  replay policy, policy state, and peer-routing state.
 
 Criome does **not** own:
 
