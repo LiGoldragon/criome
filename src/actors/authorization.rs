@@ -98,22 +98,19 @@ impl AuthorizationCoordinator {
     }
 
     async fn authorize_signal_call(&self, authorization: SignalCallAuthorization) -> CriomeReply {
-        let request_slot = Self::slot_for_digest(&authorization.request_digest);
-        let state = AuthorizationStateRecord {
-            request_slot: request_slot.clone(),
-            request_digest: authorization.request_digest.clone(),
-            status: AuthorizationStatus::Signing,
-            missing_authorities: Vec::new(),
-            grant: None,
-            denial: None,
+        let stored = match self
+            .create_authorization_state(authorization.request_digest.clone())
+            .await
+        {
+            Ok(stored) => stored,
+            Err(_error) => return rejection(RejectionReason::MalformedRequest),
         };
-        if self.store_authorization_state(state).await.is_err() {
-            return rejection(RejectionReason::MalformedRequest);
-        }
+        let state = stored.into_state();
+        let request_slot = state.request_slot.clone();
         CriomeReply::AuthorizationPending(AuthorizationPending {
             request_slot: request_slot.clone(),
             request_digest: authorization.request_digest,
-            missing_authorities: Vec::new(),
+            missing_authorities: state.missing_authorities,
             observation_token: AuthorizationObservationToken { request_slot },
         })
     }
@@ -137,9 +134,7 @@ impl AuthorizationCoordinator {
             CriomeReply::AuthorizationGranted(verification.authorization)
         } else {
             CriomeReply::AuthorizationDenied(AuthorizationDenied {
-                request_slot: Self::slot_for_digest(
-                    &verification.authorization.authorized_object_digest,
-                ),
+                request_slot: verification.authorization.request_slot,
                 denial: AuthorizationDenial {
                     source: AuthorizationDenialSource::Policy,
                     reason: AuthorizationDenialReason::RequestDigestMismatch,
@@ -208,6 +203,18 @@ impl AuthorizationCoordinator {
         Ok(reply.into_state())
     }
 
+    async fn create_authorization_state(
+        &self,
+        request_digest: signal_criome::ObjectDigest,
+    ) -> crate::Result<crate::tables::StoredAuthorizationState> {
+        let reply = self
+            .store
+            .ask(store::CreateAuthorizationState::signing(request_digest))
+            .await
+            .map_err(|error| crate::Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_state())
+    }
+
     async fn lookup_authorization_state(
         &self,
         request_slot: AuthorizationRequestSlot,
@@ -242,10 +249,6 @@ impl AuthorizationCoordinator {
             .await
             .map_err(|error| crate::Error::ActorCall(error.to_string()))?;
         Ok(reply.into_submission())
-    }
-
-    fn slot_for_digest(digest: &signal_criome::ObjectDigest) -> AuthorizationRequestSlot {
-        AuthorizationRequestSlot::new(digest.as_str())
     }
 }
 

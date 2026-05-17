@@ -61,6 +61,10 @@ ESSENCE, not in this repo.
   routes signature solicitations, records pending/granted/denied
   authorization state, and issues the authorization envelope when the
   required signatures satisfy policy.
+- **Authorization request slots are store-minted identities.** The
+  request digest is signed payload content. Do not derive
+  `AuthorizationRequestSlot` from a digest; ask `StoreKernel` to
+  create authorization state and return the durable slot.
 - **Pending authorization is pushed.** Signature gathering may take
   time; clients observe `AuthorizationObservationStream` updates.
   Do not add polling loops for authorization completion.

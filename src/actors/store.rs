@@ -1,8 +1,9 @@
 use kameo::actor::{Actor, ActorRef};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    Attestation, AuthorizationRequestSlot, AuthorizationStateRecord, Identity,
-    IdentityRegistration, IdentityRevocation, PrincipalStatus, SignatureSolicitationRoute,
+    Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, Identity, IdentityRegistration,
+    IdentityRevocation, ObjectDigest, PrincipalStatus, SignatureSolicitationRoute,
     SignatureSubmission,
 };
 
@@ -35,6 +36,14 @@ pub struct StoreAttestation {
 
 pub struct StoreAuthorizationState {
     state: AuthorizationStateRecord,
+}
+
+pub struct CreateAuthorizationState {
+    request_digest: ObjectDigest,
+    status: AuthorizationStatus,
+    missing_authorities: Vec<Identity>,
+    grant: Option<AuthorizationGrant>,
+    denial: Option<AuthorizationDenial>,
 }
 
 pub struct LookupAuthorizationState {
@@ -123,6 +132,18 @@ impl StoreAttestation {
 impl StoreAuthorizationState {
     pub fn new(state: AuthorizationStateRecord) -> Self {
         Self { state }
+    }
+}
+
+impl CreateAuthorizationState {
+    pub fn signing(request_digest: ObjectDigest) -> Self {
+        Self {
+            request_digest,
+            status: AuthorizationStatus::Signing,
+            missing_authorities: Vec::new(),
+            grant: None,
+            denial: None,
+        }
     }
 }
 
@@ -249,6 +270,19 @@ impl StoreKernel {
         Ok(stored)
     }
 
+    fn create_authorization_state(
+        &self,
+        state: CreateAuthorizationState,
+    ) -> crate::Result<StoredAuthorizationState> {
+        self.tables.put_new_authorization_state(
+            state.request_digest,
+            state.status,
+            state.missing_authorities,
+            state.grant,
+            state.denial,
+        )
+    }
+
     fn authorization_state(
         &self,
         request_slot: &AuthorizationRequestSlot,
@@ -372,6 +406,19 @@ impl Message<StoreAuthorizationState> for StoreKernel {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.store_authorization_state(message.state)
+            .map(|state| StoredAuthorizationStateReply { state })
+    }
+}
+
+impl Message<CreateAuthorizationState> for StoreKernel {
+    type Reply = crate::Result<StoredAuthorizationStateReply>;
+
+    async fn handle(
+        &mut self,
+        message: CreateAuthorizationState,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.create_authorization_state(message)
             .map(|state| StoredAuthorizationStateReply { state })
     }
 }

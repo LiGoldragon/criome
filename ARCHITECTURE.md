@@ -339,6 +339,7 @@ operator's implementation):
 | `policies` | typed request-kind / digest key | `Policy::Simple` (self-signed) or `Policy::Quorum { peers, threshold }` |
 | `peer_routes` | peer master public key | `(host, unix-user)` for cross-criome solicitation |
 | `attestation_next_slot` | singleton key | next monotonic slot |
+| `authorization_next_slot` | singleton key | next monotonic authorization request slot |
 | Sema meta | Sema-owned | schema-version and rkyv-format guards |
 
 The version-skew guard runs at boot and hard-fails on
@@ -477,6 +478,9 @@ constraints:
 - An authorization grant for request A cannot authorize
   request B; `VerifyAuthorization` checks the typed
   digest match.
+- Authorization request slots are durable store-minted
+  identities. The request digest is payload content; the daemon
+  must not derive a slot from the digest.
 - **Owner-class operations live on `owner-signal-criome`.** The
   ordinary `signal-criome` surface cannot express passphrase
   submission, master-key operations, policy mutation, peer-routing
@@ -565,7 +569,8 @@ Current implementation status:
   signer, revocation, and public-key match, then reports
   `InvalidSignature` until real BLS verification lands.
 - `AuthorizationCoordinator` is present as a data-bearing Kameo
-  actor. It records `AuthorizeSignalCall` as durable signing-state,
+  actor. It asks `StoreKernel` to mint durable authorization request
+  slots, records `AuthorizeSignalCall` as durable signing-state,
   exposes that state through `ObserveAuthorization`, stores
   signature solicitations/submissions, records signer denials, and
   rejects `VerifyAuthorization` when the grant digest does not match

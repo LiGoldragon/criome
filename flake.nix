@@ -95,6 +95,14 @@
             ! ${context.pkgs.gnugrep}/bin/grep -F 'Plaintext passphrase over the owner socket is acceptable' ${./ARCHITECTURE.md}
             touch "$out"
           '';
+          criome-authorization-slots-are-store-minted = context.pkgs.runCommand "criome-authorization-slots-are-store-minted" { } ''
+            set -euo pipefail
+
+            ${context.pkgs.gnugrep}/bin/grep -F 'authorization_next_slot' ${./src}/tables.rs > /dev/null
+            ${context.pkgs.gnugrep}/bin/grep -F 'Authorization request slots are durable store-minted' ${./ARCHITECTURE.md} > /dev/null
+            ! ${context.pkgs.gnugrep}/bin/grep -R -E 'slot_for_digest|request_digest\.as_str\(\)|AuthorizationRequestSlot::new\([^)]*digest' ${./src}
+            touch "$out"
+          '';
           fmt = context.craneLib.cargoFmt { inherit (context) src; };
           clippy = context.craneLib.cargoClippy (
             context.commonArgs

@@ -806,7 +806,7 @@ dependencies = [
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#9dff026a7f545418a0896399759479ad1c14afdc"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#be950e383d7701a7a86155b30c139c728c600049"
 dependencies = [
  "blake3",
  "blst",

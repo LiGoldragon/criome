@@ -14,12 +14,12 @@ use signal_core::{
 use signal_criome::{
     AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationGrant,
     AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
-    AuthorizationScope, AuthorizationStatus, AuthorizedSignalVerb, BlsPublicKey, BlsSignature,
-    ContentPurpose, ContentReference, ContractName, CriomeFrame, CriomeFrameBody, CriomeReply,
-    CriomeRequest, Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest,
-    PrincipalName, PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
-    RequiredSignatureThreshold, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
-    SignatureEnvelope, SignatureScheme, TimestampNanos,
+    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, AuthorizedSignalVerb,
+    BlsPublicKey, BlsSignature, ContentPurpose, ContentReference, ContractName, CriomeFrame,
+    CriomeFrameBody, CriomeReply, CriomeRequest, Identity, IdentityLookup, IdentityRegistration,
+    KeyPurpose, ObjectDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
+    RejectionReason, ReplayNonce, RequiredSignatureThreshold, SignRequest, SignalCallAuthorization,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, TimestampNanos,
 };
 
 fn synthetic_exchange() -> ExchangeIdentifier {
@@ -99,6 +99,7 @@ fn signature_envelope() -> SignatureEnvelope {
 
 fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
     AuthorizationGrant {
+        request_slot: AuthorizationRequestSlot::new("authorization-grant-slot"),
         authorized_object_digest: ObjectDigest::from_bytes(seed),
         authorized_contract: contract_name(),
         authorized_verb: AuthorizedSignalVerb::Assert,
@@ -114,6 +115,13 @@ fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
         issued_at: TimestampNanos::new(1),
         expires_at: None,
     }
+}
+
+fn pending_authorization(reply: CriomeReply) -> signal_criome::AuthorizationPending {
+    let CriomeReply::AuthorizationPending(pending) = reply else {
+        panic!("expected AuthorizationPending, got {reply:?}");
+    };
+    pending
 }
 
 #[tokio::test]
@@ -171,9 +179,7 @@ async fn authorize_signal_call_records_observable_signing_state() {
         .await
         .expect("submit authorization request")
         .into_reply();
-    let CriomeReply::AuthorizationPending(pending) = reply else {
-        panic!("expected AuthorizationPending, got {reply:?}");
-    };
+    let pending = pending_authorization(reply);
     assert_eq!(pending.request_digest, request_digest);
     assert!(pending.missing_authorities.is_empty());
 
@@ -193,6 +199,40 @@ async fn authorize_signal_call_records_observable_signing_state() {
     assert_eq!(snapshot.states[0].request_slot, pending.request_slot);
     assert_eq!(snapshot.states[0].request_digest, request_digest);
     assert_eq!(snapshot.states[0].status, AuthorizationStatus::Signing);
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn authorization_slots_are_store_minted_not_request_digest_derived() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("authorization-slots")))
+        .await
+        .expect("start criome root");
+    let authorization = signal_call_authorization(b"same authorization request");
+    let request_digest = authorization.request_digest.clone();
+
+    let first = pending_authorization(
+        root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
+            authorization.clone(),
+        )))
+        .await
+        .expect("submit first authorization")
+        .into_reply(),
+    );
+    let second = pending_authorization(
+        root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
+            authorization,
+        )))
+        .await
+        .expect("submit second authorization")
+        .into_reply(),
+    );
+
+    assert_eq!(first.request_digest, request_digest);
+    assert_eq!(second.request_digest, request_digest);
+    assert_ne!(first.request_slot, second.request_slot);
+    assert_ne!(first.request_slot.as_str(), request_digest.as_str());
+    assert_ne!(second.request_slot.as_str(), request_digest.as_str());
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }

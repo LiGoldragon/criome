@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use sema::{Schema, SchemaVersion, Sema, Table};
 use signal_criome::{
-    Attestation, AuthorizationRequestSlot, AuthorizationStateRecord, BlsPublicKey, Identity,
-    IdentityReceipt, IdentityRegistration, IdentityRevocation, KeyPurpose, PrincipalName,
+    Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Identity, IdentityReceipt,
+    IdentityRegistration, IdentityRevocation, KeyPurpose, ObjectDigest, PrincipalName,
     PrincipalStatus, PublicKeyFingerprint, SignatureSolicitationRoute, SignatureSubmission,
 };
 
@@ -24,6 +25,8 @@ const SUBMITTED_SIGNATURES: Table<&'static str, StoredSignatureSubmission> =
     Table::new("submitted_signatures");
 const ATTESTATION_NEXT_SLOT: Table<&'static str, u64> = Table::new("attestation_next_slot");
 const ATTESTATION_NEXT_SLOT_KEY: &str = "next";
+const AUTHORIZATION_NEXT_SLOT: Table<&'static str, u64> = Table::new("authorization_next_slot");
+const AUTHORIZATION_NEXT_SLOT_KEY: &str = "next";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreLocation {
@@ -216,6 +219,7 @@ impl CriomeTables {
             SIGNATURE_SOLICITATIONS.ensure(transaction)?;
             SUBMITTED_SIGNATURES.ensure(transaction)?;
             ATTESTATION_NEXT_SLOT.ensure(transaction)?;
+            AUTHORIZATION_NEXT_SLOT.ensure(transaction)?;
             Ok(())
         })?;
         Ok(Self { database })
@@ -290,6 +294,37 @@ impl CriomeTables {
         Ok(())
     }
 
+    pub fn put_new_authorization_state(
+        &self,
+        request_digest: ObjectDigest,
+        status: AuthorizationStatus,
+        missing_authorities: Vec<Identity>,
+        grant: Option<AuthorizationGrant>,
+        denial: Option<AuthorizationDenial>,
+    ) -> Result<StoredAuthorizationState> {
+        let slot = self.next_authorization_slot()?;
+        let state = AuthorizationStateRecord {
+            request_slot: slot.request_slot(),
+            request_digest,
+            status,
+            missing_authorities,
+            grant,
+            denial,
+        };
+        let stored = StoredAuthorizationState::new(state);
+        let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
+        self.database.write(|transaction| {
+            AUTHORIZATION_STATES.insert(transaction, key.as_str(), &stored)?;
+            AUTHORIZATION_NEXT_SLOT.insert(
+                transaction,
+                AUTHORIZATION_NEXT_SLOT_KEY,
+                &slot.next_value(),
+            )?;
+            Ok(())
+        })?;
+        Ok(stored)
+    }
+
     pub fn authorization_state(
         &self,
         slot: &AuthorizationRequestSlot,
@@ -340,6 +375,18 @@ impl CriomeTables {
             None => Ok(AttestationSlot::after_records(&self.attestations()?)),
         }
     }
+
+    fn next_authorization_slot(&self) -> Result<AuthorizationSlot> {
+        let stored = self.database.read(|transaction| {
+            AUTHORIZATION_NEXT_SLOT.get(transaction, AUTHORIZATION_NEXT_SLOT_KEY)
+        })?;
+        match stored {
+            Some(next_slot) => Ok(AuthorizationSlot::new(next_slot)),
+            None => Ok(AuthorizationSlot::after_records(
+                &self.authorization_states()?,
+            )),
+        }
+    }
 }
 
 struct AttestationSlot {
@@ -362,6 +409,33 @@ impl AttestationSlot {
 
     const fn value(&self) -> u64 {
         self.value
+    }
+
+    const fn next_value(&self) -> u64 {
+        self.value + 1
+    }
+}
+
+struct AuthorizationSlot {
+    value: u64,
+}
+
+impl AuthorizationSlot {
+    fn new(value: u64) -> Self {
+        Self { value }
+    }
+
+    fn after_records(records: &[StoredAuthorizationState]) -> Self {
+        let value = records
+            .iter()
+            .filter_map(|record| record.state().request_slot.as_str().parse::<u64>().ok())
+            .max()
+            .map_or(0, |slot| slot + 1);
+        Self { value }
+    }
+
+    fn request_slot(&self) -> AuthorizationRequestSlot {
+        AuthorizationRequestSlot::new(self.value.to_string())
     }
 
     const fn next_value(&self) -> u64 {
