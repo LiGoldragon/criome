@@ -83,27 +83,88 @@ authorization decisions, and privilege elevations.*
 
 ## Authorization model
 
-- `criome-daemon` receives routed authorization requests, routes
-  signature solicitations, records submitted signatures, and issues an
-  authorization grant when signatures authorize the exact request
-  digest.
-- Criome's authorization state is request state, signature
+- **A criome daemon has one owner: a Unix user.** Only that user can
+  write to the daemon's owner socket. *Single-owner* is what gives the
+  daemon authority to sign with its master key. The owner contract is
+  `owner-signal-criome`; the user speaks it through the `criome` CLI
+  (one-shot) or `tui-criome` (long-running interactive). The CLI is
+  the first owner client to build; the TUI exists because
+  escalation-to-approve flows need a client that stays interactive
+  across many escalations.
+- **Criome holds policy + collects signatures + issues grants.** The
+  daemon's policy data names which signers / which quorum are required
+  for which content-addressed request kinds. Permission for a specific
+  request is constituted by *signatures over the canonical request
+  digest that satisfy criome's policy* for that request. A grant for
+  one request cannot authorize another.
+- **Two policy classes are first-class:**
+  - *Simple policy* — single-key self-owned. Criome holds the private
+    key; only its own master-key signature is needed. The default and
+    most common case.
+  - *Complex policy (quorum)* — needs criome's own signature plus
+    signatures from named peer criome daemons. Cross-criome routing
+    solicits the additional signatures.
+- **Two escalation kinds are first-class:**
+  - *Escalation-to-sign* — policy is satisfied; criome signs with its
+    master key and returns the grant.
+  - *Escalation-to-approve* — policy says *"ask my owner before
+    signing"*; criome routes an approval prompt to the owner over
+    owner-signal-criome; the owner answers yes/no; criome then signs
+    or denies.
+- **There are many criome daemons.** One per Unix user; new trust
+  boundaries spawn new daemons. Complex policies that demand peer
+  signatures find peers by predictable socket names (§"Peer discovery
+  and cross-criome routing" below).
+- **Criome-daemon's authority state.** Request state, signature
   solicitation state, submitted-signature state, grant state, expiry,
-  and replay policy. The daemon does not own a local permission table
-  that grants effects apart from signatures.
-- Permission comes from signatures over the exact request digest. A
-  grant for one request cannot authorize another request.
-- `tui-criome` is a separate stateful TUI signing client. It speaks
-  `signal-criome`, owns a local Sema database for request history,
-  signing decisions, and signing-client key material, receives
-  signature requests, submits signatures or rejections, and can create
-  signed requests for Criome to route.
-- `criome-daemon` keeps its own root keypair for criome-issued
-  attestations. Signing-client private key custody belongs to the
-  signing client, not to the daemon.
-- Lojix effects wait for `AuthorizationGranted`. Pending
-  authorization state is observed through `ObserveAuthorization`, not
-  by polling.
+  and replay policy — all owned through sema-engine tables. Plus the
+  policy table and the peer-routing table.
+- **`AuthorizationGrant` carries the satisfied policy.** Scope, the
+  signatures collected, and the threshold expression that says why
+  those signatures are sufficient.
+- **Pending authorization is observable.** `ObserveAuthorization`
+  pushes pending → granted/denied/expired state. Lojix effects wait
+  for `AuthorizationGranted` over the request's exact digest, not by
+  polling.
+
+## Security model — Unix-user as boundary
+
+The security boundary criome enforces in production is the Unix-user
+filesystem permission model. The owner socket is a user-owned file at
+mode `0600`; only that Unix user can write to it; therefore only that
+user can issue owner-class orders to the daemon.
+
+This is a deliberate adoption of the only boundary still enforced
+today. **In a world of AI agents, any process running as Unix user
+X can spawn an agent that drives the screen, mouse, keyboard, and
+audio of user X's session.** Reading window contents, recording the
+display, capturing keystrokes, controlling the cursor — all of these
+are available to any same-UID process. GUI process isolation, "this
+runs in its own window so it's safe," and similar assumptions no
+longer hold. What remains is the kernel-enforced file permission
+model: a same-UID process can already do anything criome can do, but
+a process running as a different UID cannot write criome's owner
+socket regardless of what it knows.
+
+Criome therefore rests its authority on *single Unix-user ownership*
+of the daemon. Same-UID hardening — `mlock` of decrypted master-key
+pages, zero-after-use of passphrase bytes, disabled core dumps,
+audit-log discipline — is the rest of the in-user posture; the
+filesystem boundary is the part the OS enforces for us.
+
+**Plaintext passphrase over the owner socket is acceptable within
+this boundary.** Any process that can write the socket already runs
+as the owner, and therefore already has the same in-memory
+inspection capability that would let it read the decrypted master
+key. Transport-level encryption of the passphrase between owner
+client and daemon would add complexity without raising the floor.
+
+**Cross-host transport is a separate case.** Peer criome daemons on
+different hosts speak across the local boundary. Cross-host
+signal-criome links need wire crypto (TLS, signed envelopes, or
+SSH tunnelling); the local-trust argument does not extend to the
+network. See §"Peer discovery and cross-criome routing" for the
+open design slot.
 
 ## 1 · Topology
 
@@ -150,9 +211,15 @@ work is hot enough.
 
 - The `criome.redb` durable store and its component-local
   Sema layer.
-- Criome's own root BLS keypair (loaded from
-  `/etc/criome/root.key` at startup; private material
-  mode 0600).
+- **The single Unix-user owner relation.** The daemon's owner
+  socket lives at a per-user path with mode 0600; only that user
+  can write to it. The owner-signal-criome contract is the
+  surface between the owner (their CLI / TUI) and the daemon.
+- **The daemon's master BLS keypair as its core identity.**
+  Loaded at startup; private half may be encrypted at rest using
+  the owner's passphrase (submitted over owner-signal-criome at
+  startup); decrypted master-key pages are `mlock`ed and zeroed
+  on shutdown.
 - The closed `Identity` enum vocabulary: `Persona`,
   `Agent`, `Host`, `Developer`, `Cluster`.
 - The signing/verification API surface against `blst`.
@@ -160,10 +227,20 @@ work is hot enough.
   cryptographically witnessed).
 - The `criome.pub` public-material publication for
   consumers to verify criome-issued attestations.
+- **The policy table.** Maps content-addressed request kinds to
+  one of two policy classes: *simple* (single-key self-owned) or
+  *complex* (quorum across criome's own key plus named peers).
+  Today's two classes are the immediate need; richer schema
+  (action-pattern granularity, weighted thresholds, subkeys)
+  lives in §"Future possibilities".
+- **The peer-routing table.** Maps peer master public keys to
+  `(host, unix-user)` pairs for cross-criome solicitation under
+  complex policies.
 - Authorization request state, signature solicitation state,
   submitted signature state, authorization envelope issuance,
-  authorization expiry, and replay policy. Criome's authorization
-  permission comes from signatures over exact requests.
+  authorization expiry, and replay policy. Permission is
+  constituted by signatures over the exact request digest that
+  satisfy criome's policy.
 
 ## 3 · Not owned
 
@@ -230,7 +307,9 @@ operator's implementation):
 | `attestations` | monotonic slot | `StoredAttestation` |
 | `authorization_requests` | typed authorization request slot | pending/granted/denied authorization state |
 | `signature_solicitations` | typed authorization request slot + signer | in-flight routed signature work |
-| `submitted_signatures` | typed authorization request slot + signer | signatures submitted by `tui-criome` or peer signing clients |
+| `submitted_signatures` | typed authorization request slot + signer | signatures submitted by the owner (own key) or peer criome daemons |
+| `policies` | typed request-kind / digest key | `Policy::Simple` (self-signed) or `Policy::Quorum { peers, threshold }` |
+| `peer_routes` | peer master public key | `(host, unix-user)` for cross-criome solicitation |
 | `attestation_next_slot` | singleton key | next monotonic slot |
 | Sema meta | Sema-owned | schema-version and rkyv-format guards |
 
@@ -242,16 +321,24 @@ mismatch (per
 
 ## 6 · Trust model and key distribution
 
-- Criome's root public key is materialized to
-  `/etc/criome/root.pub` (mode 0644) at deploy time by
-  the deployment chain. Every consumer (router,
-  lojix-cli, forge) reads this file at startup to
-  bootstrap signature verification.
+- Criome's master public key is materialized to a known per-user
+  path (e.g., `${XDG_RUNTIME_DIR}/criome/<short-hash>.pub`,
+  mirrored at a stable per-user well-known location). Local
+  consumers read this file at startup to bootstrap signature
+  verification against the criome they trust.
+- Criome's master private key is loaded at startup. If the
+  private half is encrypted at rest, the daemon waits for the
+  owner to submit the passphrase over owner-signal-criome before
+  the master-key actor reports ready. Plaintext passphrase over
+  the owner socket is acceptable within the local trust boundary
+  (§"Security model — Unix-user as boundary"); standard
+  hardening — `mlock`, zero-after-use, disabled core dumps —
+  applies regardless.
 - Per-persona / per-agent / per-developer / per-host
   identities are registered in criome via the
   `RegisterIdentity` request, which itself must be signed
   by an already-registered Developer identity (or, at
-  cluster bootstrap, by criome's root). The registration
+  cluster bootstrap, by criome's master key). The registration
   message includes the new identity's public key.
 - Public-key distribution to verifiers is **pushed** via
   `SubscribeIdentityUpdates` (per
@@ -260,11 +347,43 @@ mismatch (per
 - Private keypair custody for other identities lives
   with those identities (personas hold their own;
   developers use HSMs or gpg-agent; etc.). Criome does
-  not custody private keypairs other than its own root.
+  not custody private keypairs other than its own master.
 
 ClaviFaber feeds into criome via a `signal-clavifaber` channel.
 Each per-host `PublicKeyPublication` lands as a
 `Identity::Host(HostName)` registration.
+
+### 6.1 Peer discovery and cross-criome routing
+
+Complex (quorum) policies require signatures from peer criome
+daemons. Each criome's peer-routing table (§"Owned") maps a peer's
+master public key to a `(host, unix-user)` pair. Sockets at the
+peer's location are named predictably:
+
+```text
+${XDG_RUNTIME_DIR or per-user runtime dir}/criome/<short-hash-of-pubkey>.sock
+```
+
+where `<short-hash-of-pubkey>` is a short hash (8–16 hex chars) of
+the peer daemon's master public key. The hash is short for
+ergonomics; collision is *inconvenient* (the routing layer surfaces
+a disambiguation error), not *dangerous* (a wrong daemon cannot
+forge a signature for a key it does not hold; verification at the
+requester fails).
+
+**Cross-host transport is an open design slot.** Local sockets do
+not cross hosts; quorum policies that name peers on other hosts
+need a wire-crypto layer. Candidate shapes:
+
+| Option | Shape |
+|---|---|
+| TLS-wrapped signal-core | Cross-host peer connections are TLS sockets. PKI rooted at criome master pubkeys. |
+| Per-frame signed envelope | Each cross-host frame is BLS-signed by sender's master key; receiver verifies before parsing. |
+| SSH tunnelling | Cross-host traffic flows over SSH between criome users. |
+
+The choice is deferred to a follow-up designer report. Single-host
+quorum (peers under different Unix users on one host) works today
+without the cross-host crypto layer.
 
 ---
 
@@ -279,7 +398,9 @@ The headline boundaries:
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
 | `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
 | `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
-| `tui-criome` | `ObserveAuthorization`, `SubmitSignature`, `RejectAuthorization`, `AuthorizeSignalCall` | Stateful TUI signing client with its own Sema database for request history and key material. Receives signature requests, submits signatures, rejects requests, and can create signed requests for Criome. |
+| `criome` CLI (owner) | `owner-signal-criome` | The owner Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
+| `tui-criome` (owner, long-running) | `owner-signal-criome` | The owner's long-running interactive client. Same contract as the CLI, but stays connected to receive `RequestOwnerApproval` push events and answer them. Not a separate triad daemon. |
+| Peer criome daemons | `signal-criome` (peer routing) | Receive `RouteSignatureRequest` for quorum solicitations; reply with `SubmitSignature` or `RejectAuthorization`. Found by predictable socket name (§6.1). |
 | ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
 | Future `persona-audit` policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
 
@@ -319,15 +440,52 @@ constraints:
 - Lojix deploy effects do not begin until `AuthorizeSignalCall`
   returns `AuthorizationGranted` for the exact request digest and
   requested scope.
-- Authorization permission comes from signatures over the exact
-  request.
+- **Authorization is constituted by signatures-over-the-exact-digest
+  that satisfy criome's policy.** Policy alone does not grant;
+  signatures alone are not enough without policy that names them as
+  sufficient.
 - Pending authorization is a first-class state. It is
   observed through `ObserveAuthorization`, not by polling.
 - An authorization grant for request A cannot authorize
   request B; `VerifyAuthorization` checks the typed
   digest match.
+- **Owner-class operations live on `owner-signal-criome`.** The
+  ordinary `signal-criome` surface cannot express passphrase
+  submission, master-key operations, policy mutation, peer-routing
+  table mutation, or escalation-approval replies.
+- **The daemon's owner socket is mode 0600, owned by the daemon's
+  Unix user.** A witness test asserts the socket's mode and owner
+  match the configured user at daemon ready.
+- **Master-key plaintext does not leak.** A witness scans the
+  daemon process's memory pages for the plaintext passphrase after
+  unlock-and-use; the scan finds nothing. (Witness implementation
+  may rely on a test fixture that sets a known passphrase and
+  searches post-zeroization.)
 - Prompt-audit policy code does not live in this repo
   (it belongs to `persona-mind`).
+
+---
+
+## 8.1 · Future possibilities
+
+These are *not* immediate design surfaces. They are named here so
+the trajectory is visible from today's narrow Spartan substrate:
+
+- **Richer policy schema.** Action-pattern granularity (per-digest,
+  per-request-kind, per-caller-class, wildcards), weighted
+  thresholds, m-of-n with veto, multi-signed policy amendments.
+  Today's two classes (simple-self-signed, simple-quorum) are the
+  immediate need.
+- **Subkeys.** Criome creating sub-identities under its master key
+  for more specific permissions without revealing the master.
+  Useful when one daemon's authority needs to be delegated to
+  scoped contexts.
+- **Cross-host wire crypto choice** (§6.1) — TLS, signed envelopes,
+  or SSH tunnelling for cross-host peer routing.
+- **Key rotation orchestration** for the master key. The Spartan
+  first cut treats master keys as long-lived; full rotation
+  (publishing a new master with continuity proofs back to the old)
+  is deferred.
 
 ---
 
@@ -375,8 +533,13 @@ Current implementation status:
   The daemon implementation still needs the
   `AuthorizationCoordinator`, signature solicitation/submission Sema
   tables, and fake-Criome tests proving Lojix effects cannot start
-  before an `AuthorizationGranted` envelope. `tui-criome` is a new
-  stateful signing-client component, not part of this daemon repo.
+  before an `AuthorizationGranted` envelope.
+- The owner-signal-criome contract is the next contract surface to
+  design: passphrase submission, policy mutation, peer-route
+  mutation, escalation-approval prompts and replies. `tui-criome`
+  becomes a long-running owner client of *this* daemon (not a
+  separate daemon, not a separate signing-client component); the
+  `criome` CLI is the one-shot owner client.
 
 ---
 
