@@ -48,6 +48,14 @@ authorization decisions, and privilege elevations.*
   Host, Developer, Cluster), **emit attestations** signed
   by criome's root key only when a witness requires (e.g.,
   ChannelGrantAttestation from `persona-mind`).
+- **Routed authorization is the Lojix integration path.**
+  `lojix-daemon` submits the exact canonical `signal-lojix`
+  request digest to its local `criome-daemon`. Criome routes
+  signature solicitations, records pending/granted/denied state,
+  checks expiry and replay, and issues an authorization envelope
+  whose permission comes from signatures over the exact request.
+  Lojix owns deployment coordination after the envelope grants the
+  requested scope.
 - **Signature scheme**: **BLS12-381 from day one**, via
   `blst` (Supranational). Closed `SignatureScheme` enum
   carries `Bls12_381MinPk` and `Bls12_381MinSig` variants;
@@ -82,6 +90,7 @@ flowchart TB
     root["CriomeRoot (Kameo runtime root)"]
     signer["AttestationSigner<br/>(holds root keypair; signs)"]
     verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
+    authorization["AuthorizationCoordinator<br/>(signature state;<br/>routes solicitations)"]
     registry["IdentityRegistry<br/>(Identity ↔ PublicKey)"]
     store["StoreKernel<br/>(sole owner of criome.redb)"]
     db["criome.redb<br/>(via sema library)"]
@@ -91,9 +100,12 @@ flowchart TB
     socket --> root
     root --> signer
     root --> verifier
+    root --> authorization
     root --> registry
     signer --> store
     verifier --> registry
+    authorization --> registry
+    authorization --> store
     registry --> store
     store --> db
     signer --> audit
@@ -124,6 +136,10 @@ work is hot enough.
   cryptographically witnessed).
 - The `criome.pub` public-material publication for
   consumers to verify criome-issued attestations.
+- Authorization request state, signature solicitation state,
+  submitted signature state, authorization envelope issuance,
+  authorization expiry, and replay policy. Criome's authorization
+  permission comes from signatures over exact requests.
 
 ## 3 · Not owned
 
@@ -188,6 +204,9 @@ operator's implementation):
 | `identities` | typed identity key | `StoredIdentity` with public key, fingerprint, purpose, status |
 | `revocations` | typed identity key | `StoredRevocation` |
 | `attestations` | monotonic slot | `StoredAttestation` |
+| `authorization_requests` | typed authorization request slot | pending/granted/denied authorization state |
+| `signature_solicitations` | typed authorization request slot + signer | in-flight routed signature work |
+| `submitted_signatures` | typed authorization request slot + signer | signatures submitted by `tui-criome` or peer signing clients |
 | `attestation_next_slot` | singleton key | next monotonic slot |
 | Sema meta | Sema-owned | schema-version and rkyv-format guards |
 
@@ -235,6 +254,8 @@ The headline boundaries:
 | `persona-router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
 | `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
+| `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
+| `tui-criome` | `ObserveAuthorization`, `SubmitSignature`, `RejectAuthorization`, `AuthorizeSignalCall` | Stateful TUI signing client with its own Sema database for request history and key material. Receives signature requests, submits signatures, rejects requests, and can create signed requests for Criome. |
 | ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
 | Future `persona-audit` policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
 
@@ -271,6 +292,16 @@ constraints:
   install in router.
 - Archive deployments without a valid attestation abort
   in lojix-cli.
+- Lojix deploy effects do not begin until `AuthorizeSignalCall`
+  returns `AuthorizationGranted` for the exact request digest and
+  requested scope.
+- Authorization permission comes from signatures over the exact
+  request.
+- Pending authorization is a first-class state. It is
+  observed through `ObserveAuthorization`, not by polling.
+- An authorization grant for request A cannot authorize
+  request B; `VerifyAuthorization` checks the typed
+  digest match.
 - Prompt-audit policy code does not live in this repo
   (it belongs to `persona-mind`).
 
@@ -316,6 +347,12 @@ Current implementation status:
 - `VerifyAttestation` checks content equality, known
   signer, revocation, and public-key match, then reports
   `InvalidSignature` until real BLS verification lands.
+- Routed authorization types are now present in `signal-criome`.
+  The daemon implementation still needs the
+  `AuthorizationCoordinator`, signature solicitation/submission Sema
+  tables, and fake-Criome tests proving Lojix effects cannot start
+  before an `AuthorizationGranted` envelope. `tui-criome` is a new
+  stateful signing-client component, not part of this daemon repo.
 
 ---
 

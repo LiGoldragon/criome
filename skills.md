@@ -12,7 +12,8 @@ own root keypair, an identity registry, and an attestation
 audit log. It signs typed attestations over content records
 (channel grants, archive fingerprints, authorization decisions,
 privilege elevations); it verifies signatures against the
-registry; it serves identity lookups via a push subscription.
+registry; it serves identity lookups via a push subscription; and it
+is the authorization topology for Lojix deploy requests.
 
 Read `ARCHITECTURE.md` for this repo's shape.
 
@@ -54,6 +55,19 @@ ESSENCE, not in this repo.
   Personas, agents, developers, hosts custody their own
   private keys. Criome holds only the *public* halves in its
   registry.
+- **Criome permission comes from signatures.** Lojix submits the
+  exact canonical `signal-lojix` request digest and requested scope;
+  criome routes signature solicitations, records
+  pending/granted/denied authorization state, and issues the
+  authorization envelope when the required signatures arrive.
+- **Pending authorization is pushed.** Signature gathering may take
+  time; clients observe `AuthorizationObservationStream` updates.
+  Do not add polling loops for authorization completion.
+- **`tui-criome` owns signing-client state.** Key material, request
+  history, and signing decisions live in a separate stateful TUI
+  component with its own Sema database. That component speaks
+  `signal-criome` to receive signature requests, submit signatures,
+  reject requests, and create signed requests for Criome.
 - **Skeleton-as-design.** New design lands as compiled
   types + trait signatures + `todo!()`, not as prose in this
   repo.
@@ -70,6 +84,9 @@ Criome owns:
 - The identity registry storage shape (in `criome.redb`).
 - The signing/verification API contract surface.
 - The `criome.pub` public-material publication conventions.
+- Authorization request state, signature solicitation state,
+  submitted signature state, authorization grant issuance, expiry,
+  and replay policy.
 
 Criome does **not** own:
 
@@ -102,6 +119,10 @@ Criome does **not** own:
   discipline.
 - `~/primary/skills/rust/crate-layout.md` — CLIs are daemon
   clients; one NOTA record in, one out.
+- `~/primary/reports/system-assistant/21-criome-routed-authorization-and-thin-cli-shape-2026-05-17.md`
+  — routed authorization and thin caller shape.
+- `~/primary/reports/system-specialist/140-lojix-criome-mediated-authorization-decision-2026-05-17.md`
+  — Lojix consequences and required authorization actor.
 - `/git/github.com/LiGoldragon/clavifaber/ARCHITECTURE.md` —
   feeds criome's identity registry.
 - This repo at commit `a3f4173` — archaeology of the prior
