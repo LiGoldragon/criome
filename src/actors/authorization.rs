@@ -3,18 +3,19 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use signal_criome::{
     AuthorizationDenial, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationDenied,
-    AuthorizationObservation, AuthorizationObservationRetracted, AuthorizationObservationSnapshot,
-    AuthorizationObservationToken, AuthorizationPending, AuthorizationRejection,
-    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus,
-    AuthorizationVerification, CriomeReply, RejectionReason, SignalCallAuthorization,
-    SignatureRouteReceipt, SignatureSolicitationRoute, SignatureSubmission,
-    SignatureSubmissionReceipt,
+    AuthorizationExpired, AuthorizationObservation, AuthorizationObservationRetracted,
+    AuthorizationObservationSnapshot, AuthorizationObservationToken, AuthorizationPending,
+    AuthorizationRejection, AuthorizationRequestSlot, AuthorizationStateRecord,
+    AuthorizationStatus, AuthorizationVerification, CriomeReply, RejectionReason,
+    SignalCallAuthorization, SignatureRouteReceipt, SignatureSolicitationRoute,
+    SignatureSubmission, SignatureSubmissionReceipt, TimestampNanos,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, rejection, store};
 
 pub struct AuthorizationCoordinator {
     store: ActorRef<store::StoreKernel>,
+    clock: AuthorizationClock,
 }
 
 #[derive(Clone)]
@@ -94,16 +95,25 @@ impl CloseAuthorizationObservation {
 
 impl AuthorizationCoordinator {
     fn new(store: ActorRef<store::StoreKernel>) -> Self {
-        Self { store }
+        Self {
+            store,
+            clock: AuthorizationClock::system(),
+        }
     }
 
     async fn authorize_signal_call(&self, authorization: SignalCallAuthorization) -> CriomeReply {
+        if let Some(expired_at) = authorization.expires_at
+            && self.clock.is_expired(expired_at)
+        {
+            return self.expire_authorization(authorization, expired_at).await;
+        }
+
         let stored = match self
-            .create_authorization_state(authorization.request_digest.clone())
+            .create_authorization_state(store::CreateAuthorizationState::signing(&authorization))
             .await
         {
             Ok(stored) => stored,
-            Err(_error) => return rejection(RejectionReason::MalformedRequest),
+            Err(error) => return authorization_store_rejection(error),
         };
         let state = stored.into_state();
         let request_slot = state.request_slot.clone();
@@ -112,6 +122,24 @@ impl AuthorizationCoordinator {
             request_digest: authorization.request_digest,
             missing_authorities: state.missing_authorities,
             observation_token: AuthorizationObservationToken { request_slot },
+        })
+    }
+
+    async fn expire_authorization(
+        &self,
+        authorization: SignalCallAuthorization,
+        expired_at: TimestampNanos,
+    ) -> CriomeReply {
+        let stored = match self
+            .create_authorization_state(store::CreateAuthorizationState::expired(&authorization))
+            .await
+        {
+            Ok(stored) => stored,
+            Err(error) => return authorization_store_rejection(error),
+        };
+        CriomeReply::AuthorizationExpired(AuthorizationExpired {
+            request_slot: stored.into_state().request_slot,
+            expired_at,
         })
     }
 
@@ -205,14 +233,14 @@ impl AuthorizationCoordinator {
 
     async fn create_authorization_state(
         &self,
-        request_digest: signal_criome::ObjectDigest,
+        state: store::CreateAuthorizationState,
     ) -> crate::Result<crate::tables::StoredAuthorizationState> {
         let reply = self
             .store
-            .ask(store::CreateAuthorizationState::signing(request_digest))
+            .ask(state)
             .await
             .map_err(|error| crate::Error::ActorCall(error.to_string()))?;
-        Ok(reply.into_state())
+        reply.into_result()
     }
 
     async fn lookup_authorization_state(
@@ -249,6 +277,38 @@ impl AuthorizationCoordinator {
             .await
             .map_err(|error| crate::Error::ActorCall(error.to_string()))?;
         Ok(reply.into_submission())
+    }
+}
+
+fn authorization_store_rejection(error: crate::Error) -> CriomeReply {
+    match error {
+        crate::Error::AuthorizationReplayAttempted => rejection(RejectionReason::ReplayAttempted),
+        _error => rejection(RejectionReason::MalformedRequest),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AuthorizationClock {
+    epoch: std::time::SystemTime,
+}
+
+impl AuthorizationClock {
+    fn system() -> Self {
+        Self {
+            epoch: std::time::UNIX_EPOCH,
+        }
+    }
+
+    fn is_expired(&self, expires_at: TimestampNanos) -> bool {
+        expires_at.into_u64() <= self.now().into_u64()
+    }
+
+    fn now(&self) -> TimestampNanos {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(self.epoch)
+            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+            .unwrap_or(0);
+        TimestampNanos::new(nanos)
     }
 }
 

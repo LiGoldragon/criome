@@ -8,8 +8,9 @@ use signal_criome::{
 };
 
 use crate::tables::{
-    CriomeTables, StoreLocation, StoredAttestation, StoredAuthorizationState, StoredIdentity,
-    StoredRevocation, StoredSignatureSolicitation, StoredSignatureSubmission,
+    AuthorizationReplayIdentity, CriomeTables, StoreLocation, StoredAttestation,
+    StoredAuthorizationState, StoredIdentity, StoredRevocation, StoredSignatureSolicitation,
+    StoredSignatureSubmission,
 };
 
 pub struct StoreKernel {
@@ -44,6 +45,7 @@ pub struct CreateAuthorizationState {
     missing_authorities: Vec<Identity>,
     grant: Option<AuthorizationGrant>,
     denial: Option<AuthorizationDenial>,
+    replay_identity: AuthorizationReplayIdentity,
 }
 
 pub struct LookupAuthorizationState {
@@ -83,6 +85,18 @@ pub struct StoredAttestationReply {
 #[derive(kameo::Reply)]
 pub struct StoredAuthorizationStateReply {
     state: StoredAuthorizationState,
+}
+
+#[derive(kameo::Reply)]
+pub struct AuthorizationStateCreationReply {
+    outcome: AuthorizationStateCreationOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthorizationStateCreationOutcome {
+    Created(Box<StoredAuthorizationState>),
+    ReplayAttempted,
+    StoreUnavailable(String),
 }
 
 #[derive(kameo::Reply)]
@@ -136,13 +150,31 @@ impl StoreAuthorizationState {
 }
 
 impl CreateAuthorizationState {
-    pub fn signing(request_digest: ObjectDigest) -> Self {
+    pub fn signing(authorization: &signal_criome::SignalCallAuthorization) -> Self {
         Self {
-            request_digest,
+            request_digest: authorization.request_digest.clone(),
             status: AuthorizationStatus::Signing,
             missing_authorities: Vec::new(),
             grant: None,
             denial: None,
+            replay_identity: AuthorizationReplayIdentity::new(
+                authorization.requester.clone(),
+                authorization.nonce.clone(),
+            ),
+        }
+    }
+
+    pub fn expired(authorization: &signal_criome::SignalCallAuthorization) -> Self {
+        Self {
+            request_digest: authorization.request_digest.clone(),
+            status: AuthorizationStatus::Expired,
+            missing_authorities: Vec::new(),
+            grant: None,
+            denial: None,
+            replay_identity: AuthorizationReplayIdentity::new(
+                authorization.requester.clone(),
+                authorization.nonce.clone(),
+            ),
         }
     }
 }
@@ -192,6 +224,31 @@ impl StoredAttestationReply {
 impl StoredAuthorizationStateReply {
     pub fn into_state(self) -> StoredAuthorizationState {
         self.state
+    }
+}
+
+impl AuthorizationStateCreationReply {
+    fn from_result(result: crate::Result<StoredAuthorizationState>) -> Self {
+        let outcome = match result {
+            Ok(state) => AuthorizationStateCreationOutcome::Created(Box::new(state)),
+            Err(crate::Error::AuthorizationReplayAttempted) => {
+                AuthorizationStateCreationOutcome::ReplayAttempted
+            }
+            Err(error) => AuthorizationStateCreationOutcome::StoreUnavailable(error.to_string()),
+        };
+        Self { outcome }
+    }
+
+    pub fn into_result(self) -> crate::Result<StoredAuthorizationState> {
+        match self.outcome {
+            AuthorizationStateCreationOutcome::Created(state) => Ok(*state),
+            AuthorizationStateCreationOutcome::ReplayAttempted => {
+                Err(crate::Error::AuthorizationReplayAttempted)
+            }
+            AuthorizationStateCreationOutcome::StoreUnavailable(error) => {
+                Err(crate::Error::ActorCall(error))
+            }
+        }
     }
 }
 
@@ -280,6 +337,7 @@ impl StoreKernel {
             state.missing_authorities,
             state.grant,
             state.denial,
+            state.replay_identity,
         )
     }
 
@@ -411,15 +469,14 @@ impl Message<StoreAuthorizationState> for StoreKernel {
 }
 
 impl Message<CreateAuthorizationState> for StoreKernel {
-    type Reply = crate::Result<StoredAuthorizationStateReply>;
+    type Reply = AuthorizationStateCreationReply;
 
     async fn handle(
         &mut self,
         message: CreateAuthorizationState,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.create_authorization_state(message)
-            .map(|state| StoredAuthorizationStateReply { state })
+        AuthorizationStateCreationReply::from_result(self.create_authorization_state(message))
     }
 }
 

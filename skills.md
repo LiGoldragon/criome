@@ -65,6 +65,10 @@ ESSENCE, not in this repo.
   request digest is signed payload content. Do not derive
   `AuthorizationRequestSlot` from a digest; ask `StoreKernel` to
   create authorization state and return the durable slot.
+- **Authorization replay and expiry are enforced before signing
+  state.** `AuthorizeSignalCall` with an expired `expires_at` records
+  an expired authorization state; reuse of the same requester/nonce
+  is rejected as `ReplayAttempted` before a second slot is minted.
 - **Pending authorization is pushed.** Signature gathering may take
   time; clients observe `AuthorizationObservationStream` updates.
   Do not add polling loops for authorization completion.

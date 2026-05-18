@@ -574,9 +574,13 @@ Current implementation status:
   exposes that state through `ObserveAuthorization`, stores
   signature solicitations/submissions, records signer denials, and
   rejects `VerifyAuthorization` when the grant digest does not match
-  the requested digest. This is still a skeleton: real policy-table
-  lookup, owner-signal approval, master-key signing, and quorum
-  aggregation are the next authorization milestones.
+  the requested digest. **Authorization expiry and replay guard are
+  live:** expired requests are recorded as expired state and same
+  requester/nonce reuse rejects with `ReplayAttempted` before a
+  second authorization slot is minted. This is still a skeleton:
+  real policy-table lookup, owner-signal approval, master-key
+  signing, pushed observation events, and quorum aggregation are the
+  next authorization milestones.
 - The owner-signal-criome contract is the next contract surface to
   design: passphrase submission, policy mutation, peer-route
   mutation, escalation-approval prompts and replies, plus the

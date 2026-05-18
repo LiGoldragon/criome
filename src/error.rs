@@ -18,6 +18,8 @@ pub enum Error {
     SignalFrame(#[from] signal_core::FrameError),
     #[error("unexpected signal frame: {got}")]
     UnexpectedSignalFrame { got: String },
+    #[error("authorization replay attempted")]
+    AuthorizationReplayAttempted,
     #[error("missing request record")]
     MissingRequestRecord,
     #[error("too many request records: expected exactly one")]

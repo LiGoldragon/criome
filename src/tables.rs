@@ -5,7 +5,8 @@ use signal_criome::{
     Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
     AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Identity, IdentityReceipt,
     IdentityRegistration, IdentityRevocation, KeyPurpose, ObjectDigest, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, SignatureSolicitationRoute, SignatureSubmission,
+    PrincipalStatus, PublicKeyFingerprint, ReplayNonce, SignatureSolicitationRoute,
+    SignatureSubmission,
 };
 
 use crate::Result;
@@ -19,6 +20,8 @@ const REVOCATIONS: Table<&'static str, StoredRevocation> = Table::new("revocatio
 const ATTESTATIONS: Table<u64, StoredAttestation> = Table::new("attestations");
 const AUTHORIZATION_STATES: Table<&'static str, StoredAuthorizationState> =
     Table::new("authorization_requests");
+const AUTHORIZATION_REPLAY_NONCES: Table<&'static str, AuthorizationRequestSlot> =
+    Table::new("authorization_replay_nonces");
 const SIGNATURE_SOLICITATIONS: Table<&'static str, StoredSignatureSolicitation> =
     Table::new("signature_solicitations");
 const SUBMITTED_SIGNATURES: Table<&'static str, StoredSignatureSubmission> =
@@ -194,6 +197,12 @@ pub struct StoredSignatureSubmission {
     submission: SignatureSubmission,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationReplayIdentity {
+    requester: Identity,
+    nonce: ReplayNonce,
+}
+
 impl StoredSignatureSubmission {
     pub fn new(submission: SignatureSubmission) -> Self {
         Self { submission }
@@ -201,6 +210,12 @@ impl StoredSignatureSubmission {
 
     pub fn submission(&self) -> &SignatureSubmission {
         &self.submission
+    }
+}
+
+impl AuthorizationReplayIdentity {
+    pub fn new(requester: Identity, nonce: ReplayNonce) -> Self {
+        Self { requester, nonce }
     }
 }
 
@@ -216,6 +231,7 @@ impl CriomeTables {
             REVOCATIONS.ensure(transaction)?;
             ATTESTATIONS.ensure(transaction)?;
             AUTHORIZATION_STATES.ensure(transaction)?;
+            AUTHORIZATION_REPLAY_NONCES.ensure(transaction)?;
             SIGNATURE_SOLICITATIONS.ensure(transaction)?;
             SUBMITTED_SIGNATURES.ensure(transaction)?;
             ATTESTATION_NEXT_SLOT.ensure(transaction)?;
@@ -301,7 +317,11 @@ impl CriomeTables {
         missing_authorities: Vec<Identity>,
         grant: Option<AuthorizationGrant>,
         denial: Option<AuthorizationDenial>,
+        replay_identity: AuthorizationReplayIdentity,
     ) -> Result<StoredAuthorizationState> {
+        if self.authorization_replay_slot(&replay_identity)?.is_some() {
+            return Err(crate::Error::AuthorizationReplayAttempted);
+        }
         let slot = self.next_authorization_slot()?;
         let state = AuthorizationStateRecord {
             request_slot: slot.request_slot(),
@@ -313,8 +333,14 @@ impl CriomeTables {
         };
         let stored = StoredAuthorizationState::new(state);
         let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
+        let replay_key = AuthorizationReplayKey::new(&replay_identity).into_string();
         self.database.write(|transaction| {
             AUTHORIZATION_STATES.insert(transaction, key.as_str(), &stored)?;
+            AUTHORIZATION_REPLAY_NONCES.insert(
+                transaction,
+                replay_key.as_str(),
+                &stored.state().request_slot,
+            )?;
             AUTHORIZATION_NEXT_SLOT.insert(
                 transaction,
                 AUTHORIZATION_NEXT_SLOT_KEY,
@@ -343,6 +369,16 @@ impl CriomeTables {
                 .map(|(_key, state)| state)
                 .collect())
         })?)
+    }
+
+    pub fn authorization_replay_slot(
+        &self,
+        replay_identity: &AuthorizationReplayIdentity,
+    ) -> Result<Option<AuthorizationRequestSlot>> {
+        let key = AuthorizationReplayKey::new(replay_identity).into_string();
+        Ok(self
+            .database
+            .read(|transaction| AUTHORIZATION_REPLAY_NONCES.get(transaction, key.as_str()))?)
     }
 
     pub fn put_signature_solicitation(
@@ -440,6 +476,24 @@ impl AuthorizationSlot {
 
     const fn next_value(&self) -> u64 {
         self.value + 1
+    }
+}
+
+struct AuthorizationReplayKey {
+    requester: String,
+    nonce: String,
+}
+
+impl AuthorizationReplayKey {
+    fn new(identity: &AuthorizationReplayIdentity) -> Self {
+        Self {
+            requester: IdentityKey::new(&identity.requester).into_string(),
+            nonce: identity.nonce.as_str().to_string(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        format!("{}::{}", self.requester, self.nonce)
     }
 }
 

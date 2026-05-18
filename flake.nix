@@ -103,6 +103,16 @@
             ! ${context.pkgs.gnugrep}/bin/grep -R -E 'slot_for_digest|request_digest\.as_str\(\)|AuthorizationRequestSlot::new\([^)]*digest' ${./src}
             touch "$out"
           '';
+          criome-authorization-expiry-and-replay-guard = context.pkgs.runCommand "criome-authorization-expiry-and-replay-guard" { } ''
+            set -euo pipefail
+
+            ${context.pkgs.gnugrep}/bin/grep -F 'authorization_replay_nonces' ${./src}/tables.rs > /dev/null
+            ${context.pkgs.gnugrep}/bin/grep -F 'AuthorizationReplayAttempted' ${./src}/error.rs > /dev/null
+            ${context.pkgs.gnugrep}/bin/grep -F 'expired_authorization_records_expired_state_instead_of_signing' ${./tests}/daemon_skeleton.rs > /dev/null
+            ${context.pkgs.gnugrep}/bin/grep -F 'authorization_replay_nonce_rejects_changed_digest_reuse' ${./tests}/daemon_skeleton.rs > /dev/null
+            ${context.pkgs.gnugrep}/bin/grep -F 'Authorization expiry and replay guard' ${./ARCHITECTURE.md} > /dev/null
+            touch "$out"
+          '';
           fmt = context.craneLib.cargoFmt { inherit (context) src; };
           clippy = context.craneLib.cargoClippy (
             context.commonArgs

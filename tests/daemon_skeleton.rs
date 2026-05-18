@@ -12,14 +12,15 @@ use signal_core::{
     SignalVerb,
 };
 use signal_criome::{
-    AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationGrant,
-    AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
-    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, AuthorizedSignalVerb,
-    BlsPublicKey, BlsSignature, ContentPurpose, ContentReference, ContractName, CriomeFrame,
-    CriomeFrameBody, CriomeReply, CriomeRequest, Identity, IdentityLookup, IdentityRegistration,
-    KeyPurpose, ObjectDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
-    RejectionReason, ReplayNonce, RequiredSignatureThreshold, SignRequest, SignalCallAuthorization,
-    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, TimestampNanos,
+    AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationExpired,
+    AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
+    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, AuthorizationScope,
+    AuthorizationStatus, AuthorizedSignalVerb, BlsPublicKey, BlsSignature, ContentPurpose,
+    ContentReference, ContractName, CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest,
+    Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, PrincipalName,
+    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
+    RequiredSignatureThreshold, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
+    SignatureEnvelope, SignatureScheme, TimestampNanos,
 };
 
 fn synthetic_exchange() -> ExchangeIdentifier {
@@ -78,13 +79,17 @@ fn contract_name() -> ContractName {
 }
 
 fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
+    signal_call_authorization_with_nonce(seed, "authorization-nonce")
+}
+
+fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallAuthorization {
     SignalCallAuthorization {
         request_digest: ObjectDigest::from_bytes(seed),
         contract: contract_name(),
         verb: AuthorizedSignalVerb::Assert,
         scope: authorization_scope(),
         requester: Identity::developer("operator"),
-        nonce: ReplayNonce::new("authorization-nonce"),
+        nonce: ReplayNonce::new(nonce),
         expires_at: None,
     }
 }
@@ -122,6 +127,13 @@ fn pending_authorization(reply: CriomeReply) -> signal_criome::AuthorizationPend
         panic!("expected AuthorizationPending, got {reply:?}");
     };
     pending
+}
+
+fn expired_authorization(reply: CriomeReply) -> AuthorizationExpired {
+    let CriomeReply::AuthorizationExpired(expired) = reply else {
+        panic!("expected AuthorizationExpired, got {reply:?}");
+    };
+    expired
 }
 
 #[tokio::test]
@@ -208,7 +220,8 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     let root = CriomeRoot::start(RootArguments::new(store_location("authorization-slots")))
         .await
         .expect("start criome root");
-    let authorization = signal_call_authorization(b"same authorization request");
+    let authorization =
+        signal_call_authorization_with_nonce(b"same authorization request", "first-nonce");
     let request_digest = authorization.request_digest.clone();
 
     let first = pending_authorization(
@@ -221,7 +234,10 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     );
     let second = pending_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
-            authorization,
+            SignalCallAuthorization {
+                nonce: ReplayNonce::new("second-nonce"),
+                ..authorization
+            },
         )))
         .await
         .expect("submit second authorization")
@@ -233,6 +249,83 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     assert_ne!(first.request_slot, second.request_slot);
     assert_ne!(first.request_slot.as_str(), request_digest.as_str());
     assert_ne!(second.request_slot.as_str(), request_digest.as_str());
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn expired_authorization_records_expired_state_instead_of_signing() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("authorization-expired")))
+        .await
+        .expect("start criome root");
+    let authorization = SignalCallAuthorization {
+        expires_at: Some(TimestampNanos::new(0)),
+        ..signal_call_authorization_with_nonce(b"expired authorization request", "expired-nonce")
+    };
+    let request_digest = authorization.request_digest.clone();
+
+    let expired = expired_authorization(
+        root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
+            authorization,
+        )))
+        .await
+        .expect("submit expired authorization")
+        .into_reply(),
+    );
+    assert_eq!(expired.expired_at, TimestampNanos::new(0));
+
+    let snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
+            AuthorizationObservation {
+                request_slot: expired.request_slot.clone(),
+            },
+        )))
+        .await
+        .expect("observe expired authorization")
+        .into_reply();
+    let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
+        panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
+    };
+    assert_eq!(snapshot.states.len(), 1);
+    assert_eq!(snapshot.states[0].request_slot, expired.request_slot);
+    assert_eq!(snapshot.states[0].request_digest, request_digest);
+    assert_eq!(snapshot.states[0].status, AuthorizationStatus::Expired);
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn authorization_replay_nonce_rejects_changed_digest_reuse() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("authorization-replay")))
+        .await
+        .expect("start criome root");
+    let first =
+        signal_call_authorization_with_nonce(b"first authorization request", "replayed-nonce");
+    let second =
+        signal_call_authorization_with_nonce(b"second authorization request", "replayed-nonce");
+
+    let first_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
+            first,
+        )))
+        .await
+        .expect("submit first authorization")
+        .into_reply();
+    let _pending = pending_authorization(first_reply);
+
+    let second_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
+            second,
+        )))
+        .await
+        .expect("submit replayed authorization")
+        .into_reply();
+    assert_eq!(
+        second_reply,
+        CriomeReply::Rejection(signal_criome::Rejection {
+            reason: RejectionReason::ReplayAttempted,
+        })
+    );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
