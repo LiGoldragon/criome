@@ -41,7 +41,7 @@ skeleton for any reason.
 - **Out-of-band attestations.** Attestations live in separate
   `signal-criome` records that reference content records
   (`signal-persona-mind::ChannelGrant`, etc.). Content records
-  do not carry embedded proof fields. `signal-persona-auth`'s
+  do not carry embedded proof fields. `signal-persona-origin`'s
   discipline (origin context, not proof material) stays
   inviolate.
 - **One redb, one writer.** `StoreKernel` is the only actor that

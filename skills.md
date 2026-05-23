@@ -39,7 +39,7 @@ ESSENCE, not in this repo.
 - **Out-of-band attestations only.** Attestations are separate
   records in `signal-criome` that reference content records;
   they never embed proof fields inside the content records. This
-  preserves `signal-persona-auth`'s discipline.
+  preserves `signal-persona-origin`'s discipline.
 - **Closed enums at every typed boundary.** No `Unknown`
   variant; no string-tagged dispatch; no generic-record
   fallback. Per `~/primary/ESSENCE.md` §"Perfect specificity at

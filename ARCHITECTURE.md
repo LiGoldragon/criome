@@ -73,7 +73,7 @@ authorization decisions, and privilege elevations.*
   `ChannelGrantAttestation` references a
   `signal-persona-mind::ChannelGrant`). Content records
   do not carry embedded proof fields; the
-  `signal-persona-auth` discipline ("origin context, not
+  `signal-persona-origin` discipline ("origin context, not
   proof material") stays inviolate.
 - **Cluster-trust runtime functionality is folded in.**
   ClaviFaber's per-host `PublicKeyPublication` feeds into
