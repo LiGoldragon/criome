@@ -1,0 +1,35 @@
+{}
+
+[
+  (Identity [Verify Observe])
+  (Attestation [Assert Validate])
+  (Authorization [Grant Retract])
+  (Signature [Verify])
+]
+
+[]
+
+[]
+
+{
+  Identity [(Verify Verify) (Observe Observe)]
+  Attestation [(Assert Assert) (Validate Validate)]
+  Authorization [(Grant Grant) (Retract Retract)]
+  Signature [(Verify Verify)]
+  Verify (Text)
+  Observe (Text)
+  Assert (Text)
+  Validate (Text)
+  Grant (Text)
+  Retract (Text)
+  Text (String)
+  Identifier (u64)
+  Name (String)
+  Path (String)
+  Status [Concept Active Retired]
+}
+
+[
+  (Version 0 1)
+  (Status Concept)
+]
