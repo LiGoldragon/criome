@@ -69,17 +69,17 @@ ESSENCE, not in this repo.
 - **Pending authorization is pushed.** Signature gathering may take
   time; clients observe `AuthorizationObservationStream` updates.
   Do not add polling loops for authorization completion.
-- **Owner-class operations use `owner-signal-criome`.** The `criome`
-  CLI and `tui-criome` are owner clients of the user's own
+- **Meta-class operations use `meta-signal-criome`.** The `criome`
+  CLI and `tui-criome` are meta clients of the user's own
   `criome-daemon`; they do not use ordinary `signal-criome` for
   passphrase submission, policy mutation, peer-route mutation, or
   escalation-to-approve replies. `tui-criome` is the long-running
-  owner client for approval prompts, not a separate triad daemon.
-- **Owner sessions are encrypted.** When owner-signal-criome lands,
-  the owner client and daemon perform an ECDH handshake, derive a
+  meta client for approval prompts, not a separate triad daemon.
+- **Meta sessions are encrypted.** When meta-signal-criome lands,
+  the meta client and daemon perform an ECDH handshake, derive a
   symmetric session key, and exchange AEAD-encrypted frames before
-  passphrase submission or any owner-class operation. Do not add a
-  plaintext passphrase or owner-command path to the current
+  passphrase submission or any meta-class operation. Do not add a
+  plaintext passphrase or meta-command path to the current
   signal-criome socket skeleton.
 - **Skeleton-as-design.** New design lands as compiled
   types + trait signatures + `todo!()`, not as prose in this

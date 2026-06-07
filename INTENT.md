@@ -55,11 +55,12 @@ content record (a `ChannelGrantAttestation` references a
 the "origin context, not proof material" discipline stays inviolate.
 
 *One NOTA record in, one NOTA record out at the CLI boundary; the
-daemon takes one argument.* The CLI accepts exactly one NOTA request
-and prints exactly one reply. The wire is the `signal-criome` contract
-(closed `CriomeRequest` / `CriomeReply` enums over `signal-frame`)
-over length-prefixed rkyv frames between components. No flags;
-configuration arrives as a typed record.
+daemon takes one signal-encoded rkyv configuration file.* The CLI
+accepts exactly one NOTA request and prints exactly one reply. The
+daemon accepts exactly one rkyv `CriomeDaemonConfiguration` file and
+does not parse NOTA. The wire is the `signal-criome` contract (closed
+`CriomeRequest` / `CriomeReply` enums over `signal-frame`) over
+length-prefixed rkyv frames between components. No flags.
 
 *Wire vocabulary is closed and typed.* Request and reply enums are
 closed — no `Unknown` escape hatch, no stringly-typed dispatch. The

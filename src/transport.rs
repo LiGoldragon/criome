@@ -117,6 +117,13 @@ impl CriomeClient {
         }
     }
 
+    pub fn from_environment() -> Self {
+        let socket = std::env::var_os("CRIOME_SOCKET")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/criome.sock"));
+        Self::new(socket)
+    }
+
     pub fn send(&self, request: CriomeRequest) -> Result<CriomeReply> {
         if !Path::new(&self.socket).exists() {
             return Err(Error::MissingSocket {

@@ -17,3 +17,8 @@ Today's Spartan criome is one realization step toward that
 eventual shape, bringing forward the auth/identity slice.
 
 See `ARCHITECTURE.md` for this repo's shape.
+
+`criome` is the one-argument NOTA client. `criome-daemon` is the
+one-argument daemon and accepts only a signal-encoded rkyv
+`CriomeDaemonConfiguration` file; it has no flag/subcommand
+configuration surface.

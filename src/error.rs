@@ -16,6 +16,22 @@ pub enum Error {
     Sema(#[from] sema_engine::Error),
     #[error("signal frame: {0}")]
     SignalFrame(#[from] signal_frame::FrameError),
+    #[error("argument: {0}")]
+    Argument(#[from] triad_runtime::ArgumentError),
+    #[error("configuration archive decode failed")]
+    ConfigurationArchiveDecode,
+    #[error("configuration archive encode failed")]
+    ConfigurationArchiveEncode,
+    #[error("configuration read failed at {path}: {source}")]
+    ConfigurationRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("configuration write failed at {path}: {source}")]
+    ConfigurationWrite {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("unexpected signal frame: {got}")]
     UnexpectedSignalFrame { got: String },
     #[error("authorization replay attempted")]
@@ -24,6 +40,10 @@ pub enum Error {
     MissingRequestRecord,
     #[error("too many request records: expected exactly one")]
     TooManyRequestRecords,
+    #[error("expected a NOTA request record")]
+    ExpectedNotaRequest,
+    #[error("flag-style arguments are not part of component binaries: {0}")]
+    FlagArgument(String),
     #[error("socket does not exist: {}", .path.display())]
     MissingSocket { path: PathBuf },
 }

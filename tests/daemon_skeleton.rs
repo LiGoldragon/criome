@@ -4,9 +4,12 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 
 use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology, SubmitRequest};
+use criome::command::{CriomeDaemonCommand, CriomeRequestArgument};
 use criome::daemon::CriomeDaemon;
+use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
+use nota_next::NotaEncode;
 use signal_criome::{
     AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationExpired,
     AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
@@ -38,6 +41,14 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 
 fn store_location(name: &str) -> StoreLocation {
     StoreLocation::new(fixture_path(name).join("criome.sema"))
+}
+
+fn daemon_configuration(name: &str) -> CriomeDaemonConfiguration {
+    let workspace = fixture_path(name);
+    CriomeDaemonConfiguration::new(
+        workspace.join("criome.sock").display().to_string(),
+        workspace.join("criome.sema").display().to_string(),
+    )
 }
 
 fn registration(name: &str) -> IdentityRegistration {
@@ -384,7 +395,7 @@ fn criome_daemon_signal_frame_registers_identity() {
 }
 
 #[test]
-fn criome_daemon_owner_socket_is_user_private() {
+fn criome_daemon_meta_socket_is_user_private() {
     let workspace = fixture_path("socket-mode");
     let socket = workspace.join("criome.sock");
     let store = StoreLocation::new(workspace.join("criome.sema"));
@@ -400,6 +411,82 @@ fn criome_daemon_owner_socket_is_user_private() {
     assert_eq!(mode, 0o600);
 
     daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn criome_daemon_configuration_accepts_binary_file_argument() {
+    let workspace = fixture_path("daemon-config-binary");
+    let configuration_path = workspace.join("criome-daemon.rkyv");
+    let configuration = daemon_configuration("daemon-config-value");
+
+    CriomeDaemonConfigurationFile::new(&configuration_path)
+        .write_configuration(&configuration)
+        .expect("write daemon configuration");
+
+    let decoded = CriomeDaemonCommand::from_arguments([configuration_path.display().to_string()])
+        .configuration()
+        .expect("decode daemon configuration");
+
+    assert_eq!(decoded, configuration);
+}
+
+#[test]
+fn criome_daemon_configuration_rejects_nota_arguments() {
+    let workspace = fixture_path("daemon-config-nota");
+    let nota_path = workspace.join("criome-daemon.nota");
+    std::fs::write(&nota_path, "(CriomeDaemonConfiguration)").expect("write nota fixture");
+
+    let inline = CriomeDaemonCommand::from_arguments(["(CriomeDaemonConfiguration)"])
+        .configuration()
+        .expect_err("inline NOTA is rejected");
+    let file = CriomeDaemonCommand::from_arguments([nota_path.display().to_string()])
+        .configuration()
+        .expect_err(".nota file is rejected");
+
+    assert!(matches!(inline, criome::Error::Argument(_)));
+    assert!(matches!(file, criome::Error::Argument(_)));
+}
+
+#[test]
+fn criome_cli_request_argument_accepts_inline_and_nota_file() {
+    let request = CriomeRequest::LookupIdentity(IdentityLookup {
+        identity: Identity::developer("operator"),
+    });
+    let text = request.to_nota();
+    let workspace = fixture_path("request-argument");
+    let nota_path = workspace.join("request.nota");
+    std::fs::write(&nota_path, &text).expect("write request");
+
+    let inline = CriomeRequestArgument::new(
+        triad_runtime::ComponentCommand::from_arguments([text.clone()])
+            .nota_argument()
+            .expect("inline nota argument"),
+    )
+    .request()
+    .expect("inline request decodes");
+    let file = CriomeRequestArgument::new(
+        triad_runtime::ComponentCommand::from_arguments([nota_path.display().to_string()])
+            .nota_argument()
+            .expect("file nota argument"),
+    )
+    .request()
+    .expect("file request decodes");
+
+    assert_eq!(inline, request);
+    assert_eq!(file, request);
+}
+
+#[test]
+fn criome_cli_request_argument_rejects_flag_shape() {
+    let error = CriomeRequestArgument::new(
+        triad_runtime::ComponentCommand::from_arguments(["--socket"])
+            .nota_argument()
+            .expect("inline flag-shaped argument"),
+    )
+    .request()
+    .expect_err("flag-shaped argument is rejected before NOTA parsing");
+
+    assert!(matches!(error, criome::Error::FlagArgument(_)));
 }
 
 #[test]
@@ -462,7 +549,9 @@ fn cargo_manifest_removed_retired_signal_and_ractor_runtime() {
     assert!(manifest.contains("signal-criome"));
     assert!(manifest.contains("signal-frame"));
     assert!(manifest.contains("kameo"));
+    assert!(manifest.contains("triad-runtime"));
     assert!(!manifest.contains("ractor"));
+    assert!(!manifest.contains("clap"));
     assert!(!manifest.contains("signal       ="));
     assert!(!manifest.contains("signal-core"));
 }

@@ -64,8 +64,10 @@ authorization decisions, and privilege elevations.*
   future scheme migration when eventual-Criome's
   quorum-signature multi-sig lands.
 - **Wire**: `signal-criome` contract crate over `signal-frame`.
-  Closed `CriomeRequest` / `CriomeReply` enums. One NOTA record in,
-  one NOTA record out at the CLI boundary.
+  Closed `CriomeRequest` / `CriomeReply` enums. `criome` accepts one
+  NOTA request and prints one NOTA reply at the CLI boundary;
+  `criome-daemon` accepts one signal-encoded rkyv
+  `CriomeDaemonConfiguration` file and never parses NOTA.
 - **Out-of-band only.** Attestations live as separate
   records that reference content records (a
   `ChannelGrantAttestation` references a `signal-mind`
@@ -104,7 +106,7 @@ authorization decisions, and privilege elevations.*
 - **Two escalation kinds are first-class:**
   - *Escalation-to-sign* — policy is satisfied; criome signs with its
     master key and returns the grant.
-  - *Escalation-to-approve* — policy says *"ask my owner before
+  - *Escalation-to-approve* — policy says *"ask my meta authority before
     signing"*; criome routes an approval prompt to the meta authority over
     `meta-signal-criome`; the authority answers yes/no; criome then signs
     or denies.
@@ -149,7 +151,7 @@ pages, zero-after-use of passphrase bytes, disabled core dumps,
 audit-log discipline — is the rest of the in-user posture; the
 filesystem boundary is the part the OS enforces for us.
 
-**Owner-session bytes are encrypted before they carry passphrases
+**Meta-session bytes are encrypted before they carry passphrases
 or meta-class traffic.** The meta socket mode `0600` is still the
 load-bearing local authority boundary: a same-UID process can
 already do anything criome can do, while a different-UID process
@@ -351,7 +353,7 @@ mismatch (per
 - Criome's master private key is loaded at startup. If the
   private half is encrypted at rest, the daemon waits for the
   meta authority to submit the passphrase over `meta-signal-criome` before
-  the master-key actor reports ready. Owner-session frames are
+  the master-key actor reports ready. Meta-session frames are
   encrypted with an ECDH-derived symmetric key before any
   passphrase or meta-class operation travels. Standard hardening
   — `mlock`, zero-after-use, disabled core dumps — applies
@@ -434,6 +436,9 @@ constraints:
 
 - The `criome` CLI accepts exactly one NOTA request
   record and prints exactly one NOTA reply record.
+- The `criome-daemon` binary accepts exactly one signal-encoded rkyv
+  `CriomeDaemonConfiguration` file. It has no flags and no NOTA
+  configuration path.
 - The daemon owns `criome.sema`; the CLI never opens it.
 - Signed payloads carry **domain separation** — every
   signature binds a content hash to its purpose
@@ -541,7 +546,7 @@ tests/*.rs                 round-trip + architectural-truth tests
 
 Cargo dependencies after the rewrite: `signal-frame`,
 `signal-criome`, `kameo`, `sema-engine`, `tokio`, `thiserror`,
-`clap`, `rkyv`, `blst`, `blake3`, `nota-next`.
+`triad-runtime`, `rkyv`, `blst`, `blake3`, `nota-next`.
 **Drops** the retired `signal` and `ractor` dependencies.
 
 Current implementation status:
