@@ -13,8 +13,9 @@ Today's `criome` is a **minimal Spartan BLS-signature authentication
 and attestation substrate** for the Persona ecosystem: a single
 Kameo-based daemon holding an identity registry, sign/verify
 primitives, delegation grants, a replay guard, and a typed audit log
-in `criome.sema` via the `sema` library. It is paired with the
-`signal-criome` contract and the `owner-signal-criome` owner contract.
+in `criome.sema` via `sema-engine` over the `sema` kernel. It is paired with
+the `signal-criome` contract and the target `meta-signal-criome` meta
+contract.
 
 This repo is "today, not eventually." The **eventual** `Criome` is the
 universal computing paradigm expressed in Sema — replacing Git, the
@@ -38,8 +39,8 @@ already a quorum candidate when eventual-Criome's quorum-signature
 multi-sig lands — no future scheme migration. There is no string-tagged
 or open-ended scheme dispatch.
 
-*One daemon, one owner — a single Unix user.* Only that user can write
-to the daemon's owner socket; single-ownership is what gives the daemon
+*One daemon, one meta authority — a single Unix user.* Only that user can write
+to the daemon's meta socket; single-ownership is what gives the daemon
 authority to sign with its master key. There are many criome daemons,
 one per Unix user; new trust boundaries spawn new daemons, and complex
 quorum policies find peers by predictable socket names. Permission for

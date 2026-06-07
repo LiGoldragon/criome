@@ -11,9 +11,9 @@ pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("nota: {0}")]
-    Nota(#[from] nota_codec::Error),
+    Nota(#[from] nota_next::NotaDecodeError),
     #[error("sema: {0}")]
-    Sema(#[from] sema::Error),
+    Sema(#[from] sema_engine::Error),
     #[error("signal frame: {0}")]
     SignalFrame(#[from] signal_frame::FrameError),
     #[error("unexpected signal frame: {got}")]

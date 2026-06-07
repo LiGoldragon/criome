@@ -2,7 +2,7 @@
 //!
 //! Today's crate owns the Criome daemon runtime. The wire
 //! vocabulary lives in `signal-criome`; durable state lives in this
-//! component's own Sema database.
+//! component's own sema-engine database.
 
 pub mod actors;
 pub mod command;

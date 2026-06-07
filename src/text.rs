@@ -1,7 +1,7 @@
-use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode};
+use nota_next::{NotaEncode, NotaSource};
 use signal_criome::{CriomeReply, CriomeRequest};
 
-use crate::{Error, Result};
+use crate::Result;
 
 pub struct RequestDocument {
     request: CriomeRequest,
@@ -9,11 +9,7 @@ pub struct RequestDocument {
 
 impl RequestDocument {
     pub fn parse(source: &str) -> Result<Self> {
-        let mut decoder = Decoder::new(source);
-        let request = CriomeRequest::decode(&mut decoder)?;
-        if decoder.peek_token()?.is_some() {
-            return Err(Error::TooManyRequestRecords);
-        }
+        let request = NotaSource::new(source).parse::<CriomeRequest>()?;
         Ok(Self { request })
     }
 
@@ -32,8 +28,6 @@ impl ReplyDocument {
     }
 
     pub fn render(&self) -> Result<String> {
-        let mut encoder = Encoder::new();
-        self.reply.encode(&mut encoder)?;
-        Ok(encoder.into_string())
+        Ok(self.reply.to_nota())
     }
 }

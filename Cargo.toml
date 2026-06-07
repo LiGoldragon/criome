@@ -20,9 +20,9 @@ blake3       = "1"
 blst         = "0.3"
 clap         = { version = "4", features = ["derive"] }
 kameo        = { version = "0.20", default-features = false, features = ["macros", "tracing"] }
-nota-codec   = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
+nota-next    = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
-sema         = { git = "https://github.com/LiGoldragon/sema.git" }
+sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
 thiserror    = "2"

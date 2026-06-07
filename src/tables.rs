@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use sema::{Schema, SchemaVersion, Sema, Table};
+use rkyv::api::high::HighDeserializer;
+use rkyv::bytecheck::CheckBytes;
+use rkyv::rancor::{self, Strategy};
+use rkyv::validation::Validator;
+use rkyv::validation::archive::ArchiveValidator;
+use rkyv::validation::shared::SharedValidator;
+use sema_engine::{
+    Engine, EngineOpen, EngineStoredValue, KeyedAssertion, KeyedMutation, QueryPlan, RecordKey,
+    SchemaVersion, TableDescriptor, TableName, TableReference,
+};
 use signal_criome::{
     Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
     AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Identity, IdentityReceipt,
@@ -11,24 +20,17 @@ use signal_criome::{
 
 use crate::Result;
 
-const CRIOME_SCHEMA: Schema = Schema {
-    version: SchemaVersion::new(1),
-};
-
-const IDENTITIES: Table<&'static str, StoredIdentity> = Table::new("identities");
-const REVOCATIONS: Table<&'static str, StoredRevocation> = Table::new("revocations");
-const ATTESTATIONS: Table<u64, StoredAttestation> = Table::new("attestations");
-const AUTHORIZATION_STATES: Table<&'static str, StoredAuthorizationState> =
-    Table::new("authorization_requests");
-const AUTHORIZATION_REPLAY_NONCES: Table<&'static str, AuthorizationRequestSlot> =
-    Table::new("authorization_replay_nonces");
-const SIGNATURE_SOLICITATIONS: Table<&'static str, StoredSignatureSolicitation> =
-    Table::new("signature_solicitations");
-const SUBMITTED_SIGNATURES: Table<&'static str, StoredSignatureSubmission> =
-    Table::new("submitted_signatures");
-const ATTESTATION_NEXT_SLOT: Table<&'static str, u64> = Table::new("attestation_next_slot");
+const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1);
+const IDENTITIES: TableName = TableName::new("identities");
+const REVOCATIONS: TableName = TableName::new("revocations");
+const ATTESTATIONS: TableName = TableName::new("attestations");
+const AUTHORIZATION_STATES: TableName = TableName::new("authorization_requests");
+const AUTHORIZATION_REPLAY_NONCES: TableName = TableName::new("authorization_replay_nonces");
+const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitations");
+const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
+const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot");
 const ATTESTATION_NEXT_SLOT_KEY: &str = "next";
-const AUTHORIZATION_NEXT_SLOT: Table<&'static str, u64> = Table::new("authorization_next_slot");
+const AUTHORIZATION_NEXT_SLOT: TableName = TableName::new("authorization_next_slot");
 const AUTHORIZATION_NEXT_SLOT_KEY: &str = "next";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,93 +222,93 @@ impl AuthorizationReplayIdentity {
 }
 
 pub struct CriomeTables {
-    database: Sema,
+    engine: Engine,
+    identities: TableReference<StoredIdentity>,
+    revocations: TableReference<StoredRevocation>,
+    attestations: TableReference<StoredAttestation>,
+    authorization_states: TableReference<StoredAuthorizationState>,
+    authorization_replay_nonces: TableReference<AuthorizationRequestSlot>,
+    signature_solicitations: TableReference<StoredSignatureSolicitation>,
+    submitted_signatures: TableReference<StoredSignatureSubmission>,
+    attestation_next_slot: TableReference<u64>,
+    authorization_next_slot: TableReference<u64>,
 }
 
 impl CriomeTables {
     pub fn open(store: &StoreLocation) -> Result<Self> {
-        let database = Sema::open_with_schema(store.as_path(), &CRIOME_SCHEMA)?;
-        database.write(|transaction| {
-            IDENTITIES.ensure(transaction)?;
-            REVOCATIONS.ensure(transaction)?;
-            ATTESTATIONS.ensure(transaction)?;
-            AUTHORIZATION_STATES.ensure(transaction)?;
-            AUTHORIZATION_REPLAY_NONCES.ensure(transaction)?;
-            SIGNATURE_SOLICITATIONS.ensure(transaction)?;
-            SUBMITTED_SIGNATURES.ensure(transaction)?;
-            ATTESTATION_NEXT_SLOT.ensure(transaction)?;
-            AUTHORIZATION_NEXT_SLOT.ensure(transaction)?;
-            Ok(())
-        })?;
-        Ok(Self { database })
+        let mut engine = Engine::open(EngineOpen::new(
+            store.as_path().to_path_buf(),
+            CRIOME_SCHEMA_VERSION,
+        ))?;
+        let identities = engine.register_table(TableDescriptor::new(IDENTITIES))?;
+        let revocations = engine.register_table(TableDescriptor::new(REVOCATIONS))?;
+        let attestations = engine.register_table(TableDescriptor::new(ATTESTATIONS))?;
+        let authorization_states =
+            engine.register_table(TableDescriptor::new(AUTHORIZATION_STATES))?;
+        let authorization_replay_nonces =
+            engine.register_table(TableDescriptor::new(AUTHORIZATION_REPLAY_NONCES))?;
+        let signature_solicitations =
+            engine.register_table(TableDescriptor::new(SIGNATURE_SOLICITATIONS))?;
+        let submitted_signatures =
+            engine.register_table(TableDescriptor::new(SUBMITTED_SIGNATURES))?;
+        let attestation_next_slot =
+            engine.register_table(TableDescriptor::new(ATTESTATION_NEXT_SLOT))?;
+        let authorization_next_slot =
+            engine.register_table(TableDescriptor::new(AUTHORIZATION_NEXT_SLOT))?;
+        Ok(Self {
+            engine,
+            identities,
+            revocations,
+            attestations,
+            authorization_states,
+            authorization_replay_nonces,
+            signature_solicitations,
+            submitted_signatures,
+            attestation_next_slot,
+            authorization_next_slot,
+        })
     }
 
     pub fn put_identity(&self, identity: &StoredIdentity) -> Result<()> {
         let key = IdentityKey::new(identity.identity()).into_string();
-        self.database.write(|transaction| {
-            IDENTITIES.insert(transaction, key.as_str(), identity)?;
-            Ok(())
-        })?;
+        self.upsert(self.identities, key, identity.clone())?;
         Ok(())
     }
 
     pub fn identity(&self, identity: &Identity) -> Result<Option<StoredIdentity>> {
         let key = IdentityKey::new(identity).into_string();
-        Ok(self
-            .database
-            .read(|transaction| IDENTITIES.get(transaction, key.as_str()))?)
+        self.read_key(self.identities, key)
     }
 
     pub fn identities(&self) -> Result<Vec<StoredIdentity>> {
-        Ok(self.database.read(|transaction| {
-            Ok(IDENTITIES
-                .iter(transaction)?
-                .into_iter()
-                .map(|(_key, identity)| identity)
-                .collect())
-        })?)
+        self.read_all(self.identities)
     }
 
     pub fn put_revocation(&self, revocation: &StoredRevocation) -> Result<()> {
         let key = IdentityKey::new(revocation.identity()).into_string();
-        self.database.write(|transaction| {
-            REVOCATIONS.insert(transaction, key.as_str(), revocation)?;
-            Ok(())
-        })?;
+        self.upsert(self.revocations, key, revocation.clone())?;
         Ok(())
     }
 
     pub fn put_attestation(&self, attestation: Attestation) -> Result<StoredAttestation> {
         let slot = self.next_attestation_slot()?;
         let stored = StoredAttestation::new(slot.value(), attestation);
-        self.database.write(|transaction| {
-            ATTESTATIONS.insert(transaction, stored.slot(), &stored)?;
-            ATTESTATION_NEXT_SLOT.insert(
-                transaction,
-                ATTESTATION_NEXT_SLOT_KEY,
-                &slot.next_value(),
-            )?;
-            Ok(())
-        })?;
+        self.upsert(self.attestations, stored.slot().to_string(), stored.clone())?;
+        self.upsert(
+            self.attestation_next_slot,
+            ATTESTATION_NEXT_SLOT_KEY.to_owned(),
+            slot.next_value(),
+        )?;
         Ok(stored)
     }
 
     pub fn attestations(&self) -> Result<Vec<StoredAttestation>> {
-        Ok(self.database.read(|transaction| {
-            Ok(ATTESTATIONS
-                .iter(transaction)?
-                .into_iter()
-                .map(|(_slot, attestation)| attestation)
-                .collect())
-        })?)
+        self.read_all(self.attestations)
     }
 
     pub fn put_authorization_state(&self, state: &StoredAuthorizationState) -> Result<()> {
         let key = AuthorizationSlotKey::new(&state.state().request_slot).into_string();
-        self.database.write(|transaction| {
-            AUTHORIZATION_STATES.insert(transaction, key.as_str(), state)?;
-            Ok(())
-        })?;
+        self.upsert(self.authorization_states, key, state.clone())?;
         Ok(())
     }
 
@@ -334,20 +336,17 @@ impl CriomeTables {
         let stored = StoredAuthorizationState::new(state);
         let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
         let replay_key = AuthorizationReplayKey::new(&replay_identity).into_string();
-        self.database.write(|transaction| {
-            AUTHORIZATION_STATES.insert(transaction, key.as_str(), &stored)?;
-            AUTHORIZATION_REPLAY_NONCES.insert(
-                transaction,
-                replay_key.as_str(),
-                &stored.state().request_slot,
-            )?;
-            AUTHORIZATION_NEXT_SLOT.insert(
-                transaction,
-                AUTHORIZATION_NEXT_SLOT_KEY,
-                &slot.next_value(),
-            )?;
-            Ok(())
-        })?;
+        self.upsert(self.authorization_states, key, stored.clone())?;
+        self.upsert(
+            self.authorization_replay_nonces,
+            replay_key,
+            stored.state().request_slot.clone(),
+        )?;
+        self.upsert(
+            self.authorization_next_slot,
+            AUTHORIZATION_NEXT_SLOT_KEY.to_owned(),
+            slot.next_value(),
+        )?;
         Ok(stored)
     }
 
@@ -356,19 +355,11 @@ impl CriomeTables {
         slot: &AuthorizationRequestSlot,
     ) -> Result<Option<StoredAuthorizationState>> {
         let key = AuthorizationSlotKey::new(slot).into_string();
-        Ok(self
-            .database
-            .read(|transaction| AUTHORIZATION_STATES.get(transaction, key.as_str()))?)
+        self.read_key(self.authorization_states, key)
     }
 
     pub fn authorization_states(&self) -> Result<Vec<StoredAuthorizationState>> {
-        Ok(self.database.read(|transaction| {
-            Ok(AUTHORIZATION_STATES
-                .iter(transaction)?
-                .into_iter()
-                .map(|(_key, state)| state)
-                .collect())
-        })?)
+        self.read_all(self.authorization_states)
     }
 
     pub fn authorization_replay_slot(
@@ -376,9 +367,7 @@ impl CriomeTables {
         replay_identity: &AuthorizationReplayIdentity,
     ) -> Result<Option<AuthorizationRequestSlot>> {
         let key = AuthorizationReplayKey::new(replay_identity).into_string();
-        Ok(self
-            .database
-            .read(|transaction| AUTHORIZATION_REPLAY_NONCES.get(transaction, key.as_str()))?)
+        self.read_key(self.authorization_replay_nonces, key)
     }
 
     pub fn put_signature_solicitation(
@@ -386,26 +375,21 @@ impl CriomeTables {
         solicitation: &StoredSignatureSolicitation,
     ) -> Result<()> {
         let key = SignatureSolicitationKey::new(solicitation.route()).into_string();
-        self.database.write(|transaction| {
-            SIGNATURE_SOLICITATIONS.insert(transaction, key.as_str(), solicitation)?;
-            Ok(())
-        })?;
+        self.upsert(self.signature_solicitations, key, solicitation.clone())?;
         Ok(())
     }
 
     pub fn put_signature_submission(&self, submission: &StoredSignatureSubmission) -> Result<()> {
         let key = SignatureSubmissionKey::new(submission.submission()).into_string();
-        self.database.write(|transaction| {
-            SUBMITTED_SIGNATURES.insert(transaction, key.as_str(), submission)?;
-            Ok(())
-        })?;
+        self.upsert(self.submitted_signatures, key, submission.clone())?;
         Ok(())
     }
 
     fn next_attestation_slot(&self) -> Result<AttestationSlot> {
-        let stored = self.database.read(|transaction| {
-            ATTESTATION_NEXT_SLOT.get(transaction, ATTESTATION_NEXT_SLOT_KEY)
-        })?;
+        let stored = self.read_key(
+            self.attestation_next_slot,
+            ATTESTATION_NEXT_SLOT_KEY.to_owned(),
+        )?;
         match stored {
             Some(next_slot) => Ok(AttestationSlot::new(next_slot)),
             None => Ok(AttestationSlot::after_records(&self.attestations()?)),
@@ -413,15 +397,80 @@ impl CriomeTables {
     }
 
     fn next_authorization_slot(&self) -> Result<AuthorizationSlot> {
-        let stored = self.database.read(|transaction| {
-            AUTHORIZATION_NEXT_SLOT.get(transaction, AUTHORIZATION_NEXT_SLOT_KEY)
-        })?;
+        let stored = self.read_key(
+            self.authorization_next_slot,
+            AUTHORIZATION_NEXT_SLOT_KEY.to_owned(),
+        )?;
         match stored {
             Some(next_slot) => Ok(AuthorizationSlot::new(next_slot)),
             None => Ok(AuthorizationSlot::after_records(
                 &self.authorization_states()?,
             )),
         }
+    }
+
+    fn upsert<RecordValue>(
+        &self,
+        table: TableReference<RecordValue>,
+        key: String,
+        record: RecordValue,
+    ) -> Result<()>
+    where
+        RecordValue: EngineStoredValue + Send + Sync + 'static,
+        <RecordValue as rkyv::Archive>::Archived: rkyv::Deserialize<RecordValue, HighDeserializer<rancor::Error>>
+            + for<'validation> CheckBytes<
+                Strategy<Validator<ArchiveValidator<'validation>, SharedValidator>, rancor::Error>,
+            >,
+    {
+        let key = RecordKey::new(key);
+        let exists = !self
+            .engine
+            .match_records(QueryPlan::key(table, key.clone()))?
+            .records()
+            .is_empty();
+        if exists {
+            self.engine
+                .mutate_keyed(KeyedMutation::new(table, key, record))?;
+        } else {
+            self.engine
+                .assert_keyed(KeyedAssertion::new(table, key, record))?;
+        }
+        Ok(())
+    }
+
+    fn read_key<RecordValue>(
+        &self,
+        table: TableReference<RecordValue>,
+        key: String,
+    ) -> Result<Option<RecordValue>>
+    where
+        RecordValue: EngineStoredValue + Send + Sync + 'static,
+        <RecordValue as rkyv::Archive>::Archived: rkyv::Deserialize<RecordValue, HighDeserializer<rancor::Error>>
+            + for<'validation> CheckBytes<
+                Strategy<Validator<ArchiveValidator<'validation>, SharedValidator>, rancor::Error>,
+            >,
+    {
+        Ok(self
+            .engine
+            .match_records(QueryPlan::key(table, RecordKey::new(key)))?
+            .records()
+            .first()
+            .cloned())
+    }
+
+    fn read_all<RecordValue>(&self, table: TableReference<RecordValue>) -> Result<Vec<RecordValue>>
+    where
+        RecordValue: EngineStoredValue + Send + Sync + 'static,
+        <RecordValue as rkyv::Archive>::Archived: rkyv::Deserialize<RecordValue, HighDeserializer<rancor::Error>>
+            + for<'validation> CheckBytes<
+                Strategy<Validator<ArchiveValidator<'validation>, SharedValidator>, rancor::Error>,
+            >,
+    {
+        Ok(self
+            .engine
+            .match_records(QueryPlan::all(table))?
+            .records()
+            .to_vec())
     }
 }
 

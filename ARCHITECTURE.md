@@ -39,7 +39,7 @@ authorization decisions, and privilege elevations.*
 - **One Kameo-based daemon** holding criome's own root
   keypair, an identity registry, delegation grants, a
   replay-guard, and an audit event log in `criome.sema`
-  (via the `sema` library).
+  through `sema-engine`.
 - **First milestone is verifier-shaped.** Three primary
   capabilities: **verify** external signatures (developer
   release signatures, message signatures), **
@@ -80,12 +80,12 @@ authorization decisions, and privilege elevations.*
 
 ## Authorization model
 
-- **A criome daemon has one owner: a Unix user.** Only that user can
-  write to the daemon's owner socket. *Single-owner* is what gives the
-  daemon authority to sign with its master key. The owner contract is
-  `owner-signal-criome`; the user speaks it through the `criome` CLI
+- **A criome daemon has one meta authority: a Unix user.** Only that user can
+  write to the daemon's meta socket. *Single-owner* is what gives the
+  daemon authority to sign with its master key. The meta contract target is
+  `meta-signal-criome`; the user speaks it through the `criome` CLI
   (one-shot) or `tui-criome` (long-running interactive). The CLI is
-  the first owner client to build; the TUI exists because
+  the first meta client to build; the TUI exists because
   escalation-to-approve flows need a client that stays interactive
   across many escalations.
 - **Criome holds policy + collects signatures + issues grants.** The
@@ -105,8 +105,8 @@ authorization decisions, and privilege elevations.*
   - *Escalation-to-sign* — policy is satisfied; criome signs with its
     master key and returns the grant.
   - *Escalation-to-approve* — policy says *"ask my owner before
-    signing"*; criome routes an approval prompt to the owner over
-    owner-signal-criome; the owner answers yes/no; criome then signs
+    signing"*; criome routes an approval prompt to the meta authority over
+    `meta-signal-criome`; the authority answers yes/no; criome then signs
     or denies.
 - **There are many criome daemons.** One per Unix user; new trust
   boundaries spawn new daemons. Complex policies that demand peer
@@ -127,9 +127,9 @@ authorization decisions, and privilege elevations.*
 ## Security model — Unix-user as boundary
 
 The security boundary criome enforces in production is the Unix-user
-filesystem permission model. The owner socket is a user-owned file at
+filesystem permission model. The meta socket is a user-owned file at
 mode `0600`; only that Unix user can write to it; therefore only that
-user can issue owner-class orders to the daemon.
+user can issue meta-class orders to the daemon.
 
 This is a deliberate adoption of the only boundary still enforced
 today. **In a world of AI agents, any process running as Unix user
@@ -140,7 +140,7 @@ are available to any same-UID process. GUI process isolation, "this
 runs in its own window so it's safe," and similar assumptions no
 longer hold. What remains is the kernel-enforced file permission
 model: a same-UID process can already do anything criome can do, but
-a process running as a different UID cannot write criome's owner
+a process running as a different UID cannot write criome's meta
 socket regardless of what it knows.
 
 Criome therefore rests its authority on *single Unix-user ownership*
@@ -150,17 +150,17 @@ audit-log discipline — is the rest of the in-user posture; the
 filesystem boundary is the part the OS enforces for us.
 
 **Owner-session bytes are encrypted before they carry passphrases
-or owner-class traffic.** The owner socket mode `0600` is still the
+or meta-class traffic.** The meta socket mode `0600` is still the
 load-bearing local authority boundary: a same-UID process can
 already do anything criome can do, while a different-UID process
-cannot write the owner socket. The encrypted owner session is
+cannot write the meta socket. The encrypted meta session is
 defense-in-depth for the cases where a different UID observes bytes
 without owning the socket: bind-time races, runtime-directory
 mistakes, symlink races, or partial-frame protocol bugs.
 
-The owner-signal-criome session starts with an ECDH exchange, derives
+The `meta-signal-criome` session starts with an ECDH exchange, derives
 a symmetric session key through HKDF, then carries AEAD-encrypted
-frames. The exact cipher suite belongs to the owner-signal-criome
+frames. The exact cipher suite belongs to the `meta-signal-criome`
 contract pass; candidates are Noise XX or a direct X25519 +
 HKDF-blake3 + ChaCha20-Poly1305 / AES-GCM shape. The passphrase may
 be plaintext *inside* the encrypted session; it must not be exposed
@@ -177,15 +177,15 @@ open design slot.
 
 ```mermaid
 flowchart TB
-    cli["criome CLI<br/>(one-shot owner client)"]
-    socket["owner-signal-criome owner socket<br/>(mode 0600, owner user)"]
+    cli["criome CLI<br/>(one-shot meta client)"]
+    socket["meta-signal-criome meta socket<br/>(mode 0600, authority user)"]
     root["CriomeRoot (Kameo runtime root)"]
     signer["AttestationSigner<br/>(holds root keypair; signs)"]
     verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
     authorization["AuthorizationCoordinator<br/>(signature state;<br/>routes solicitations)"]
     registry["IdentityRegistry<br/>(Identity ↔ PublicKey)"]
     store["StoreKernel<br/>(sole owner of criome.sema)"]
-    db["criome.sema<br/>(via sema library)"]
+    db["criome.sema<br/>(via sema-engine)"]
     audit["AuditLog<br/>(append-only attestation history)"]
 
     cli --> socket
@@ -217,13 +217,13 @@ work is hot enough.
 
 - The `criome.sema` durable store and its component-local
   Sema layer.
-- **The single Unix-user owner relation.** The daemon's owner
+- **The single Unix-user meta authority relation.** The daemon's meta
   socket lives at a per-user path with mode 0600; only that user
-  can write to it. The owner-signal-criome contract is the
-  surface between the owner (their CLI / TUI) and the daemon.
+  can write to it. The `meta-signal-criome` contract is the
+  surface between the authority (their CLI / TUI) and the daemon.
 - **The daemon's master BLS keypair as its core identity.**
   Loaded at startup; private half may be encrypted at rest using
-  the owner's passphrase (submitted over owner-signal-criome at
+  the authority's passphrase (submitted over `meta-signal-criome` at
   startup); decrypted master-key pages are `mlock`ed and zeroed
   on shutdown.
 - The closed `Identity` enum vocabulary: `Persona`,
@@ -350,10 +350,10 @@ mismatch (per
   verification against the criome they trust.
 - Criome's master private key is loaded at startup. If the
   private half is encrypted at rest, the daemon waits for the
-  owner to submit the passphrase over owner-signal-criome before
+  meta authority to submit the passphrase over `meta-signal-criome` before
   the master-key actor reports ready. Owner-session frames are
   encrypted with an ECDH-derived symmetric key before any
-  passphrase or owner-class operation travels. Standard hardening
+  passphrase or meta-class operation travels. Standard hardening
   — `mlock`, zero-after-use, disabled core dumps — applies
   regardless.
 - Per-persona / per-agent / per-developer / per-host
@@ -419,8 +419,8 @@ The headline boundaries:
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
 | `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
 | `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
-| `criome` CLI (owner) | `owner-signal-criome` | The owner Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
-| `tui-criome` (owner, long-running) | `owner-signal-criome` | The owner's long-running interactive client. Same contract as the CLI, but stays connected to receive `RequestOwnerApproval` push events and answer them. Not a separate triad daemon. |
+| `criome` CLI (meta) | `meta-signal-criome` | The authority Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
+| `tui-criome` (meta, long-running) | `meta-signal-criome` | The authority's long-running interactive client. Same contract as the CLI, but stays connected to receive approval-request push events and answer them. Not a separate triad daemon. |
 | Peer criome daemons | `signal-criome` (peer routing) | Receive `RouteSignatureRequest` for quorum solicitations; reply with `SubmitSignature` or `RejectAuthorization`. Found by predictable socket name (§6.1). |
 | ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
 | Future audit-policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
@@ -472,19 +472,19 @@ constraints:
 - Authorization request slots are durable store-minted
   identities. The request digest is payload content; the daemon
   must not derive a slot from the digest.
-- **Owner-class operations live on `owner-signal-criome`.** The
+- **Meta-class operations live on `meta-signal-criome`.** The
   ordinary `signal-criome` surface cannot express passphrase
   submission, master-key operations, policy mutation, peer-routing
   table mutation, or escalation-approval replies.
-- **The daemon's owner socket is mode 0600, owned by the daemon's
+- **The daemon's meta socket is mode 0600, owned by the daemon's
   Unix user.** A witness test asserts the socket's mode and owner
   match the configured user at daemon ready.
-- **Owner-session traffic is encrypted.** Passphrase submission,
+- **Meta-session traffic is encrypted.** Passphrase submission,
   master-key operations, policy mutation, peer-route mutation, and
   escalation-approval replies travel inside the future
-  owner-signal-criome ECDH/AEAD session. Today's daemon skeleton
-  only has the socket-mode witness; plaintext owner-session handling
-  must not be added while the owner-signal contract is absent.
+  `meta-signal-criome` ECDH/AEAD session. Today's daemon skeleton
+  only has the socket-mode witness; plaintext meta-session handling
+  must not be added while the meta-signal contract is absent.
 - **Master-key plaintext does not leak.** A witness scans the
   daemon process's memory pages for the plaintext passphrase after
   unlock-and-use; the scan finds nothing. (Witness implementation
@@ -531,7 +531,7 @@ src/actors/signer.rs       AttestationSigner actor
 src/actors/verifier.rs     AttestationVerifier actor
 src/actors/registry.rs     IdentityRegistry actor
 src/actors/store.rs        StoreKernel + criome.sema tables
-src/tables.rs              component-local Sema tables
+src/tables.rs              component-local sema-engine table facade
 src/text.rs                Nexus/NOTA projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
 src/command.rs             CLI client process-boundary logic
@@ -540,15 +540,15 @@ tests/*.rs                 round-trip + architectural-truth tests
 ```
 
 Cargo dependencies after the rewrite: `signal-frame`,
-`signal-criome`, `kameo`, `sema`, `tokio`, `thiserror`,
-`clap`, `rkyv`, `blst`, `blake3`, `nota-codec`.
+`signal-criome`, `kameo`, `sema-engine`, `tokio`, `thiserror`,
+`clap`, `rkyv`, `blst`, `blake3`, `nota-next`.
 **Drops** the retired `signal` and `ractor` dependencies.
 
 Current implementation status:
 
 - `RegisterIdentity`, `LookupIdentity`, `RevokeIdentity`,
   and `SubscribeIdentityUpdates` route through the Kameo
-  actor tree and the component-local Sema store.
+  actor tree and the component-local sema-engine store.
 - `Sign` and attestation requests require a registered
   signer and persist a typed attestation record, but the
   signature string is still a skeleton placeholder. The
@@ -567,16 +567,16 @@ Current implementation status:
   live:** expired requests are recorded as expired state and same
   requester/nonce reuse rejects with `ReplayAttempted` before a
   second authorization slot is minted. This is still a skeleton:
-  real policy-table lookup, owner-signal approval, master-key
+  real policy-table lookup, meta-signal approval, master-key
   signing, pushed observation events, and quorum aggregation are the
   next authorization milestones.
-- The owner-signal-criome contract is the next contract surface to
+- The `meta-signal-criome` contract is the next contract surface to
   design: passphrase submission, policy mutation, peer-route
   mutation, escalation-approval prompts and replies, plus the
-  ECDH-handshake-then-AEAD owner-session envelope. `tui-criome`
-  becomes a long-running owner client of *this* daemon (not a
+  ECDH-handshake-then-AEAD meta-session envelope. `tui-criome`
+  becomes a long-running meta client of *this* daemon (not a
   separate daemon, not a separate signing-client component); the
-  `criome` CLI is the one-shot owner client.
+  `criome` CLI is the one-shot meta client.
 
 
 ## See also
