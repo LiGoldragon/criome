@@ -16,22 +16,15 @@ privilege elevations. Verifies signatures against the identity
 registry. Does **not** run effects, validate sema records, or
 hold any private keys other than its own root.
 
----
 
-## Repo state — pre-rewrite
+## Repo state
 
-This repo currently holds the **prior sema-records-validator
-skeleton** (validator pipeline, ractor supervision tree,
-sema-records tables) at commit `a3f4173`. That code is the
-archaeology of the previous shape; the rewrite to the Spartan
-shape is **operator's first track**.
+This repo holds today's Spartan Criome daemon. The older
+sema-records-validator skeleton (validator pipeline, ractor
+supervision tree, sema-records tables) is archaeology preserved at
+commit `a3f4173`; today's code is the Kameo authentication and
+attestation daemon described in `ARCHITECTURE.md`.
 
-Until the rewrite lands, the code in `src/` does not match this
-ARCH. Read the ARCH for the *target*; consult commit `a3f4173`
-for the *current* code if you need to mine the prior validator
-skeleton for any reason.
-
----
 
 ## Carve-outs worth knowing
 
@@ -40,12 +33,12 @@ skeleton for any reason.
   vocabulary is retired.
 - **Out-of-band attestations.** Attestations live in separate
   `signal-criome` records that reference content records
-  (`signal-persona-mind::ChannelGrant`, etc.). Content records
+  (`signal-mind` channel-grant records, etc.). Content records
   do not carry embedded proof fields. `signal-persona-origin`'s
   discipline (origin context, not proof material) stays
   inviolate.
-- **One redb, one writer.** `StoreKernel` is the only actor that
-  opens `criome.redb`. Other store actors route through it (per
+- **One store, one writer.** `StoreKernel` is the only actor that
+  opens `criome.sema`. Other store actors route through it (per
   `~/primary/skills/rust/storage-and-wire.md`).
 - **Blocking belongs in plane actors.** BLS signature
   generation/verification is blocking work; it lives behind

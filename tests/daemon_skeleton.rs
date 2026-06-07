@@ -7,21 +7,18 @@ use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology,
 use criome::daemon::CriomeDaemon;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
-use signal_core::{
-    ExchangeIdentifier, ExchangeLane, LaneSequence, NonEmpty, Operation, Request, SessionEpoch,
-    SignalVerb,
-};
 use signal_criome::{
     AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationExpired,
     AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
     AuthorizationPolicySatisfaction, AuthorizationRequestSlot, AuthorizationScope,
-    AuthorizationStatus, AuthorizedSignalVerb, BlsPublicKey, BlsSignature, ContentPurpose,
-    ContentReference, ContractName, CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest,
+    AuthorizationStatus, BlsPublicKey, BlsSignature, ContentPurpose, ContentReference,
+    ContractName, ContractOperationHead, CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest,
     Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, PrincipalName,
     PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
     RequiredSignatureThreshold, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
     SignatureEnvelope, SignatureScheme, TimestampNanos,
 };
+use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
 fn synthetic_exchange() -> ExchangeIdentifier {
     ExchangeIdentifier::new(
@@ -40,7 +37,7 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 }
 
 fn store_location(name: &str) -> StoreLocation {
-    StoreLocation::new(fixture_path(name).join("criome.redb"))
+    StoreLocation::new(fixture_path(name).join("criome.sema"))
 }
 
 fn registration(name: &str) -> IdentityRegistration {
@@ -78,6 +75,10 @@ fn contract_name() -> ContractName {
     ContractName::new("signal-lojix")
 }
 
+fn contract_operation_head() -> ContractOperationHead {
+    ContractOperationHead::new("Deploy")
+}
+
 fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
     signal_call_authorization_with_nonce(seed, "authorization-nonce")
 }
@@ -86,7 +87,7 @@ fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallA
     SignalCallAuthorization {
         request_digest: ObjectDigest::from_bytes(seed),
         contract: contract_name(),
-        verb: AuthorizedSignalVerb::Assert,
+        operation: contract_operation_head(),
         scope: authorization_scope(),
         requester: Identity::developer("operator"),
         nonce: ReplayNonce::new(nonce),
@@ -107,7 +108,7 @@ fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
         request_slot: AuthorizationRequestSlot::new("authorization-grant-slot"),
         authorized_object_digest: ObjectDigest::from_bytes(seed),
         authorized_contract: contract_name(),
-        authorized_verb: AuthorizedSignalVerb::Assert,
+        authorized_operation: contract_operation_head(),
         authorization_scope: authorization_scope(),
         policy_satisfaction: AuthorizationPolicySatisfaction {
             policy_class: AuthorizationPolicyClass::SimpleSelfSigned,
@@ -362,7 +363,7 @@ async fn verify_authorization_rejects_digest_mismatch() {
 fn criome_daemon_signal_frame_registers_identity() {
     let workspace = fixture_path("daemon-registers");
     let socket = workspace.join("criome.sock");
-    let store = StoreLocation::new(workspace.join("criome.redb"));
+    let store = StoreLocation::new(workspace.join("criome.sema"));
     let daemon = CriomeDaemon::new(&socket, store);
     let served = thread::spawn(move || daemon.serve_one().expect("serve one request"));
 
@@ -386,7 +387,7 @@ fn criome_daemon_signal_frame_registers_identity() {
 fn criome_daemon_owner_socket_is_user_private() {
     let workspace = fixture_path("socket-mode");
     let socket = workspace.join("criome.sock");
-    let store = StoreLocation::new(workspace.join("criome.redb"));
+    let store = StoreLocation::new(workspace.join("criome.sema"));
     let daemon = CriomeDaemon::new(&socket, store)
         .bind()
         .expect("bind daemon");
@@ -437,25 +438,21 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
 }
 
 #[test]
-fn criome_frame_codec_rejects_mismatched_signal_verb() {
-    let operation = Operation::new(
-        SignalVerb::Assert,
-        CriomeRequest::LookupIdentity(IdentityLookup {
-            identity: Identity::developer("operator"),
-        }),
-    );
-    let request = Request::from_operations(NonEmpty::single(operation));
+fn criome_frame_codec_reads_contract_local_request_payload() {
+    let expected = CriomeRequest::LookupIdentity(IdentityLookup {
+        identity: Identity::developer("operator"),
+    });
     let frame = CriomeFrame::new(CriomeFrameBody::Request {
         exchange: synthetic_exchange(),
-        request,
+        request: expected.clone().into_request(),
     });
     let bytes = frame.encode_length_prefixed().expect("frame encodes");
     let mut input = bytes.as_slice();
-    let error = CriomeFrameCodec::default()
+    let decoded = CriomeFrameCodec::default()
         .read_request(&mut input)
-        .expect_err("mismatched verb is rejected");
+        .expect("request payload decodes");
 
-    assert!(error.to_string().contains("verb/payload mismatch"));
+    assert_eq!(decoded, expected);
 }
 
 #[test]
@@ -463,9 +460,11 @@ fn cargo_manifest_removed_retired_signal_and_ractor_runtime() {
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read manifest");
 
     assert!(manifest.contains("signal-criome"));
+    assert!(manifest.contains("signal-frame"));
     assert!(manifest.contains("kameo"));
     assert!(!manifest.contains("ractor"));
     assert!(!manifest.contains("signal       ="));
+    assert!(!manifest.contains("signal-core"));
 }
 
 fn wait_for_socket(socket: &std::path::Path) {

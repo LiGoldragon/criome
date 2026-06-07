@@ -13,7 +13,7 @@ Today's `criome` is a **minimal Spartan BLS-signature authentication
 and attestation substrate** for the Persona ecosystem: a single
 Kameo-based daemon holding an identity registry, sign/verify
 primitives, delegation grants, a replay guard, and a typed audit log
-in `criome.redb` via the `sema` library. It is paired with the
+in `criome.sema` via the `sema` library. It is paired with the
 `signal-criome` contract and the `owner-signal-criome` owner contract.
 
 This repo is "today, not eventually." The **eventual** `Criome` is the
@@ -56,15 +56,15 @@ the "origin context, not proof material" discipline stays inviolate.
 *One NOTA record in, one NOTA record out at the CLI boundary; the
 daemon takes one argument.* The CLI accepts exactly one NOTA request
 and prints exactly one reply. The wire is the `signal-criome` contract
-(closed `CriomeRequest` / `CriomeReply` enums, depending on
-`signal-core`, not on `signal`) over length-prefixed rkyv frames
-between components. No flags; configuration arrives as a typed record.
+(closed `CriomeRequest` / `CriomeReply` enums over `signal-frame`)
+over length-prefixed rkyv frames between components. No flags;
+configuration arrives as a typed record.
 
 *Wire vocabulary is closed and typed.* Request and reply enums are
 closed — no `Unknown` escape hatch, no stringly-typed dispatch. The
 contract crate (`signal-criome`) owns the wire vocabulary; this daemon
-owns the runtime: actors, sockets, the redb-backed authority state, and
-the verify/sign/register logic.
+owns the runtime: actors, sockets, the durable authority state, and the
+verify/sign/register logic.
 
 ## See also
 

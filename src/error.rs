@@ -15,7 +15,7 @@ pub enum Error {
     #[error("sema: {0}")]
     Sema(#[from] sema::Error),
     #[error("signal frame: {0}")]
-    SignalFrame(#[from] signal_core::FrameError),
+    SignalFrame(#[from] signal_frame::FrameError),
     #[error("unexpected signal frame: {got}")]
     UnexpectedSignalFrame { got: String },
     #[error("authorization replay attempted")]

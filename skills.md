@@ -2,7 +2,6 @@
 
 *What an agent needs to know to be effective in this repo.*
 
----
 
 ## What criome is
 
@@ -17,7 +16,6 @@ is the authorization topology for Lojix deploy requests.
 
 Read `ARCHITECTURE.md` for this repo's shape.
 
----
 
 ## Today vs eventually
 
@@ -32,19 +30,18 @@ When working here, hold the distinction: today's code serves
 today's narrow scope; the eventual encompassment is described in
 ESSENCE, not in this repo.
 
----
 
 ## Hard invariants for an agent working here
 
 - **Out-of-band attestations only.** Attestations are separate
   records in `signal-criome` that reference content records;
   they never embed proof fields inside the content records. This
-  preserves `signal-persona-origin`'s discipline.
+  preserves the origin-context discipline.
 - **Closed enums at every typed boundary.** No `Unknown`
   variant; no string-tagged dispatch; no generic-record
   fallback. Per `~/primary/ESSENCE.md` §"Perfect specificity at
   boundaries".
-- **One redb, one writer.** `StoreKernel` owns `criome.redb`;
+- **One store, one writer.** `StoreKernel` owns `criome.sema`;
   every other store actor routes through it.
 - **Push, not poll.** Identity-update consumers subscribe; they
   do not poll. Per `~/primary/skills/push-not-pull.md`.
@@ -88,7 +85,6 @@ ESSENCE, not in this repo.
   types + trait signatures + `todo!()`, not as prose in this
   repo.
 
----
 
 ## What this repo is canonical for
 
@@ -97,7 +93,7 @@ Criome owns:
 - The `Identity` enum vocabulary (`Persona`, `Agent`, `Host`,
   `Developer`, `Cluster`) — closed.
 - The attestation envelope format and signing/verification API.
-- The identity registry storage shape (in `criome.redb`).
+- The identity registry storage shape (in `criome.sema`).
 - The signing/verification API contract surface.
 - The `criome.pub` public-material publication conventions.
 - Authorization request state, signature solicitation state,
@@ -106,10 +102,10 @@ Criome owns:
 
 Criome does **not** own:
 
-- Content record types (those live in `signal-persona-mind`,
+- Content record types (those live in `signal-mind`,
   `signal-persona`, `signal-forge`, etc.).
 - Per-persona / per-agent private keys.
-- Audit-policy decisions (the persona-audit policy engine is a
+- Audit-policy decisions (the audit-policy engine is a
   separate component, to be designed in a follow-up report).
 - Sema-ecosystem records validation (deferred to eventual
   Criome).
@@ -117,7 +113,6 @@ Criome does **not** own:
   narrow per-host shim; it feeds criome but criome doesn't own
   it).
 
----
 
 ## See also
 
@@ -131,7 +126,7 @@ Criome does **not** own:
 - `~/primary/skills/architectural-truth-tests.md` — witnesses
   for `ARCHITECTURE.md` §8 constraints.
 - `~/primary/skills/push-not-pull.md` — subscription discipline.
-- `~/primary/skills/rust/storage-and-wire.md` — redb + rkyv
+- `~/primary/skills/rust/storage-and-wire.md` — storage + rkyv
   discipline.
 - `~/primary/skills/rust/crate-layout.md` — CLIs are daemon
   clients; one NOTA record in, one out.

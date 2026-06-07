@@ -26,7 +26,6 @@ authorization decisions, and privilege elevations.*
 > The sema-records validator function is **deferred to
 > eventual Criome**; today's daemon does not carry it.
 
----
 
 ## 0 · TL;DR
 
@@ -35,19 +34,19 @@ authorization decisions, and privilege elevations.*
   this principal under this grant for these bytes?"*
   Persona answers *"should this prompt be delivered,
   should this work be executed?"* The boundary is sharp;
-  prompt-audit policy lives in `persona-mind`, not in
+  prompt-audit policy lives in `mind`, not in
   criome.
 - **One Kameo-based daemon** holding criome's own root
   keypair, an identity registry, delegation grants, a
-  replay-guard, and an audit event log in `criome.redb`
+  replay-guard, and an audit event log in `criome.sema`
   (via the `sema` library).
 - **First milestone is verifier-shaped.** Three primary
   capabilities: **verify** external signatures (developer
-  release signatures, persona-message signatures), **
+  release signatures, message signatures), **
   register/lookup** typed identities (Persona, Agent,
   Host, Developer, Cluster), **emit attestations** signed
   by criome's root key only when a witness requires (e.g.,
-  ChannelGrantAttestation from `persona-mind`).
+  ChannelGrantAttestation from `mind`).
 - **Routed authorization is the Lojix integration path.**
   `lojix-daemon` submits the exact canonical `signal-lojix`
   request digest to its local `criome-daemon`. Criome routes
@@ -64,22 +63,20 @@ authorization decisions, and privilege elevations.*
   every Spartan attestation a quorum candidate without a
   future scheme migration when eventual-Criome's
   quorum-signature multi-sig lands.
-- **Wire**: `signal-criome` contract crate (depends on
-  `signal-core`, not on `signal`). Closed `CriomeRequest`
-  / `CriomeReply` enums. One NOTA record in, one NOTA
-  record out at the CLI boundary.
+- **Wire**: `signal-criome` contract crate over `signal-frame`.
+  Closed `CriomeRequest` / `CriomeReply` enums. One NOTA record in,
+  one NOTA record out at the CLI boundary.
 - **Out-of-band only.** Attestations live as separate
   records that reference content records (a
-  `ChannelGrantAttestation` references a
-  `signal-persona-mind::ChannelGrant`). Content records
+  `ChannelGrantAttestation` references a `signal-mind`
+  channel-grant record). Content records
   do not carry embedded proof fields; the
-  `signal-persona-origin` discipline ("origin context, not
+  origin-context discipline ("origin context, not
   proof material") stays inviolate.
 - **Cluster-trust runtime functionality is folded in.**
   ClaviFaber's per-host `PublicKeyPublication` feeds into
   criome's identity registry, registering each host.
 
----
 
 ## Authorization model
 
@@ -187,8 +184,8 @@ flowchart TB
     verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
     authorization["AuthorizationCoordinator<br/>(signature state;<br/>routes solicitations)"]
     registry["IdentityRegistry<br/>(Identity ↔ PublicKey)"]
-    store["StoreKernel<br/>(sole owner of criome.redb)"]
-    db["criome.redb<br/>(via sema library)"]
+    store["StoreKernel<br/>(sole owner of criome.sema)"]
+    db["criome.sema<br/>(via sema library)"]
     audit["AuditLog<br/>(append-only attestation history)"]
 
     cli --> socket
@@ -215,11 +212,10 @@ sign, verify) live in `AttestationSigner` /
 templates"), or on a dedicated thread (Template 2) when the
 work is hot enough.
 
----
 
 ## 2 · Owned
 
-- The `criome.redb` durable store and its component-local
+- The `criome.sema` durable store and its component-local
   Sema layer.
 - **The single Unix-user owner relation.** The daemon's owner
   socket lives at a per-user path with mode 0600; only that user
@@ -257,11 +253,11 @@ work is hot enough.
 - Content records (`ChannelGrant`,
   `AuthorizationRequest`, `ArchiveAttestation`'s referent
   hash, `PrivilegeElevationRequest`) — those live in their
-  respective `signal-persona-*` contract crates.
+  respective signal contract crates.
 - Per-persona / per-agent / per-developer private
   keypairs — criome holds only the *public* halves.
 - Audit-policy decisions about prompt safety — the
-  persona-audit policy engine is a separate component to
+  audit-policy engine is a separate component to
   be designed in a follow-up report. Criome signs the
   *verdict*; the policy engine produces the verdict.
 - Sema-ecosystem records validation (Graph/Node/Edge/
@@ -273,7 +269,6 @@ work is hot enough.
 - Key rotation orchestration — out of scope for the
   Spartan first cut.
 
----
 
 ## 4 · Wire vocabulary
 
@@ -320,11 +315,10 @@ CriomeReply
   | Rejection(Rejection)
 ```
 
----
 
 ## 5 · State and ownership
 
-Single redb file (`criome.redb`), opened only by
+Single component store file (`criome.sema`), opened only by
 `StoreKernel`. Tables (named here; precise schema in
 operator's implementation):
 
@@ -346,7 +340,6 @@ The version-skew guard runs at boot and hard-fails on
 mismatch (per
 `~/primary/skills/rust/storage-and-wire.md` §"Schema discipline").
 
----
 
 ## 6 · Trust model and key distribution
 
@@ -406,7 +399,7 @@ need a wire-crypto layer. Candidate shapes:
 
 | Option | Shape |
 |---|---|
-| TLS-wrapped signal-core | Cross-host peer connections are TLS sockets. PKI rooted at criome master pubkeys. |
+| TLS-wrapped signal-frame | Cross-host peer connections are TLS sockets. PKI rooted at criome master pubkeys. |
 | Per-frame signed envelope | Each cross-host frame is BLS-signed by sender's master key; receiver verifies before parsing. |
 | SSH tunnelling | Cross-host traffic flows over SSH between criome users. |
 
@@ -414,7 +407,6 @@ The choice is deferred to a follow-up designer report. Single-host
 quorum (peers under different Unix users on one host) works today
 without the cross-host crypto layer.
 
----
 
 ## 7 · Integration map
 
@@ -422,8 +414,8 @@ The headline boundaries:
 
 | Component | Crosses to criome via | Purpose |
 |---|---|---|
-| `persona-mind` | `AttestChannelGrant`, `AttestAuthorization` | Mind requests attestations before forwarding decisions to router. |
-| `persona-router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
+| `mind` | `AttestChannelGrant`, `AttestAuthorization` | Mind requests attestations before forwarding decisions to router. |
+| `router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
 | `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
 | `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
@@ -431,9 +423,8 @@ The headline boundaries:
 | `tui-criome` (owner, long-running) | `owner-signal-criome` | The owner's long-running interactive client. Same contract as the CLI, but stays connected to receive `RequestOwnerApproval` push events and answer them. Not a separate triad daemon. |
 | Peer criome daemons | `signal-criome` (peer routing) | Receive `RouteSignatureRequest` for quorum solicitations; reply with `SubmitSignature` or `RejectAuthorization`. Found by predictable socket name (§6.1). |
 | ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
-| Future `persona-audit` policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
+| Future audit-policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
 
----
 
 ## 8 · Constraints
 
@@ -443,12 +434,12 @@ constraints:
 
 - The `criome` CLI accepts exactly one NOTA request
   record and prints exactly one NOTA reply record.
-- The daemon owns `criome.redb`; the CLI never opens it.
+- The daemon owns `criome.sema`; the CLI never opens it.
 - Signed payloads carry **domain separation** — every
   signature binds a content hash to its purpose
   (component name, channel role, audience, contract/
   schema version, expiry). A release signature cannot
-  verify as a persona-message authorization.
+  verify as a message authorization.
 - One-shot delegations and time-bound authorizations are
   protected by a `replay_guard` table; repeat use of the
   same `(principal, audience, nonce)` rejects with
@@ -500,9 +491,8 @@ constraints:
   may rely on a test fixture that sets a known passphrase and
   searches post-zeroization.)
 - Prompt-audit policy code does not live in this repo
-  (it belongs to `persona-mind`).
+  (it belongs to `mind`).
 
----
 
 ## 8.1 · Future possibilities
 
@@ -525,7 +515,6 @@ the trajectory is visible from today's narrow Spartan substrate:
   (publishing a new master with continuity proofs back to the old)
   is deferred.
 
----
 
 ## 9 · Code map
 
@@ -541,7 +530,7 @@ src/actors/authorization.rs AuthorizationCoordinator actor
 src/actors/signer.rs       AttestationSigner actor
 src/actors/verifier.rs     AttestationVerifier actor
 src/actors/registry.rs     IdentityRegistry actor
-src/actors/store.rs        StoreKernel + criome.redb tables
+src/actors/store.rs        StoreKernel + criome.sema tables
 src/tables.rs              component-local Sema tables
 src/text.rs                Nexus/NOTA projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
@@ -550,7 +539,7 @@ src/daemon.rs              Unix-socket daemon wrapper around CriomeRoot
 tests/*.rs                 round-trip + architectural-truth tests
 ```
 
-Cargo dependencies after the rewrite: `signal-core`,
+Cargo dependencies after the rewrite: `signal-frame`,
 `signal-criome`, `kameo`, `sema`, `tokio`, `thiserror`,
 `clap`, `rkyv`, `blst`, `blake3`, `nota-codec`.
 **Drops** the retired `signal` and `ractor` dependencies.
@@ -589,7 +578,6 @@ Current implementation status:
   separate daemon, not a separate signing-client component); the
   `criome` CLI is the one-shot owner client.
 
----
 
 ## See also
 

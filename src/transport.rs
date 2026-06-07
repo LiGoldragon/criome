@@ -2,11 +2,11 @@ use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use signal_core::{
-    ExchangeIdentifier, ExchangeLane, LaneSequence, NonEmpty, Reply, RequestPayload, SessionEpoch,
-    SignalVerb, SubReply,
-};
 use signal_criome::{CriomeFrame, CriomeFrameBody as FrameBody, CriomeReply, CriomeRequest};
+use signal_frame::{
+    ExchangeIdentifier, ExchangeLane, LaneSequence, NonEmpty, Reply, RequestPayload, SessionEpoch,
+    SubReply,
+};
 
 use crate::{Error, Result};
 
@@ -38,15 +38,7 @@ impl CriomeFrameCodec {
 
     pub fn read_request(&self, reader: &mut impl Read) -> Result<CriomeRequest> {
         match self.read_frame(reader)?.into_body() {
-            FrameBody::Request { request, .. } => {
-                let checked =
-                    request
-                        .into_checked()
-                        .map_err(|(reason, _)| Error::UnexpectedSignalFrame {
-                            got: reason.to_string(),
-                        })?;
-                Ok(checked.operations.into_head().payload)
-            }
+            FrameBody::Request { request, .. } => Ok(request.payloads.into_head()),
             other => Err(Error::UnexpectedSignalFrame {
                 got: format!("{other:?}"),
             }),
@@ -65,7 +57,7 @@ impl CriomeFrameCodec {
         match self.read_frame(reader)?.into_body() {
             FrameBody::Reply { reply, .. } => match reply {
                 Reply::Accepted { per_operation, .. } => match per_operation.into_head() {
-                    SubReply::Ok { payload, .. } => Ok(payload),
+                    SubReply::Ok(payload) => Ok(payload),
                     other => Err(Error::UnexpectedSignalFrame {
                         got: format!("{other:?}"),
                     }),
@@ -83,10 +75,7 @@ impl CriomeFrameCodec {
     pub fn write_reply(&self, writer: &mut impl Write, reply: CriomeReply) -> Result<()> {
         let frame = CriomeFrame::new(FrameBody::Reply {
             exchange: synthetic_exchange(),
-            reply: Reply::completed(NonEmpty::single(SubReply::Ok {
-                verb: SignalVerb::Match,
-                payload: reply,
-            })),
+            reply: Reply::committed(NonEmpty::single(SubReply::Ok(reply))),
         });
         self.write_frame(writer, frame)
     }
