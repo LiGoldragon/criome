@@ -4,7 +4,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
 use kameo::actor::ActorRef;
-use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use triad_runtime::SignalFile;
 
 use crate::actors::root::{Arguments as RootArguments, CriomeRoot, SubmitRequest};
@@ -18,11 +17,7 @@ pub struct CriomeDaemon {
     store: StoreLocation,
 }
 
-#[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
-pub struct CriomeDaemonConfiguration {
-    pub socket_path: String,
-    pub store_path: String,
-}
+pub use signal_criome::CriomeDaemonConfiguration;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CriomeDaemonConfigurationFile {
@@ -39,8 +34,8 @@ impl CriomeDaemon {
 
     pub fn from_configuration(configuration: CriomeDaemonConfiguration) -> Self {
         Self::new(
-            PathBuf::from(configuration.socket_path),
-            StoreLocation::new(configuration.store_path),
+            PathBuf::from(configuration.socket_path.as_str()),
+            StoreLocation::new(configuration.store_path.as_str()),
         )
     }
 
@@ -104,26 +99,6 @@ impl CriomeDaemon {
     }
 }
 
-impl CriomeDaemonConfiguration {
-    pub fn new(socket_path: impl Into<String>, store_path: impl Into<String>) -> Self {
-        Self {
-            socket_path: socket_path.into(),
-            store_path: store_path.into(),
-        }
-    }
-
-    pub fn from_rkyv_bytes(bytes: &[u8]) -> Result<Self> {
-        rkyv::from_bytes::<Self, rkyv::rancor::Error>(bytes)
-            .map_err(|_| Error::ConfigurationArchiveDecode)
-    }
-
-    pub fn to_rkyv_bytes(&self) -> Result<Vec<u8>> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self)
-            .map_err(|_| Error::ConfigurationArchiveEncode)?;
-        Ok(bytes.into_vec())
-    }
-}
-
 impl CriomeDaemonConfigurationFile {
     pub fn from_signal_file(file: SignalFile) -> Self {
         Self {
@@ -141,10 +116,14 @@ impl CriomeDaemonConfigurationFile {
             source,
         })?;
         CriomeDaemonConfiguration::from_rkyv_bytes(&bytes)
+            .map_err(|_| Error::ConfigurationArchiveDecode)
     }
 
     pub fn write_configuration(&self, configuration: &CriomeDaemonConfiguration) -> Result<()> {
-        std::fs::write(&self.path, configuration.to_rkyv_bytes()?).map_err(|source| {
+        let bytes = configuration
+            .to_rkyv_bytes()
+            .map_err(|_| Error::ConfigurationArchiveEncode)?;
+        std::fs::write(&self.path, bytes).map_err(|source| {
             Error::ConfigurationWrite {
                 path: self.path.clone(),
                 source,

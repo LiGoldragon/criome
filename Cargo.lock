@@ -443,7 +443,7 @@ dependencies = [
 [[package]]
 name = "nota-next"
 version = "0.3.0"
-source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#f0e435a629f8312b173b0f8564c17ee0a4001561"
+source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#d8862b6145445d20caeb973de4851f318cf43591"
 dependencies = [
  "nota-next-derive",
  "rkyv",
@@ -452,7 +452,7 @@ dependencies = [
 [[package]]
 name = "nota-next-derive"
 version = "0.2.0"
-source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#f0e435a629f8312b173b0f8564c17ee0a4001561"
+source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#d8862b6145445d20caeb973de4851f318cf43591"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -697,7 +697,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#cd4441102b41f5c6786a1f37bafd88351d388f2d"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#d5a3f137594dae2426b50e8c63c02e17b2e61c78"
 dependencies = [
  "blake3",
  "blst",
