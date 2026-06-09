@@ -24,7 +24,7 @@ impl CriomeActorReply {
 }
 
 pub fn rejection(reason: RejectionReason) -> CriomeReply {
-    CriomeReply::Rejection(Rejection { reason })
+    CriomeReply::Rejection(Rejection::new(reason))
 }
 
 pub fn actor_reply(reply: CriomeReply) -> CriomeActorReply {

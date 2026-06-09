@@ -91,7 +91,7 @@ impl AttestationSigner {
             envelope: SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
                 public_key,
-                signature: BlsSignature::new("criome-skeleton-bls-signature"),
+                signature: BlsSignature::new("criome-skeleton-bls-signature".to_string()),
             },
             issued_at,
             expires_at: request.expires_at,
@@ -143,9 +143,7 @@ impl AttestationSigner {
     async fn sign_as_receipt(&self, request: SignRequest) -> CriomeReply {
         match self.sign(request).await {
             CriomeReply::SignReceipt(receipt) => {
-                CriomeReply::AttestationReceipt(AttestationReceipt {
-                    attestation: receipt.attestation,
-                })
+                CriomeReply::AttestationReceipt(AttestationReceipt::new(receipt.attestation))
             }
             other => other,
         }

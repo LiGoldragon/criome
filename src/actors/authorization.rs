@@ -121,7 +121,7 @@ impl AuthorizationCoordinator {
             request_slot: request_slot.clone(),
             request_digest: authorization.request_digest,
             missing_authorities: state.missing_authorities,
-            observation_token: AuthorizationObservationToken { request_slot },
+            observation_token: AuthorizationObservationToken::new(request_slot),
         })
     }
 
@@ -145,16 +145,14 @@ impl AuthorizationCoordinator {
 
     async fn observe_authorization(&self, observation: AuthorizationObservation) -> CriomeReply {
         let state = self
-            .lookup_authorization_state(observation.request_slot)
+            .lookup_authorization_state(observation.into_payload())
             .await
             .ok()
             .flatten()
             .map(|stored| stored.into_state())
             .into_iter()
             .collect();
-        CriomeReply::AuthorizationObservationSnapshot(AuthorizationObservationSnapshot {
-            states: state,
-        })
+        CriomeReply::AuthorizationObservationSnapshot(AuthorizationObservationSnapshot::new(state))
     }
 
     async fn verify_authorization(&self, verification: AuthorizationVerification) -> CriomeReply {
@@ -216,7 +214,7 @@ impl AuthorizationCoordinator {
     }
 
     async fn close_observation(&self, token: AuthorizationObservationToken) -> CriomeReply {
-        CriomeReply::AuthorizationObservationRetracted(AuthorizationObservationRetracted { token })
+        CriomeReply::AuthorizationObservationRetracted(AuthorizationObservationRetracted::new(token))
     }
 
     async fn store_authorization_state(

@@ -618,6 +618,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "schema-next"
+version = "0.1.4"
+source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#77e71a410d03e3cc5c16cebd82202e712439e648"
+dependencies = [
+ "nota-next",
+ "rkyv",
+]
+
+[[package]]
+name = "schema-rust-next"
+version = "0.5.2"
+source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#261c7795d80fedbca0f8e18ddfacc9065967ad8b"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "schema-next",
+ "syn",
+ "thiserror",
+]
+
+[[package]]
 name = "sema"
 version = "0.1.1"
 source = "git+https://github.com/LiGoldragon/sema.git?branch=main#da96de248cc3fe2e3191ca524d60cfc378f62a11"
@@ -697,12 +719,13 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#32097387a822c62864ed105fc39c02a6986b2a91"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#185b470e17d1ddbf9e1e66f9d783014ee654c6ad"
 dependencies = [
  "blake3",
  "blst",
  "nota-next",
  "rkyv",
+ "schema-rust-next",
  "signal-frame",
  "thiserror",
 ]

@@ -181,9 +181,7 @@ impl CriomeRoot {
                     .await
             }
             CriomeRequest::SubscribeIdentityUpdates(request) => {
-                let token = IdentitySubscriptionToken {
-                    subscriber: request.subscriber,
-                };
+                let token = IdentitySubscriptionToken::new(request.into_payload());
                 self.ask_subscription(subscription::OpenIdentitySubscription { token })
                     .await
             }

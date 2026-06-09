@@ -116,7 +116,7 @@ impl IdentityRegistry {
     }
 
     async fn lookup(&self, lookup: IdentityLookup) -> CriomeReply {
-        match self.lookup_stored(lookup.identity).await {
+        match self.lookup_stored(lookup.into_payload()).await {
             Ok(Some(identity)) => CriomeReply::IdentityReceipt(identity.receipt()),
             Ok(None) => rejection(RejectionReason::UnknownIdentity),
             Err(_error) => rejection(RejectionReason::MalformedRequest),
@@ -125,15 +125,15 @@ impl IdentityRegistry {
 
     async fn snapshot(&self) -> CriomeReply {
         match self.snapshot_records().await {
-            Ok(records) => CriomeReply::IdentitySnapshot(IdentitySnapshot {
-                identities: records
+            Ok(records) => CriomeReply::IdentitySnapshot(IdentitySnapshot::new(
+                records
                     .into_iter()
                     .map(|identity| IdentityReceipt {
                         identity: identity.identity().clone(),
                         status: identity.status(),
                     })
                     .collect(),
-            }),
+            )),
             Err(_error) => rejection(RejectionReason::MalformedRequest),
         }
     }

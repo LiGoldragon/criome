@@ -55,7 +55,7 @@ impl SubscriptionRegistry {
         match self.open.iter().position(|existing| existing == &token) {
             Some(index) => {
                 self.open.remove(index);
-                CriomeReply::SubscriptionRetracted(SubscriptionRetracted { token })
+                CriomeReply::SubscriptionRetracted(SubscriptionRetracted::new(token))
             }
             None => rejection(RejectionReason::UnknownIdentity),
         }
