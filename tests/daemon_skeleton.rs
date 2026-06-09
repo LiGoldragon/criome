@@ -56,9 +56,9 @@ fn daemon_configuration(name: &str) -> CriomeDaemonConfiguration {
 
 fn registration(name: &str) -> IdentityRegistration {
     IdentityRegistration {
-        identity: Identity::developer(name),
-        public_key: BlsPublicKey::new(format!("{name}-public-key")),
-        fingerprint: PublicKeyFingerprint::new(format!("{name}-fingerprint")),
+        identity: Identity::developer((name).to_string()),
+        public_key: BlsPublicKey::new((format!("{name}-public-key")).to_string()),
+        fingerprint: PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
         purpose: KeyPurpose::ReleaseAuthorization,
     }
 }
@@ -68,29 +68,29 @@ fn sign_request(name: &str) -> SignRequest {
         content: ContentReference {
             digest: ObjectDigest::from_bytes(b"fixture"),
             purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new("fixture-schema"),
+            schema_version: PrincipalName::new(("fixture-schema").to_string()),
         },
-        signer: Identity::developer(name),
+        signer: Identity::developer((name).to_string()),
         audit_context: AuditContext {
             purpose: ContentPurpose::SignedObject,
-            audience: PrincipalName::new("fixture-audience"),
-            policy_version: PrincipalName::new("fixture-policy"),
-            nonce: ReplayNonce::new("fixture-nonce"),
+            audience: PrincipalName::new(("fixture-audience").to_string()),
+            policy_version: PrincipalName::new(("fixture-policy").to_string()),
+            nonce: ReplayNonce::new(("fixture-nonce").to_string()),
         },
         expires_at: None,
     }
 }
 
 fn authorization_scope() -> AuthorizationScope {
-    AuthorizationScope::new("deploy-zeus-full-os")
+    AuthorizationScope::new(("deploy-zeus-full-os").to_string())
 }
 
 fn contract_name() -> ContractName {
-    ContractName::new("signal-lojix")
+    ContractName::new(("signal-lojix").to_string())
 }
 
 fn contract_operation_head() -> ContractOperationHead {
-    ContractOperationHead::new("Deploy")
+    ContractOperationHead::new(("Deploy").to_string())
 }
 
 fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
@@ -103,8 +103,8 @@ fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallA
         contract: contract_name(),
         operation: contract_operation_head(),
         scope: authorization_scope(),
-        requester: Identity::developer("operator"),
-        nonce: ReplayNonce::new(nonce),
+        requester: Identity::developer(("operator").to_string()),
+        nonce: ReplayNonce::new((nonce).to_string()),
         expires_at: None,
     }
 }
@@ -112,14 +112,14 @@ fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallA
 fn signature_envelope() -> SignatureEnvelope {
     SignatureEnvelope {
         scheme: SignatureScheme::Bls12_381MinPk,
-        public_key: BlsPublicKey::new("public-key"),
-        signature: BlsSignature::new("signature"),
+        public_key: BlsPublicKey::new(("public-key").to_string()),
+        signature: BlsSignature::new(("signature").to_string()),
     }
 }
 
 fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
     AuthorizationGrant {
-        request_slot: AuthorizationRequestSlot::new("authorization-grant-slot"),
+        request_slot: AuthorizationRequestSlot::new(("authorization-grant-slot").to_string()),
         authorized_object_digest: ObjectDigest::from_bytes(seed),
         authorized_contract: contract_name(),
         authorized_operation: contract_operation_head(),
@@ -127,11 +127,11 @@ fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
         policy_satisfaction: AuthorizationPolicySatisfaction {
             policy_class: AuthorizationPolicyClass::SimpleSelfSigned,
             required_signature_threshold: RequiredSignatureThreshold::new(1),
-            satisfied_signers: vec![Identity::cluster("criome-master")],
+            satisfied_signers: vec![Identity::cluster(("criome-master").to_string())],
         },
         signature_result: SignatureAuthorizationResult::SingleSignature,
         signatures: vec![signature_envelope()],
-        issued_by: Identity::cluster("criome-master"),
+        issued_by: Identity::cluster(("criome-master").to_string()),
         issued_at: TimestampNanos::new(1),
         expires_at: None,
     }
@@ -183,9 +183,7 @@ async fn sign_with_unregistered_identity_returns_rejection() {
 
     assert_eq!(
         reply,
-        CriomeReply::Rejection(signal_criome::Rejection {
-            reason: RejectionReason::UnknownIdentity
-        })
+        CriomeReply::Rejection(signal_criome::Rejection::new(RejectionReason::UnknownIdentity))
     );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
@@ -212,9 +210,7 @@ async fn authorize_signal_call_records_observable_signing_state() {
 
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
-            AuthorizationObservation {
-                request_slot: pending.request_slot.clone(),
-            },
+            AuthorizationObservation::new(pending.request_slot.clone()),
         )))
         .await
         .expect("observe authorization")
@@ -222,10 +218,10 @@ async fn authorize_signal_call_records_observable_signing_state() {
     let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
-    assert_eq!(snapshot.states.len(), 1);
-    assert_eq!(snapshot.states[0].request_slot, pending.request_slot);
-    assert_eq!(snapshot.states[0].request_digest, request_digest);
-    assert_eq!(snapshot.states[0].status, AuthorizationStatus::Signing);
+    assert_eq!(snapshot.payload().len(), 1);
+    assert_eq!(snapshot.payload()[0].request_slot, pending.request_slot);
+    assert_eq!(snapshot.payload()[0].request_digest, request_digest);
+    assert_eq!(snapshot.payload()[0].status, AuthorizationStatus::Signing);
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -250,7 +246,7 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     let second = pending_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
             SignalCallAuthorization {
-                nonce: ReplayNonce::new("second-nonce"),
+                nonce: ReplayNonce::new(("second-nonce").to_string()),
                 ..authorization
             },
         )))
@@ -291,9 +287,7 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
 
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
-            AuthorizationObservation {
-                request_slot: expired.request_slot.clone(),
-            },
+            AuthorizationObservation::new(expired.request_slot.clone()),
         )))
         .await
         .expect("observe expired authorization")
@@ -301,10 +295,10 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
     let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
-    assert_eq!(snapshot.states.len(), 1);
-    assert_eq!(snapshot.states[0].request_slot, expired.request_slot);
-    assert_eq!(snapshot.states[0].request_digest, request_digest);
-    assert_eq!(snapshot.states[0].status, AuthorizationStatus::Expired);
+    assert_eq!(snapshot.payload().len(), 1);
+    assert_eq!(snapshot.payload()[0].request_slot, expired.request_slot);
+    assert_eq!(snapshot.payload()[0].request_digest, request_digest);
+    assert_eq!(snapshot.payload()[0].status, AuthorizationStatus::Expired);
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -337,9 +331,7 @@ async fn authorization_replay_nonce_rejects_changed_digest_reuse() {
         .into_reply();
     assert_eq!(
         second_reply,
-        CriomeReply::Rejection(signal_criome::Rejection {
-            reason: RejectionReason::ReplayAttempted,
-        })
+        CriomeReply::Rejection(signal_criome::Rejection::new(RejectionReason::ReplayAttempted))
     );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
@@ -390,7 +382,7 @@ fn criome_daemon_signal_frame_registers_identity() {
     assert_eq!(
         reply,
         CriomeReply::IdentityReceipt(signal_criome::IdentityReceipt {
-            identity: Identity::developer("operator"),
+            identity: Identity::developer(("operator").to_string()),
             status: PrincipalStatus::Active,
         })
     );
@@ -453,9 +445,7 @@ fn criome_daemon_configuration_rejects_nota_arguments() {
 #[cfg(feature = "nota-text")]
 #[test]
 fn criome_cli_request_argument_accepts_inline_and_nota_file() {
-    let request = CriomeRequest::LookupIdentity(IdentityLookup {
-        identity: Identity::developer("operator"),
-    });
+    let request = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(("operator").to_string())));
     let text = request.to_nota();
     let workspace = fixture_path("request-argument");
     let nota_path = workspace.join("request.nota");
@@ -500,9 +490,7 @@ fn criome_cli_cannot_reply_without_daemon_signal_frame() {
     let socket = workspace.join("missing.sock");
 
     let error = CriomeClient::new(&socket)
-        .send(CriomeRequest::LookupIdentity(IdentityLookup {
-            identity: Identity::developer("operator"),
-        }))
+        .send(CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(("operator").to_string()))))
         .expect_err("missing daemon must reject");
 
     assert!(format!("{error}").contains("socket does not exist"));
@@ -516,9 +504,7 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
     codec
         .write_reply(
             &mut writer,
-            CriomeReply::Rejection(signal_criome::Rejection {
-                reason: RejectionReason::MalformedRequest,
-            }),
+            CriomeReply::Rejection(signal_criome::Rejection::new(RejectionReason::MalformedRequest)),
         )
         .expect("write reply frame");
 
@@ -531,9 +517,7 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
 
 #[test]
 fn criome_frame_codec_reads_contract_local_request_payload() {
-    let expected = CriomeRequest::LookupIdentity(IdentityLookup {
-        identity: Identity::developer("operator"),
-    });
+    let expected = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(("operator").to_string())));
     let frame = CriomeFrame::new(CriomeFrameBody::Request {
         exchange: synthetic_exchange(),
         request: expected.clone().into_request(),
