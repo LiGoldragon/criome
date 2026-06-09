@@ -1,10 +1,17 @@
-use triad_runtime::{ComponentArgument, ComponentCommand, InlineNota, NotaFile};
+use triad_runtime::{ComponentArgument, ComponentCommand};
+#[cfg(feature = "nota-text")]
+use triad_runtime::{InlineNota, NotaFile};
 
 use crate::daemon::{CriomeDaemon, CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
+#[cfg(feature = "nota-text")]
 use crate::text::{ReplyDocument, RequestDocument};
+#[cfg(feature = "nota-text")]
 use crate::transport::CriomeClient;
-use crate::{Error, Result};
+use crate::Result;
+#[cfg(feature = "nota-text")]
+use crate::Error;
 
+#[cfg(feature = "nota-text")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CriomeCommandLine {
     command: ComponentCommand,
@@ -15,14 +22,17 @@ pub struct CriomeDaemonCommand {
     command: ComponentCommand,
 }
 
+#[cfg(feature = "nota-text")]
 pub struct CriomeRequestArgument {
     argument: ComponentArgument,
 }
 
+#[cfg(feature = "nota-text")]
 pub struct CriomeRequestFile {
     file: NotaFile,
 }
 
+#[cfg(feature = "nota-text")]
 impl CriomeCommandLine {
     pub fn from_environment() -> Self {
         Self {
@@ -81,6 +91,7 @@ impl CriomeDaemonCommand {
     }
 }
 
+#[cfg(feature = "nota-text")]
 impl CriomeRequestArgument {
     pub fn new(argument: ComponentArgument) -> Self {
         Self { argument }
@@ -102,6 +113,7 @@ impl CriomeRequestArgument {
     }
 }
 
+#[cfg(feature = "nota-text")]
 impl CriomeRequestFile {
     pub fn new(file: NotaFile) -> Self {
         Self { file }

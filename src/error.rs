@@ -10,6 +10,7 @@ pub enum Error {
     ActorSpawn(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "nota-text")]
     #[error("nota: {0}")]
     Nota(#[from] nota_next::NotaDecodeError),
     #[error("sema: {0}")]

@@ -9,6 +9,7 @@ pub mod command;
 pub mod daemon;
 pub mod error;
 pub mod tables;
+#[cfg(feature = "nota-text")]
 pub mod text;
 pub mod transport;
 

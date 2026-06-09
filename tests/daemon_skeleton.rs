@@ -4,11 +4,14 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 
 use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology, SubmitRequest};
-use criome::command::{CriomeDaemonCommand, CriomeRequestArgument};
+use criome::command::CriomeDaemonCommand;
+#[cfg(feature = "nota-text")]
+use criome::command::CriomeRequestArgument;
 use criome::daemon::CriomeDaemon;
 use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
+#[cfg(feature = "nota-text")]
 use nota_next::NotaEncode;
 use signal_criome::{
     AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationExpired,
@@ -447,6 +450,7 @@ fn criome_daemon_configuration_rejects_nota_arguments() {
     assert!(matches!(file, criome::Error::Argument(_)));
 }
 
+#[cfg(feature = "nota-text")]
 #[test]
 fn criome_cli_request_argument_accepts_inline_and_nota_file() {
     let request = CriomeRequest::LookupIdentity(IdentityLookup {
@@ -476,6 +480,7 @@ fn criome_cli_request_argument_accepts_inline_and_nota_file() {
     assert_eq!(file, request);
 }
 
+#[cfg(feature = "nota-text")]
 #[test]
 fn criome_cli_request_argument_rejects_flag_shape() {
     let error = CriomeRequestArgument::new(

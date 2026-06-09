@@ -14,16 +14,21 @@ path = "src/lib.rs"
 [[bin]]
 name = "criome"
 path = "src/main.rs"
+required-features = ["nota-text"]
 
 [[bin]]
 name = "criome-daemon"
 path = "src/bin/criome-daemon.rs"
 
+[features]
+default = []
+nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text"]
+
 [dependencies]
 blake3       = "1"
 blst         = "0.3"
 kameo        = { version = "0.20", default-features = false, features = ["macros", "tracing"] }
-nota-next    = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main" }
+nota-next    = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
