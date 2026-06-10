@@ -214,7 +214,9 @@ impl AuthorizationCoordinator {
     }
 
     async fn close_observation(&self, token: AuthorizationObservationToken) -> CriomeReply {
-        CriomeReply::AuthorizationObservationRetracted(AuthorizationObservationRetracted::new(token))
+        CriomeReply::AuthorizationObservationRetracted(AuthorizationObservationRetracted::new(
+            token,
+        ))
     }
 
     async fn store_authorization_state(

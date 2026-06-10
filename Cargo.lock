@@ -442,8 +442,8 @@ dependencies = [
 
 [[package]]
 name = "nota-next"
-version = "0.3.0"
-source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#d8862b6145445d20caeb973de4851f318cf43591"
+version = "0.4.0"
+source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#065fa2ad2fa05bac87677f0bfa826bd92dbd139a"
 dependencies = [
  "nota-next-derive",
  "rkyv",
@@ -452,7 +452,7 @@ dependencies = [
 [[package]]
 name = "nota-next-derive"
 version = "0.2.0"
-source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#d8862b6145445d20caeb973de4851f318cf43591"
+source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#065fa2ad2fa05bac87677f0bfa826bd92dbd139a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -619,8 +619,8 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "schema-next"
-version = "0.1.4"
-source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#77e71a410d03e3cc5c16cebd82202e712439e648"
+version = "0.2.0"
+source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#2397d5b2a4a8f35da1ba5957f48337f9a579db00"
 dependencies = [
  "nota-next",
  "rkyv",
@@ -628,8 +628,8 @@ dependencies = [
 
 [[package]]
 name = "schema-rust-next"
-version = "0.5.2"
-source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#261c7795d80fedbca0f8e18ddfacc9065967ad8b"
+version = "0.5.3"
+source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#cedb2e0652b2d8e3aa24c96a82b6daee6af785ad"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -652,8 +652,9 @@ dependencies = [
 [[package]]
 name = "sema-engine"
 version = "0.2.3"
-source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#ebee6e44ba6ee4afcb26998007bcfd128641b54c"
+source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#c970d3f2f463534d5ef640fb18ab5c0da971129c"
 dependencies = [
+ "blake3",
  "rkyv",
  "sema",
  "signal-frame",
@@ -719,7 +720,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#185b470e17d1ddbf9e1e66f9d783014ee654c6ad"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#6c77bea02fea0537d2c3821a844c1f894aacf9bc"
 dependencies = [
  "blake3",
  "blst",
@@ -911,8 +912,8 @@ dependencies = [
 
 [[package]]
 name = "triad-runtime"
-version = "0.5.0"
-source = "git+https://github.com/LiGoldragon/triad-runtime.git?branch=main#0b1746d47b4f569413e41772eae3aefe6981385b"
+version = "0.6.1"
+source = "git+https://github.com/LiGoldragon/triad-runtime.git?branch=main#6ea831627d13793a4c42d7f9b9174b47279a9b2b"
 dependencies = [
  "kameo",
  "rustix",

@@ -123,11 +123,9 @@ impl CriomeDaemonConfigurationFile {
         let bytes = configuration
             .to_rkyv_bytes()
             .map_err(|_| Error::ConfigurationArchiveEncode)?;
-        std::fs::write(&self.path, bytes).map_err(|source| {
-            Error::ConfigurationWrite {
-                path: self.path.clone(),
-                source,
-            }
+        std::fs::write(&self.path, bytes).map_err(|source| Error::ConfigurationWrite {
+            path: self.path.clone(),
+            source,
         })
     }
 }

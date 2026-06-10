@@ -2,14 +2,14 @@ use triad_runtime::{ComponentArgument, ComponentCommand};
 #[cfg(feature = "nota-text")]
 use triad_runtime::{InlineNota, NotaFile};
 
+#[cfg(feature = "nota-text")]
+use crate::Error;
+use crate::Result;
 use crate::daemon::{CriomeDaemon, CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
 #[cfg(feature = "nota-text")]
 use crate::text::{ReplyDocument, RequestDocument};
 #[cfg(feature = "nota-text")]
 use crate::transport::CriomeClient;
-use crate::Result;
-#[cfg(feature = "nota-text")]
-use crate::Error;
 
 #[cfg(feature = "nota-text")]
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -183,7 +183,9 @@ async fn sign_with_unregistered_identity_returns_rejection() {
 
     assert_eq!(
         reply,
-        CriomeReply::Rejection(signal_criome::Rejection::new(RejectionReason::UnknownIdentity))
+        CriomeReply::Rejection(signal_criome::Rejection::new(
+            RejectionReason::UnknownIdentity
+        ))
     );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
@@ -331,7 +333,9 @@ async fn authorization_replay_nonce_rejects_changed_digest_reuse() {
         .into_reply();
     assert_eq!(
         second_reply,
-        CriomeReply::Rejection(signal_criome::Rejection::new(RejectionReason::ReplayAttempted))
+        CriomeReply::Rejection(signal_criome::Rejection::new(
+            RejectionReason::ReplayAttempted
+        ))
     );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
@@ -445,7 +449,9 @@ fn criome_daemon_configuration_rejects_nota_arguments() {
 #[cfg(feature = "nota-text")]
 #[test]
 fn criome_cli_request_argument_accepts_inline_and_nota_file() {
-    let request = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(("operator").to_string())));
+    let request = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(
+        ("operator").to_string(),
+    )));
     let text = request.to_nota();
     let workspace = fixture_path("request-argument");
     let nota_path = workspace.join("request.nota");
@@ -490,7 +496,9 @@ fn criome_cli_cannot_reply_without_daemon_signal_frame() {
     let socket = workspace.join("missing.sock");
 
     let error = CriomeClient::new(&socket)
-        .send(CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(("operator").to_string()))))
+        .send(CriomeRequest::LookupIdentity(IdentityLookup::new(
+            Identity::developer(("operator").to_string()),
+        )))
         .expect_err("missing daemon must reject");
 
     assert!(format!("{error}").contains("socket does not exist"));
@@ -504,7 +512,9 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
     codec
         .write_reply(
             &mut writer,
-            CriomeReply::Rejection(signal_criome::Rejection::new(RejectionReason::MalformedRequest)),
+            CriomeReply::Rejection(signal_criome::Rejection::new(
+                RejectionReason::MalformedRequest,
+            )),
         )
         .expect("write reply frame");
 
@@ -517,7 +527,9 @@ fn criome_frame_codec_rejects_reply_on_request_path() {
 
 #[test]
 fn criome_frame_codec_reads_contract_local_request_payload() {
-    let expected = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(("operator").to_string())));
+    let expected = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(
+        ("operator").to_string(),
+    )));
     let frame = CriomeFrame::new(CriomeFrameBody::Request {
         exchange: synthetic_exchange(),
         request: expected.clone().into_request(),
