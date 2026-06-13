@@ -7,8 +7,9 @@ use rkyv::validation::Validator;
 use rkyv::validation::archive::ArchiveValidator;
 use rkyv::validation::shared::SharedValidator;
 use sema_engine::{
-    Engine, EngineOpen, EngineStoredValue, KeyedAssertion, KeyedMutation, QueryPlan, RecordKey,
-    SchemaVersion, TableDescriptor, TableName, TableReference,
+    Engine, EngineOpen, EngineStoredValue, FamilyName, KeyedAssertion, KeyedMutation, QueryPlan,
+    RecordKey, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
+    VersionedStoreName, VersioningPolicy,
 };
 use signal_criome::{
     Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
@@ -20,7 +21,7 @@ use signal_criome::{
 
 use crate::Result;
 
-const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(1);
+const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2);
 const IDENTITIES: TableName = TableName::new("identities");
 const REVOCATIONS: TableName = TableName::new("revocations");
 const ATTESTATIONS: TableName = TableName::new("attestations");
@@ -32,6 +33,15 @@ const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot")
 const ATTESTATION_NEXT_SLOT_KEY: &str = "next";
 const AUTHORIZATION_NEXT_SLOT: TableName = TableName::new("authorization_next_slot");
 const AUTHORIZATION_NEXT_SLOT_KEY: &str = "next";
+const IDENTITIES_FAMILY: &str = "criome-identity";
+const REVOCATIONS_FAMILY: &str = "criome-revocation";
+const ATTESTATIONS_FAMILY: &str = "criome-attestation";
+const AUTHORIZATION_STATES_FAMILY: &str = "criome-authorization-state";
+const AUTHORIZATION_REPLAY_NONCES_FAMILY: &str = "criome-authorization-replay-nonce";
+const SIGNATURE_SOLICITATIONS_FAMILY: &str = "criome-signature-solicitation";
+const SUBMITTED_SIGNATURES_FAMILY: &str = "criome-submitted-signature";
+const ATTESTATION_NEXT_SLOT_FAMILY: &str = "criome-attestation-slot";
+const AUTHORIZATION_NEXT_SLOT_FAMILY: &str = "criome-authorization-slot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreLocation {
@@ -236,25 +246,37 @@ pub struct CriomeTables {
 
 impl CriomeTables {
     pub fn open(store: &StoreLocation) -> Result<Self> {
-        let mut engine = Engine::open(EngineOpen::new(
-            store.as_path().to_path_buf(),
-            CRIOME_SCHEMA_VERSION,
+        let mut engine = Engine::open(Self::engine_open(store))?;
+        let identities =
+            engine.register_table(Self::family_descriptor(IDENTITIES, IDENTITIES_FAMILY))?;
+        let revocations =
+            engine.register_table(Self::family_descriptor(REVOCATIONS, REVOCATIONS_FAMILY))?;
+        let attestations =
+            engine.register_table(Self::family_descriptor(ATTESTATIONS, ATTESTATIONS_FAMILY))?;
+        let authorization_states = engine.register_table(Self::family_descriptor(
+            AUTHORIZATION_STATES,
+            AUTHORIZATION_STATES_FAMILY,
         ))?;
-        let identities = engine.register_table(TableDescriptor::new(IDENTITIES))?;
-        let revocations = engine.register_table(TableDescriptor::new(REVOCATIONS))?;
-        let attestations = engine.register_table(TableDescriptor::new(ATTESTATIONS))?;
-        let authorization_states =
-            engine.register_table(TableDescriptor::new(AUTHORIZATION_STATES))?;
-        let authorization_replay_nonces =
-            engine.register_table(TableDescriptor::new(AUTHORIZATION_REPLAY_NONCES))?;
-        let signature_solicitations =
-            engine.register_table(TableDescriptor::new(SIGNATURE_SOLICITATIONS))?;
-        let submitted_signatures =
-            engine.register_table(TableDescriptor::new(SUBMITTED_SIGNATURES))?;
-        let attestation_next_slot =
-            engine.register_table(TableDescriptor::new(ATTESTATION_NEXT_SLOT))?;
-        let authorization_next_slot =
-            engine.register_table(TableDescriptor::new(AUTHORIZATION_NEXT_SLOT))?;
+        let authorization_replay_nonces = engine.register_table(Self::family_descriptor(
+            AUTHORIZATION_REPLAY_NONCES,
+            AUTHORIZATION_REPLAY_NONCES_FAMILY,
+        ))?;
+        let signature_solicitations = engine.register_table(Self::family_descriptor(
+            SIGNATURE_SOLICITATIONS,
+            SIGNATURE_SOLICITATIONS_FAMILY,
+        ))?;
+        let submitted_signatures = engine.register_table(Self::family_descriptor(
+            SUBMITTED_SIGNATURES,
+            SUBMITTED_SIGNATURES_FAMILY,
+        ))?;
+        let attestation_next_slot = engine.register_table(Self::family_descriptor(
+            ATTESTATION_NEXT_SLOT,
+            ATTESTATION_NEXT_SLOT_FAMILY,
+        ))?;
+        let authorization_next_slot = engine.register_table(Self::family_descriptor(
+            AUTHORIZATION_NEXT_SLOT,
+            AUTHORIZATION_NEXT_SLOT_FAMILY,
+        ))?;
         Ok(Self {
             engine,
             identities,
@@ -267,6 +289,29 @@ impl CriomeTables {
             attestation_next_slot,
             authorization_next_slot,
         })
+    }
+
+    fn engine_open(store: &StoreLocation) -> EngineOpen {
+        EngineOpen::new(store.as_path().to_path_buf(), CRIOME_SCHEMA_VERSION)
+            .with_versioning(Self::versioning_policy())
+    }
+
+    fn versioning_policy() -> VersioningPolicy {
+        VersioningPolicy::new(VersionedStoreName::new("criome"))
+    }
+
+    fn family_descriptor<RecordValue>(
+        table: TableName,
+        family: &str,
+    ) -> TableDescriptor<RecordValue> {
+        TableDescriptor::new(
+            table,
+            FamilyName::new(family),
+            SchemaHash::for_label(format!(
+                "criome-{family}-v{}",
+                CRIOME_SCHEMA_VERSION.value()
+            )),
+        )
     }
 
     pub fn put_identity(&self, identity: &StoredIdentity) -> Result<()> {

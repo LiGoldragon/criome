@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "criome"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "blst",
@@ -652,8 +652,8 @@ dependencies = [
 
 [[package]]
 name = "sema-engine"
-version = "0.2.3"
-source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#c970d3f2f463534d5ef640fb18ab5c0da971129c"
+version = "0.4.0"
+source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#dbe29427d9a2c6c194909385485ad42b008048b8"
 dependencies = [
  "blake3",
  "rkyv",

@@ -321,21 +321,20 @@ CriomeReply
 ## 5 · State and ownership
 
 Single component store file (`criome.sema`), opened only by
-`StoreKernel`. Tables (named here; precise schema in
-operator's implementation):
+`StoreKernel`. Durable families are registered through
+`sema-engine` with per-family schema hashes:
 
-| Table | Key | Value |
+| Family | Key | Value |
 |---|---|---|
-| `identities` | typed identity key | `StoredIdentity` with public key, fingerprint, purpose, status |
-| `revocations` | typed identity key | `StoredRevocation` |
-| `attestations` | monotonic slot | `StoredAttestation` |
-| `authorization_requests` | typed authorization request slot | pending/granted/denied authorization state |
-| `signature_solicitations` | typed authorization request slot + signer | in-flight routed signature work |
-| `submitted_signatures` | typed authorization request slot + signer | signatures submitted by the owner (own key) or peer criome daemons |
-| `policies` | typed request-kind / digest key | `Policy::Simple` (self-signed) or `Policy::Quorum { peers, threshold }` |
-| `peer_routes` | peer master public key | `(host, unix-user)` for cross-criome solicitation |
-| `attestation_next_slot` | singleton key | next monotonic slot |
-| `authorization_next_slot` | singleton key | next monotonic authorization request slot |
+| `criome-identity` | typed identity key | `StoredIdentity` with public key, fingerprint, purpose, status |
+| `criome-revocation` | typed identity key | `StoredRevocation` |
+| `criome-attestation` | monotonic slot | `StoredAttestation` |
+| `criome-authorization-state` | typed authorization request slot | pending/granted/denied authorization state |
+| `criome-authorization-replay-nonce` | requester + nonce | replay guard for authorization requests |
+| `criome-signature-solicitation` | typed authorization request slot + signer | in-flight routed signature work |
+| `criome-submitted-signature` | typed authorization request slot + signer | signatures submitted by the owner or peer criome daemons |
+| `criome-attestation-slot` | fixed counter key | next attestation slot |
+| `criome-authorization-slot` | fixed counter key | next authorization request slot |
 | Sema meta | Sema-owned | schema-version and rkyv-format guards |
 
 The version-skew guard runs at boot and hard-fails on
