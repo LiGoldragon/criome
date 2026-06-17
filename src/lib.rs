@@ -5,9 +5,11 @@
 //! component's own sema-engine database.
 
 pub mod actors;
+pub mod admission;
 pub mod command;
 pub mod daemon;
 pub mod error;
+pub mod master_key;
 pub mod tables;
 #[cfg(feature = "nota-text")]
 pub mod text;

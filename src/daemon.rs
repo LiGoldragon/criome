@@ -4,6 +4,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
 use kameo::actor::ActorRef;
+use signal_criome::BlsPublicKey;
 use triad_runtime::SignalFile;
 
 use crate::actors::root::{Arguments as RootArguments, CriomeRoot, SubmitRequest};
@@ -15,6 +16,7 @@ use crate::{Error, Result};
 pub struct CriomeDaemon {
     socket: PathBuf,
     store: StoreLocation,
+    cluster_root: Option<BlsPublicKey>,
 }
 
 pub use signal_criome::CriomeDaemonConfiguration;
@@ -29,14 +31,16 @@ impl CriomeDaemon {
         Self {
             socket: socket.into(),
             store,
+            cluster_root: None,
         }
     }
 
     pub fn from_configuration(configuration: CriomeDaemonConfiguration) -> Self {
-        Self::new(
-            PathBuf::from(configuration.socket_path.as_str()),
-            StoreLocation::new(configuration.store_path.as_str()),
-        )
+        Self {
+            socket: PathBuf::from(configuration.socket_path.as_str()),
+            store: StoreLocation::new(configuration.store_path.as_str()),
+            cluster_root: configuration.cluster_root,
+        }
     }
 
     pub fn from_environment() -> Self {
@@ -72,7 +76,10 @@ impl CriomeDaemon {
         let listener = UnixListener::bind(&self.socket)?;
         std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o600))?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let root = runtime.block_on(CriomeRoot::start(RootArguments::new(self.store)))?;
+        let root = runtime.block_on(CriomeRoot::start(RootArguments {
+            store: self.store,
+            cluster_root: self.cluster_root,
+        }))?;
         Ok(BoundCriomeDaemon {
             socket: self.socket,
             runtime,

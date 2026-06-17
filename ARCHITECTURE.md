@@ -554,13 +554,36 @@ Current implementation status:
   and `SubscribeIdentityUpdates` route through the Kameo
   actor tree and the component-local sema-engine store.
 - `Sign` and attestation requests require a registered
-  signer and persist a typed attestation record, but the
-  signature string is still a skeleton placeholder. The
-  real `blst` key-loading/signing path is the next
-  cryptographic milestone.
-- `VerifyAttestation` checks content equality, known
-  signer, revocation, and public-key match, then reports
-  `InvalidSignature` until real BLS verification lands.
+  signer and persist a typed attestation record, signed
+  with **real `blst` BLS12-381 (min-pk)**. The signer signs
+  as criome's own host identity (self-owned policy: the
+  registry holds only public keys, so criome can only sign
+  with its master key); the requested caller lives in the
+  audit context. The master key is generated on first run
+  and persisted to a `0600` key file (created atomically;
+  existing key files are rejected unless regular and
+  `0600`-or-stricter) — psyche key-custody choice `psc6`.
+  On start, `CriomeRoot` reconciles the master key against
+  the registered `Host("criome")` identity and fails loudly
+  (typed `Error::Startup`) on a mismatch, so a restored
+  store beside a regenerated/copied key never mints
+  attestations its own verifier would reject.
+- `VerifyAttestation` does **real BLS verification** over a
+  canonical preimage covering the full attestation
+  statement (content, signer, audit context, validity
+  interval, and scheme — everything but the signature). It
+  checks content equality, known signer, revocation,
+  public-key match, and the envelope scheme (only
+  `Bls12_381MinPk` is accepted; another scheme is rejected,
+  never parsed as min-pk bytes), then verifies the
+  signature; a validly-signed but past-expiry attestation
+  returns `Expired`, not `Valid`. The signer/verifier build
+  the identical preimage, so no signed field (notably the
+  expiry) can be altered without breaking the signature.
+  **Still open** (`primary-kr40`): `RegisterIdentity` does
+  not yet verify a cluster-root/Developer admission
+  signature, so the registry is self-asserted until that
+  trust-root lands.
 - `AuthorizationCoordinator` is present as a data-bearing Kameo
   actor. It asks `StoreKernel` to mint durable authorization request
   slots, records `AuthorizeSignalCall` as durable signing-state,

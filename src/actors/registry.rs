@@ -7,10 +7,12 @@ use signal_criome::{
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, rejection, store};
+use crate::admission::ClusterRoot;
 use crate::tables::StoredIdentity;
 
 pub struct IdentityRegistry {
     store: ActorRef<store::StoreKernel>,
+    cluster_root: Option<ClusterRoot>,
 }
 
 pub struct RegisterIdentity {
@@ -34,6 +36,7 @@ pub struct ResolveIdentity {
 #[derive(Clone)]
 pub struct Arguments {
     pub store: ActorRef<store::StoreKernel>,
+    pub cluster_root: Option<ClusterRoot>,
 }
 
 #[derive(kameo::Reply)]
@@ -83,11 +86,24 @@ impl RegistrySnapshot {
 }
 
 impl IdentityRegistry {
-    fn new(store: ActorRef<store::StoreKernel>) -> Self {
-        Self { store }
+    fn new(store: ActorRef<store::StoreKernel>, cluster_root: Option<ClusterRoot>) -> Self {
+        Self {
+            store,
+            cluster_root,
+        }
     }
 
     async fn register(&self, registration: IdentityRegistration) -> CriomeReply {
+        // Cluster-root admission gate (Spirit ermr): when a cluster root is
+        // configured, a key is admitted only with a valid cluster-root signature
+        // over the registration statement. Dev/virgin daemons (no configured
+        // root) skip the gate.
+        if let Some(root) = &self.cluster_root {
+            match &registration.admission {
+                Some(admission) if root.admits(&registration, admission) => {}
+                _ => return rejection(RejectionReason::UnauthorizedRegistration),
+            }
+        }
         match self.lookup_stored(registration.identity.clone()).await {
             Ok(Some(existing)) if existing.status() == PrincipalStatus::Active => {
                 rejection(RejectionReason::DuplicateIdentity)
@@ -179,7 +195,7 @@ impl Actor for IdentityRegistry {
         arguments: Self::Args,
         _actor_reference: ActorRef<Self>,
     ) -> Result<Self, Self::Error> {
-        Ok(Self::new(arguments.store))
+        Ok(Self::new(arguments.store, arguments.cluster_root))
     }
 }
 

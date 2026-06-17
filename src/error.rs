@@ -6,6 +6,10 @@ use thiserror::Error;
 pub enum Error {
     #[error("actor call: {0}")]
     ActorCall(String),
+    #[error("master key: {0}")]
+    MasterKey(String),
+    #[error("startup: {0}")]
+    Startup(String),
     #[error("actor spawn: {0}")]
     ActorSpawn(String),
     #[error("io: {0}")]

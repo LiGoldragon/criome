@@ -2,13 +2,16 @@ use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use signal_criome::{
-    CriomeReply, PrincipalStatus, VerificationDecision, VerificationResult, VerifyRequest,
+    CriomeReply, PrincipalStatus, SignatureScheme, VerificationDecision, VerificationResult,
+    VerifyRequest,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, registry};
+use crate::master_key::{AttestationPreimage, SystemClock, VerifyBls};
 
 pub struct AttestationVerifier {
     registry: ActorRef<registry::IdentityRegistry>,
+    clock: SystemClock,
 }
 
 #[derive(Clone)]
@@ -28,7 +31,10 @@ impl VerifyAttestation {
 
 impl AttestationVerifier {
     fn new(registry: ActorRef<registry::IdentityRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            clock: SystemClock::system(),
+        }
     }
 
     async fn verify(&self, request: VerifyRequest) -> CriomeReply {
@@ -54,8 +60,49 @@ impl AttestationVerifier {
             return self.result(VerificationDecision::InvalidSignature, Some(signer), None);
         }
 
+        // Only the implemented scheme is accepted; an envelope claiming another
+        // scheme is rejected, never parsed as min-pk bytes (algorithm confusion).
+        match request.attestation.envelope.scheme {
+            SignatureScheme::Bls12_381MinPk => {}
+            SignatureScheme::Bls12_381MinSig => {
+                return self.result(
+                    VerificationDecision::InvalidSignature,
+                    Some(signer),
+                    request.attestation.expires_at,
+                );
+            }
+        }
+
+        let signing_bytes =
+            AttestationPreimage::from_attestation(&request.attestation).to_signing_bytes();
+        if !request
+            .attestation
+            .envelope
+            .public_key
+            .verify_bls(&request.attestation.envelope.signature, &signing_bytes)
+        {
+            return self.result(
+                VerificationDecision::InvalidSignature,
+                Some(signer),
+                request.attestation.expires_at,
+            );
+        }
+
+        // A validly-signed but past-expiry attestation is Expired, not Valid.
+        if request
+            .attestation
+            .expires_at
+            .is_some_and(|deadline| self.clock.is_past(&deadline))
+        {
+            return self.result(
+                VerificationDecision::Expired,
+                Some(signer),
+                request.attestation.expires_at,
+            );
+        }
+
         self.result(
-            VerificationDecision::InvalidSignature,
+            VerificationDecision::Valid,
             Some(signer),
             request.attestation.expires_at,
         )

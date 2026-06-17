@@ -60,6 +60,7 @@ fn registration(name: &str) -> IdentityRegistration {
         public_key: BlsPublicKey::new((format!("{name}-public-key")).to_string()),
         fingerprint: PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
         purpose: KeyPurpose::ReleaseAuthorization,
+        admission: None,
     }
 }
 
@@ -365,6 +366,243 @@ async fn verify_authorization_rejects_digest_mismatch() {
         denied.denial.reason,
         AuthorizationDenialReason::RequestDigestMismatch,
     );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn registered_signer_attestation_verifies_under_real_bls() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("real-bls-roundtrip")))
+        .await
+        .expect("start criome root");
+
+    // The requesting identity must be registered and active to be allowed an
+    // attestation; criome then signs as itself with its master key.
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        registration("operator"),
+    )))
+    .await
+    .expect("register operator identity");
+
+    let sign_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::Sign(sign_request(
+            "operator",
+        ))))
+        .await
+        .expect("submit sign request")
+        .into_reply();
+    let CriomeReply::SignReceipt(receipt) = sign_reply else {
+        panic!("expected SignReceipt, got {sign_reply:?}");
+    };
+    let attestation = receipt.attestation;
+    let content = attestation.content.clone();
+
+    // A real BLS signature over the canonical preimage verifies as Valid.
+    let verify_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
+            signal_criome::VerifyRequest {
+                attestation: attestation.clone(),
+                content,
+            },
+        )))
+        .await
+        .expect("submit verify request")
+        .into_reply();
+    let CriomeReply::VerificationResult(result) = verify_reply else {
+        panic!("expected VerificationResult, got {verify_reply:?}");
+    };
+    assert_eq!(result.decision, signal_criome::VerificationDecision::Valid);
+
+    // A tampered attestation (different content digest) must not verify.
+    let mut tampered = attestation;
+    tampered.content.digest = ObjectDigest::from_bytes(b"tampered");
+    let tampered_content = tampered.content.clone();
+    let tampered_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
+            signal_criome::VerifyRequest {
+                attestation: tampered,
+                content: tampered_content,
+            },
+        )))
+        .await
+        .expect("submit tampered verify request")
+        .into_reply();
+    let CriomeReply::VerificationResult(tampered_result) = tampered_reply else {
+        panic!("expected VerificationResult, got {tampered_reply:?}");
+    };
+    assert_eq!(
+        tampered_result.decision,
+        signal_criome::VerificationDecision::InvalidSignature
+    );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn expired_attestation_verifies_as_expired() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("expired-attestation")))
+        .await
+        .expect("start criome root");
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        registration("operator"),
+    )))
+    .await
+    .expect("register operator identity");
+
+    // Sign with an expiry one nanosecond after the epoch — long past.
+    let request = SignRequest {
+        expires_at: Some(TimestampNanos::new(1)),
+        ..sign_request("operator")
+    };
+    let sign_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::Sign(request)))
+        .await
+        .expect("submit sign request")
+        .into_reply();
+    let CriomeReply::SignReceipt(receipt) = sign_reply else {
+        panic!("expected SignReceipt, got {sign_reply:?}");
+    };
+    let attestation = receipt.attestation;
+    let content = attestation.content.clone();
+
+    let verify_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
+            signal_criome::VerifyRequest {
+                attestation,
+                content,
+            },
+        )))
+        .await
+        .expect("submit verify request")
+        .into_reply();
+    let CriomeReply::VerificationResult(result) = verify_reply else {
+        panic!("expected VerificationResult, got {verify_reply:?}");
+    };
+    assert_eq!(
+        result.decision,
+        signal_criome::VerificationDecision::Expired
+    );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn unsupported_signature_scheme_is_rejected() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("scheme-mismatch")))
+        .await
+        .expect("start criome root");
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        registration("operator"),
+    )))
+    .await
+    .expect("register operator identity");
+
+    let sign_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::Sign(sign_request(
+            "operator",
+        ))))
+        .await
+        .expect("submit sign request")
+        .into_reply();
+    let CriomeReply::SignReceipt(receipt) = sign_reply else {
+        panic!("expected SignReceipt, got {sign_reply:?}");
+    };
+    let mut attestation = receipt.attestation;
+    // Relabel the envelope with an unsupported scheme; it must be rejected, not
+    // parsed as min-pk bytes.
+    attestation.envelope.scheme = SignatureScheme::Bls12_381MinSig;
+    let content = attestation.content.clone();
+
+    let verify_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
+            signal_criome::VerifyRequest {
+                attestation,
+                content,
+            },
+        )))
+        .await
+        .expect("submit verify request")
+        .into_reply();
+    let CriomeReply::VerificationResult(result) = verify_reply else {
+        panic!("expected VerificationResult, got {verify_reply:?}");
+    };
+    assert_eq!(
+        result.decision,
+        signal_criome::VerificationDecision::InvalidSignature
+    );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn restored_store_with_mismatched_master_key_fails_startup() {
+    let workspace = fixture_path("reconcile-mismatch");
+    let store_path = workspace.join("criome.sema");
+    let key_path = workspace.join("criome.masterkey");
+
+    // First start generates master key A and registers Host("criome") = A.
+    let root = CriomeRoot::start(RootArguments::new(StoreLocation::new(store_path.clone())))
+        .await
+        .expect("first start generates and registers");
+    CriomeRoot::stop(root).await.expect("stop criome root");
+
+    // Simulate a restored store whose adjacent key file was lost/regenerated.
+    std::fs::remove_file(&key_path).expect("remove master key file");
+
+    // Second start regenerates key B; reconcile must reject the A/B mismatch.
+    let result = CriomeRoot::start(RootArguments::new(StoreLocation::new(store_path))).await;
+    assert!(
+        result.is_err(),
+        "a master key that does not match the registered criome identity must fail startup"
+    );
+}
+
+#[tokio::test]
+async fn cluster_root_gates_registration() {
+    use criome::admission::RegistrationStatement;
+    use criome::master_key::MasterKey;
+
+    let workspace = fixture_path("cluster-root-gate");
+    let cluster_root = MasterKey::generate().expect("cluster root key");
+    let root = CriomeRoot::start(RootArguments {
+        store: StoreLocation::new(workspace.join("criome.sema")),
+        cluster_root: Some(cluster_root.public_key()),
+    })
+    .await
+    .expect("start criome root");
+
+    // Without a cluster-root admission, an external registration is refused.
+    let unadmitted = root
+        .ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+            registration("operator"),
+        )))
+        .await
+        .expect("submit unadmitted registration")
+        .into_reply();
+    assert_eq!(
+        unadmitted,
+        CriomeReply::Rejection(signal_criome::Rejection::new(
+            RejectionReason::UnauthorizedRegistration
+        ))
+    );
+
+    // A registration carrying a valid cluster-root admission over its statement
+    // is accepted.
+    let mut admitted = registration("operator");
+    let statement = RegistrationStatement::from_registration(&admitted).to_signing_bytes();
+    admitted.admission = Some(SignatureEnvelope {
+        scheme: SignatureScheme::Bls12_381MinPk,
+        public_key: cluster_root.public_key(),
+        signature: cluster_root.sign(&statement),
+    });
+    let accepted = root
+        .ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+            admitted,
+        )))
+        .await
+        .expect("submit admitted registration")
+        .into_reply();
+    assert!(matches!(accepted, CriomeReply::IdentityReceipt(_)));
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
