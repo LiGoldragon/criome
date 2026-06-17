@@ -1,0 +1,66 @@
+;; Crayome internal language POC.
+;;
+;; Public key identity is the atom. A contract is a constrained policy
+;; expression over signatures, time, delegation, and reconciliation evidence.
+;; This is concept schema: it documents the intended schema nouns while the
+;; Rust POC in src/language.rs proves the evaluator shape.
+
+[]
+[]
+{
+  KeyAtom { public_key BlsPublicKey }
+  IdentityHandle { identity Identity }
+  Moment { value TimestampNanos }
+
+  Contract {
+    controller IdentityHandle
+    rule Rule
+  }
+
+  Rule [
+    (SignedBy IdentityHandle)
+    (All (Vector Rule))
+    (Any (Vector Rule))
+    (Threshold Threshold)
+    (ActiveAfter TimedRule)
+    (ActiveUntil TimedRule)
+    (TimeSwitch TimeSwitch)
+    (Agreement AgreementRule)
+  ]
+
+  Threshold {
+    required_signatures RequiredSignatureThreshold
+    authorities (Vector IdentityHandle)
+  }
+
+  TimedRule {
+    boundary Moment
+    rule Rule
+  }
+
+  TimeSwitch {
+    boundary Moment
+    before Rule
+    after Rule
+  }
+
+  AgreementRule {
+    divergence ObjectDigest
+    resolution ObjectDigest
+    resolver IdentityHandle
+  }
+
+  Evidence {
+    observed_at Moment
+    signatures (Vector IdentityHandle)
+    agreements (Vector AgreementFact)
+  }
+
+  AgreementFact {
+    divergence ObjectDigest
+    resolution ObjectDigest
+    resolver IdentityHandle
+  }
+
+  Decision [Authorized Rejected]
+}

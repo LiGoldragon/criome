@@ -9,6 +9,7 @@ pub mod admission;
 pub mod command;
 pub mod daemon;
 pub mod error;
+pub mod language;
 pub mod master_key;
 pub mod tables;
 #[cfg(feature = "nota-text")]
