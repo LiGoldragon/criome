@@ -43,13 +43,13 @@ impl Signer {
     fn sign_operation(
         &self,
         operation: &OperationDigest,
-        observed_at: &AttestedMoment,
+        stamp: &AttestedMoment,
     ) -> SignatureEnvelope {
         SignatureEnvelope {
             scheme: SignatureScheme::Bls12_381MinPk,
             public_key: self.public_key(),
             signature: self.key.sign(
-                OperationStatement::new(&self.identity, operation, observed_at)
+                OperationStatement::new(&self.identity, operation, stamp)
                     .to_signing_bytes()
                     .expect("operation statement")
                     .as_slice(),
@@ -200,10 +200,10 @@ fn contract_digest(value: &[u8]) -> ContractDigest {
     ContractDigest::from_bytes(value)
 }
 
-fn evidence(operation: OperationDigest, observed_at: AttestedMoment) -> Evidence {
+fn evidence(operation: OperationDigest, stamp: AttestedMoment) -> Evidence {
     Evidence {
         operation,
-        observed_at,
+        stamp,
         signatures: Vec::new(),
         agreements: Vec::new(),
     }
@@ -211,15 +211,15 @@ fn evidence(operation: OperationDigest, observed_at: AttestedMoment) -> Evidence
 
 fn signed_evidence(
     operation: OperationDigest,
-    observed_at: AttestedMoment,
+    stamp: AttestedMoment,
     signers: &[&Signer],
 ) -> Evidence {
     Evidence {
         operation: operation.clone(),
-        observed_at: observed_at.clone(),
+        stamp: stamp.clone(),
         signatures: signers
             .iter()
-            .map(|signer| signer.sign_operation(&operation, &observed_at))
+            .map(|signer| signer.sign_operation(&operation, &stamp))
             .collect(),
         agreements: Vec::new(),
     }
@@ -256,7 +256,7 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
     let clock = AttestedClock::new();
     let registry = registry_with_clock(&clock, &[&operator, &designer, &auditor]);
     let operation = operation(b"merge policy");
-    let observed_at = clock.moment(10, 20);
+    let stamp = clock.moment(10, 20);
     let mut store = ContractStore::new();
     let contract = Contract::new(Rule::Threshold(threshold(
         2,
@@ -268,17 +268,17 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
     )));
     let digest = admitted(&mut store, contract);
 
-    let one_signature = signed_evidence(operation.clone(), observed_at.clone(), &[&operator]);
+    let one_signature = signed_evidence(operation.clone(), stamp.clone(), &[&operator]);
     let duplicate_signature = Evidence {
         operation: operation.clone(),
-        observed_at: observed_at.clone(),
+        stamp: stamp.clone(),
         signatures: vec![
-            operator.sign_operation(&operation, &observed_at),
-            operator.sign_operation(&operation, &observed_at),
+            operator.sign_operation(&operation, &stamp),
+            operator.sign_operation(&operation, &stamp),
         ],
         agreements: Vec::new(),
     };
-    let two_signatures = signed_evidence(operation, observed_at, &[&operator, &designer]);
+    let two_signatures = signed_evidence(operation, stamp, &[&operator, &designer]);
 
     assert!(matches!(
         store.evaluate(&digest, &one_signature, &registry),
@@ -305,7 +305,7 @@ fn invalid_time_attestation_rejects_before_policy_evaluation() {
     let clock = AttestedClock::new();
     let registry = registry_with_clock(&clock, &[&operator, &other_timekeeper]);
     let operation = operation(b"invalid time");
-    let observed_at = clock.moment_with_authorities(
+    let stamp = clock.moment_with_authorities(
         10,
         20,
         2,
@@ -316,12 +316,12 @@ fn invalid_time_attestation_rejects_before_policy_evaluation() {
         &mut store,
         Contract::new(Rule::SignedBy(operator.identity())),
     );
-    let evidence = signed_evidence(operation, observed_at, &[&operator]);
+    let evidence = signed_evidence(operation, stamp, &[&operator]);
 
     assert!(matches!(
         store.evaluate(&contract, &evidence, &registry),
         Ok(EvaluationDecision::Rejected(
-            EvaluationRejectionReason::TimeQuorumShort(_)
+            EvaluationRejectionReason::TimeNotProven
         ))
     ));
 }
@@ -341,7 +341,7 @@ fn operation_signature_is_bound_to_the_attested_moment() {
     );
     let evidence = Evidence {
         operation: operation.clone(),
-        observed_at: replayed_moment,
+        stamp: replayed_moment,
         signatures: vec![operator.sign_operation(&operation, &signed_moment)],
         agreements: Vec::new(),
     };
@@ -388,7 +388,7 @@ fn object_members_reference_previously_admitted_contracts_by_digest() {
     let clock = AttestedClock::new();
     let registry = registry_with_clock(&clock, &[&operator, &designer]);
     let operation = operation(b"shared object member");
-    let observed_at = clock.moment(10, 20);
+    let stamp = clock.moment(10, 20);
     let mut store = ContractStore::new();
     let operator_rule = admitted(
         &mut store,
@@ -409,7 +409,7 @@ fn object_members_reference_previously_admitted_contracts_by_digest() {
     assert_eq!(
         store.evaluate(
             &parent,
-            &signed_evidence(operation, observed_at, &[&operator, &designer]),
+            &signed_evidence(operation, stamp, &[&operator, &designer]),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)

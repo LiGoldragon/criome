@@ -504,7 +504,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         required_signatures: RequiredSignatureThreshold::new(1),
         authorities: vec![timekeeper_identity.clone()],
     };
-    let observed_at = AttestedMoment {
+    let stamp = AttestedMoment {
         signatures: vec![TimeSignature {
             signer: timekeeper_identity,
             envelope: SignatureEnvelope {
@@ -520,12 +520,12 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         }],
         proposition,
     };
-    let statement = OperationStatement::new(&identity, &operation, &observed_at)
+    let statement = OperationStatement::new(&identity, &operation, &stamp)
         .to_signing_bytes()
         .expect("operation statement");
     let evidence = Evidence {
         operation,
-        observed_at,
+        stamp,
         signatures: vec![SignatureEnvelope {
             scheme: SignatureScheme::Bls12_381MinPk,
             public_key: signer.public_key(),

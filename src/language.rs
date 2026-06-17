@@ -46,7 +46,7 @@ pub struct KeyEntry {
 pub struct OperationStatement<'a> {
     signer: &'a Identity,
     operation: &'a OperationDigest,
-    observed_at: &'a AttestedMoment,
+    stamp: &'a AttestedMoment,
 }
 
 /// The canonical statement signed by a time authority for an attested moment.
@@ -131,7 +131,7 @@ impl ContractStore {
         registry: &KeyRegistry,
     ) -> Result<EvaluationDecision, EvaluationError> {
         let contract = self.resolve(digest)?;
-        if let Some(reason) = evidence.observed_at.rejection_reason(registry) {
+        if let Some(reason) = evidence.stamp.rejection_reason(registry) {
             return Ok(EvaluationDecision::Rejected(reason));
         }
         contract.rule().decide(evidence, self, registry)
@@ -187,12 +187,12 @@ impl<'a> OperationStatement<'a> {
     pub fn new(
         signer: &'a Identity,
         operation: &'a OperationDigest,
-        observed_at: &'a AttestedMoment,
+        stamp: &'a AttestedMoment,
     ) -> Self {
         Self {
             signer,
             operation,
-            observed_at,
+            stamp,
         }
     }
 
@@ -200,7 +200,7 @@ impl<'a> OperationStatement<'a> {
         let mut bytes = b"CRIOME-OPERATION-AUTHORIZATION-V1".to_vec();
         self.signer.encode_into(&mut bytes);
         self.operation.object_digest().encode_into(&mut bytes);
-        self.observed_at
+        self.stamp
             .proposition
             .digest()?
             .object_digest()
@@ -285,7 +285,7 @@ impl RuleEvaluation for Rule {
             }
             Self::Threshold(threshold) => threshold.decide(evidence, store, registry),
             Self::ActiveAfter(timed_rule) => {
-                if evidence.observed_at.closes_at().into_u64() >= timed_rule.boundary.into_u64() {
+                if evidence.stamp.closes_at().into_u64() >= timed_rule.boundary.into_u64() {
                     Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
                 } else {
                     Ok(EvaluationDecision::Rejected(
@@ -294,7 +294,7 @@ impl RuleEvaluation for Rule {
                 }
             }
             Self::ActiveUntil(timed_rule) => {
-                if evidence.observed_at.closes_at().into_u64() < timed_rule.boundary.into_u64() {
+                if evidence.stamp.closes_at().into_u64() < timed_rule.boundary.into_u64() {
                     Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
                 } else {
                     Ok(EvaluationDecision::Rejected(
@@ -426,7 +426,7 @@ trait TimeSwitchEvaluation {
 
 impl TimeSwitchEvaluation for signal_criome::TimeSwitch {
     fn active_threshold<'a>(&'a self, evidence: &Evidence) -> &'a Threshold {
-        if evidence.observed_at.closes_at().into_u64() < self.boundary.into_u64() {
+        if evidence.stamp.closes_at().into_u64() < self.boundary.into_u64() {
             &self.before
         } else {
             &self.after
@@ -512,8 +512,8 @@ impl EvidenceVerification for Evidence {
         let Some(admitted_key) = registry.public_key(identity) else {
             return false;
         };
-        let Ok(statement) = OperationStatement::new(identity, &self.operation, &self.observed_at)
-            .to_signing_bytes()
+        let Ok(statement) =
+            OperationStatement::new(identity, &self.operation, &self.stamp).to_signing_bytes()
         else {
             return false;
         };
@@ -562,11 +562,11 @@ impl AttestedMomentVerification for AttestedMoment {
             || required > authorities.len() as u16
             || DuplicateIdentityScan::new(authorities).has_duplicates()
         {
-            return Some(EvaluationRejectionReason::InvalidTimeAttestation);
+            return Some(EvaluationRejectionReason::TimeNotProven);
         }
         let Ok(statement) = AttestedMomentStatement::new(&self.proposition).to_signing_bytes()
         else {
-            return Some(EvaluationRejectionReason::InvalidTimeAttestation);
+            return Some(EvaluationRejectionReason::TimeNotProven);
         };
         let mut satisfied: Vec<Identity> = Vec::new();
         for signature in &self.signatures {
@@ -586,12 +586,7 @@ impl AttestedMomentVerification for AttestedMoment {
         if satisfied.len() as u16 >= required {
             None
         } else {
-            Some(EvaluationRejectionReason::TimeQuorumShort(
-                QuorumShortfall {
-                    required: RequiredSignatureThreshold::new(required.into()),
-                    satisfied: RequiredSignatureThreshold::new((satisfied.len() as u16).into()),
-                },
-            ))
+            Some(EvaluationRejectionReason::TimeNotProven)
         }
     }
 }
