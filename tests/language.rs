@@ -114,7 +114,7 @@ fn agreement_rule_accepts_only_matching_resolver_fact() {
 
 #[test]
 fn schema_sketch_names_every_poc_construct() {
-    let schema = include_str!("../schema/crayome.language.schema");
+    let schema = include_str!("../schema/criome.language.schema");
 
     for construct in [
         "KeyAtom",

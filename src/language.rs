@@ -1,9 +1,9 @@
-//! Crayome internal language proof of concept.
+//! Criome internal language proof of concept.
 //!
 //! The module models the eventual Criome policy language as a constrained
 //! expression tree over identity evidence. It is not on the public
 //! `signal-criome` wire yet; it is compiled design pressure for the schema in
-//! `schema/crayome.language.schema`.
+//! `schema/criome.language.schema`.
 
 use signal_criome::{Identity, ObjectDigest, RequiredSignatureThreshold, TimestampNanos};
 

@@ -1,4 +1,4 @@
-;; Crayome internal language POC.
+;; Criome internal language POC.
 ;;
 ;; Public key identity is the atom. A contract is a constrained policy
 ;; expression over signatures, time, delegation, and reconciliation evidence.
