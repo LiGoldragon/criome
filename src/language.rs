@@ -7,9 +7,10 @@
 //! generated nouns.
 
 use signal_criome::{
-    BlsPublicKey, Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
+    AttestedMoment, AttestedMomentDigestError, AttestedMomentProposition, BlsPublicKey, Contract,
+    ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
     EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
-    QuorumShortfall, RequiredSignatureThreshold, Rule, SignatureScheme, Threshold,
+    QuorumShortfall, RequiredSignatureThreshold, Rule, SignatureScheme, Threshold, TimestampNanos,
 };
 
 use crate::master_key::VerifyBls;
@@ -45,6 +46,12 @@ pub struct KeyEntry {
 pub struct OperationStatement<'a> {
     signer: &'a Identity,
     operation: &'a OperationDigest,
+    observed_at: &'a AttestedMoment,
+}
+
+/// The canonical statement signed by a time authority for an attested moment.
+pub struct AttestedMomentStatement<'a> {
+    proposition: &'a AttestedMomentProposition,
 }
 
 /// Evaluation errors are distinct from authorization denial. A denial is a valid
@@ -54,6 +61,12 @@ pub struct OperationStatement<'a> {
 pub enum EvaluationError {
     #[error("referenced contract not present in store: {0:?}")]
     MissingContract(ContractDigest),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StatementError {
+    #[error("attested moment digest: {0}")]
+    AttestedMomentDigest(#[from] AttestedMomentDigestError),
 }
 
 /// Contract admission failure.
@@ -117,9 +130,11 @@ impl ContractStore {
         evidence: &Evidence,
         registry: &KeyRegistry,
     ) -> Result<EvaluationDecision, EvaluationError> {
-        self.resolve(digest)?
-            .rule()
-            .decide(evidence, self, registry)
+        let contract = self.resolve(digest)?;
+        if let Some(reason) = evidence.observed_at.rejection_reason(registry) {
+            return Ok(EvaluationDecision::Rejected(reason));
+        }
+        contract.rule().decide(evidence, self, registry)
     }
 
     fn contains(&self, digest: &ContractDigest) -> bool {
@@ -169,15 +184,43 @@ impl KeyRegistry {
 }
 
 impl<'a> OperationStatement<'a> {
-    pub fn new(signer: &'a Identity, operation: &'a OperationDigest) -> Self {
-        Self { signer, operation }
+    pub fn new(
+        signer: &'a Identity,
+        operation: &'a OperationDigest,
+        observed_at: &'a AttestedMoment,
+    ) -> Self {
+        Self {
+            signer,
+            operation,
+            observed_at,
+        }
     }
 
-    pub fn to_signing_bytes(&self) -> Vec<u8> {
+    pub fn to_signing_bytes(&self) -> Result<Vec<u8>, StatementError> {
         let mut bytes = b"CRIOME-OPERATION-AUTHORIZATION-V1".to_vec();
         self.signer.encode_into(&mut bytes);
         self.operation.object_digest().encode_into(&mut bytes);
-        bytes
+        self.observed_at
+            .proposition
+            .digest()?
+            .object_digest()
+            .encode_into(&mut bytes);
+        Ok(bytes)
+    }
+}
+
+impl<'a> AttestedMomentStatement<'a> {
+    pub fn new(proposition: &'a AttestedMomentProposition) -> Self {
+        Self { proposition }
+    }
+
+    pub fn to_signing_bytes(&self) -> Result<Vec<u8>, StatementError> {
+        let mut bytes = b"CRIOME-ATTESTED-MOMENT-V1".to_vec();
+        self.proposition
+            .digest()?
+            .object_digest()
+            .encode_into(&mut bytes);
+        Ok(bytes)
     }
 }
 
@@ -242,7 +285,7 @@ impl RuleEvaluation for Rule {
             }
             Self::Threshold(threshold) => threshold.decide(evidence, store, registry),
             Self::ActiveAfter(timed_rule) => {
-                if evidence.observed_at.into_u64() >= timed_rule.boundary.into_u64() {
+                if evidence.observed_at.closes_at().into_u64() >= timed_rule.boundary.into_u64() {
                     Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
                 } else {
                     Ok(EvaluationDecision::Rejected(
@@ -251,7 +294,7 @@ impl RuleEvaluation for Rule {
                 }
             }
             Self::ActiveUntil(timed_rule) => {
-                if evidence.observed_at.into_u64() < timed_rule.boundary.into_u64() {
+                if evidence.observed_at.closes_at().into_u64() < timed_rule.boundary.into_u64() {
                     Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
                 } else {
                     Ok(EvaluationDecision::Rejected(
@@ -383,7 +426,7 @@ trait TimeSwitchEvaluation {
 
 impl TimeSwitchEvaluation for signal_criome::TimeSwitch {
     fn active_threshold<'a>(&'a self, evidence: &Evidence) -> &'a Threshold {
-        if evidence.observed_at.into_u64() < self.boundary.into_u64() {
+        if evidence.observed_at.closes_at().into_u64() < self.boundary.into_u64() {
             &self.before
         } else {
             &self.after
@@ -469,7 +512,11 @@ impl EvidenceVerification for Evidence {
         let Some(admitted_key) = registry.public_key(identity) else {
             return false;
         };
-        let statement = OperationStatement::new(identity, &self.operation).to_signing_bytes();
+        let Ok(statement) = OperationStatement::new(identity, &self.operation, &self.observed_at)
+            .to_signing_bytes()
+        else {
+            return false;
+        };
         self.signatures.iter().any(|envelope| {
             matches!(envelope.scheme, SignatureScheme::Bls12_381MinPk)
                 && &envelope.public_key == admitted_key
@@ -492,6 +539,81 @@ impl EvidenceVerification for Evidence {
                 && &fact.envelope.public_key == resolver_key
                 && resolver_key.verify_bls(&fact.envelope.signature, &statement)
         })
+    }
+}
+
+trait AttestedMomentVerification {
+    fn closes_at(&self) -> TimestampNanos;
+
+    fn rejection_reason(&self, registry: &KeyRegistry) -> Option<EvaluationRejectionReason>;
+}
+
+impl AttestedMomentVerification for AttestedMoment {
+    fn closes_at(&self) -> TimestampNanos {
+        self.proposition.window.closes_at
+    }
+
+    fn rejection_reason(&self, registry: &KeyRegistry) -> Option<EvaluationRejectionReason> {
+        let authorities = &self.proposition.authorities;
+        let required = self.proposition.required_signatures.into_u16();
+        if self.proposition.window.opens_at.into_u64()
+            >= self.proposition.window.closes_at.into_u64()
+            || required == 0
+            || required > authorities.len() as u16
+            || DuplicateIdentityScan::new(authorities).has_duplicates()
+        {
+            return Some(EvaluationRejectionReason::InvalidTimeAttestation);
+        }
+        let Ok(statement) = AttestedMomentStatement::new(&self.proposition).to_signing_bytes()
+        else {
+            return Some(EvaluationRejectionReason::InvalidTimeAttestation);
+        };
+        let mut satisfied: Vec<Identity> = Vec::new();
+        for signature in &self.signatures {
+            if !authorities.contains(&signature.signer) || satisfied.contains(&signature.signer) {
+                continue;
+            }
+            let Some(admitted_key) = registry.public_key(&signature.signer) else {
+                continue;
+            };
+            if matches!(signature.envelope.scheme, SignatureScheme::Bls12_381MinPk)
+                && &signature.envelope.public_key == admitted_key
+                && admitted_key.verify_bls(&signature.envelope.signature, &statement)
+            {
+                satisfied.push(signature.signer.clone());
+            }
+        }
+        if satisfied.len() as u16 >= required {
+            None
+        } else {
+            Some(EvaluationRejectionReason::TimeQuorumShort(
+                QuorumShortfall {
+                    required: RequiredSignatureThreshold::new(required.into()),
+                    satisfied: RequiredSignatureThreshold::new((satisfied.len() as u16).into()),
+                },
+            ))
+        }
+    }
+}
+
+struct DuplicateIdentityScan<'a> {
+    identities: &'a [Identity],
+}
+
+impl<'a> DuplicateIdentityScan<'a> {
+    fn new(identities: &'a [Identity]) -> Self {
+        Self { identities }
+    }
+
+    fn has_duplicates(&self) -> bool {
+        let mut seen: Vec<&Identity> = Vec::new();
+        for identity in self.identities {
+            if seen.contains(&identity) {
+                return true;
+            }
+            seen.push(identity);
+        }
+        false
     }
 }
 

@@ -736,7 +736,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=operator%2Fcriome-policy-triad-schema#947f27195f4e63f79bd9a6c267a2beb3096750e0"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=operator%2Fcriome-attested-moment#8459fb4ec1d62a9c40647192b7e790333c9c457c"
 dependencies = [
  "blake3",
  "blst",

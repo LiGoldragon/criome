@@ -1,12 +1,14 @@
 use criome::language::{
-    AdmissionError, ContractStore, EvaluationError, KeyRegistry, OperationStatement,
+    AdmissionError, AttestedMomentStatement, ContractStore, EvaluationError, KeyRegistry,
+    OperationStatement,
 };
 use criome::master_key::MasterKey;
 use signal_criome::{
-    AgreementFact, AgreementRule, BlsPublicKey, Contract, ContractAdmissionRejectionReason,
-    ContractDigest, EvaluationDecision, EvaluationRejectionReason, Evidence, Identity,
-    ObjectDigest, OperationDigest, PolicyMember, RequiredSignatureThreshold, Rule,
-    SignatureEnvelope, SignatureScheme, Threshold, TimeSwitch, TimedRule, TimestampNanos,
+    AgreementFact, AgreementRule, AttestedMoment, AttestedMomentProposition, BlsPublicKey,
+    Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
+    EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
+    RequiredSignatureThreshold, Rule, SignatureEnvelope, SignatureScheme, Threshold, TimeSignature,
+    TimeSwitch, TimeWindow, TimedRule, TimestampNanos,
 };
 
 struct Signer {
@@ -38,13 +40,36 @@ impl Signer {
         self.key.public_key()
     }
 
-    fn sign_operation(&self, operation: &OperationDigest) -> SignatureEnvelope {
+    fn sign_operation(
+        &self,
+        operation: &OperationDigest,
+        observed_at: &AttestedMoment,
+    ) -> SignatureEnvelope {
         SignatureEnvelope {
             scheme: SignatureScheme::Bls12_381MinPk,
             public_key: self.public_key(),
-            signature: self
-                .key
-                .sign(&OperationStatement::new(&self.identity, operation).to_signing_bytes()),
+            signature: self.key.sign(
+                OperationStatement::new(&self.identity, operation, observed_at)
+                    .to_signing_bytes()
+                    .expect("operation statement")
+                    .as_slice(),
+            ),
+        }
+    }
+
+    fn sign_moment(&self, proposition: &AttestedMomentProposition) -> TimeSignature {
+        TimeSignature {
+            signer: self.identity(),
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: self.public_key(),
+                signature: self.key.sign(
+                    AttestedMomentStatement::new(proposition)
+                        .to_signing_bytes()
+                        .expect("moment statement")
+                        .as_slice(),
+                ),
+            },
         }
     }
 
@@ -57,6 +82,47 @@ impl Signer {
                     .to_signing_bytes()
                     .as_slice(),
             ),
+        }
+    }
+}
+
+struct AttestedClock {
+    authority: Signer,
+}
+
+impl AttestedClock {
+    fn new() -> Self {
+        Self {
+            authority: Signer::cluster("timekeeper"),
+        }
+    }
+
+    fn authority(&self) -> &Signer {
+        &self.authority
+    }
+
+    fn moment(&self, opens_at: u64, closes_at: u64) -> AttestedMoment {
+        self.moment_with_authorities(opens_at, closes_at, 1, vec![self.authority.identity()])
+    }
+
+    fn moment_with_authorities(
+        &self,
+        opens_at: u64,
+        closes_at: u64,
+        required_signatures: u64,
+        authorities: Vec<Identity>,
+    ) -> AttestedMoment {
+        let proposition = AttestedMomentProposition {
+            window: TimeWindow {
+                opens_at: moment(opens_at),
+                closes_at: moment(closes_at),
+            },
+            required_signatures: RequiredSignatureThreshold::new(required_signatures),
+            authorities,
+        };
+        AttestedMoment {
+            signatures: vec![self.authority.sign_moment(&proposition)],
+            proposition,
         }
     }
 }
@@ -112,6 +178,12 @@ fn registry(signers: &[&Signer]) -> KeyRegistry {
     registry
 }
 
+fn registry_with_clock(clock: &AttestedClock, signers: &[&Signer]) -> KeyRegistry {
+    let mut registry = registry(signers);
+    registry.admit(clock.authority().identity(), clock.authority().public_key());
+    registry
+}
+
 fn moment(value: u64) -> TimestampNanos {
     TimestampNanos::new(value)
 }
@@ -128,22 +200,26 @@ fn contract_digest(value: &[u8]) -> ContractDigest {
     ContractDigest::from_bytes(value)
 }
 
-fn evidence(operation: OperationDigest, observed_at: u64) -> Evidence {
+fn evidence(operation: OperationDigest, observed_at: AttestedMoment) -> Evidence {
     Evidence {
         operation,
-        observed_at: moment(observed_at),
+        observed_at,
         signatures: Vec::new(),
         agreements: Vec::new(),
     }
 }
 
-fn signed_evidence(operation: OperationDigest, observed_at: u64, signers: &[&Signer]) -> Evidence {
+fn signed_evidence(
+    operation: OperationDigest,
+    observed_at: AttestedMoment,
+    signers: &[&Signer],
+) -> Evidence {
     Evidence {
         operation: operation.clone(),
-        observed_at: moment(observed_at),
+        observed_at: observed_at.clone(),
         signatures: signers
             .iter()
-            .map(|signer| signer.sign_operation(&operation))
+            .map(|signer| signer.sign_operation(&operation, &observed_at))
             .collect(),
         agreements: Vec::new(),
     }
@@ -177,8 +253,10 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
     let operator = Signer::developer("operator");
     let designer = Signer::developer("designer");
     let auditor = Signer::developer("auditor");
-    let registry = registry(&[&operator, &designer, &auditor]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator, &designer, &auditor]);
     let operation = operation(b"merge policy");
+    let observed_at = clock.moment(10, 20);
     let mut store = ContractStore::new();
     let contract = Contract::new(Rule::Threshold(threshold(
         2,
@@ -190,17 +268,17 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
     )));
     let digest = admitted(&mut store, contract);
 
-    let one_signature = signed_evidence(operation.clone(), 10, &[&operator]);
+    let one_signature = signed_evidence(operation.clone(), observed_at.clone(), &[&operator]);
     let duplicate_signature = Evidence {
         operation: operation.clone(),
-        observed_at: moment(10),
+        observed_at: observed_at.clone(),
         signatures: vec![
-            operator.sign_operation(&operation),
-            operator.sign_operation(&operation),
+            operator.sign_operation(&operation, &observed_at),
+            operator.sign_operation(&operation, &observed_at),
         ],
         agreements: Vec::new(),
     };
-    let two_signatures = signed_evidence(operation, 10, &[&operator, &designer]);
+    let two_signatures = signed_evidence(operation, observed_at, &[&operator, &designer]);
 
     assert!(matches!(
         store.evaluate(&digest, &one_signature, &registry),
@@ -218,6 +296,62 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
         store.evaluate(&digest, &two_signatures, &registry),
         Ok(EvaluationDecision::Authorized)
     );
+}
+
+#[test]
+fn invalid_time_attestation_rejects_before_policy_evaluation() {
+    let operator = Signer::developer("operator");
+    let other_timekeeper = Signer::cluster("backup-timekeeper");
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator, &other_timekeeper]);
+    let operation = operation(b"invalid time");
+    let observed_at = clock.moment_with_authorities(
+        10,
+        20,
+        2,
+        vec![clock.authority().identity(), other_timekeeper.identity()],
+    );
+    let mut store = ContractStore::new();
+    let contract = admitted(
+        &mut store,
+        Contract::new(Rule::SignedBy(operator.identity())),
+    );
+    let evidence = signed_evidence(operation, observed_at, &[&operator]);
+
+    assert!(matches!(
+        store.evaluate(&contract, &evidence, &registry),
+        Ok(EvaluationDecision::Rejected(
+            EvaluationRejectionReason::TimeQuorumShort(_)
+        ))
+    ));
+}
+
+#[test]
+fn operation_signature_is_bound_to_the_attested_moment() {
+    let operator = Signer::developer("operator");
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator]);
+    let operation = operation(b"moment-bound signature");
+    let signed_moment = clock.moment(10, 20);
+    let replayed_moment = clock.moment(20, 30);
+    let mut store = ContractStore::new();
+    let contract = admitted(
+        &mut store,
+        Contract::new(Rule::SignedBy(operator.identity())),
+    );
+    let evidence = Evidence {
+        operation: operation.clone(),
+        observed_at: replayed_moment,
+        signatures: vec![operator.sign_operation(&operation, &signed_moment)],
+        agreements: Vec::new(),
+    };
+
+    assert!(matches!(
+        store.evaluate(&contract, &evidence, &registry),
+        Ok(EvaluationDecision::Rejected(
+            EvaluationRejectionReason::SignatureMissing(_)
+        ))
+    ));
 }
 
 #[test]
@@ -251,8 +385,10 @@ fn admission_rejects_dangling_object_references() {
 fn object_members_reference_previously_admitted_contracts_by_digest() {
     let operator = Signer::developer("operator");
     let designer = Signer::developer("designer");
-    let registry = registry(&[&operator, &designer]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator, &designer]);
     let operation = operation(b"shared object member");
+    let observed_at = clock.moment(10, 20);
     let mut store = ContractStore::new();
     let operator_rule = admitted(
         &mut store,
@@ -273,7 +409,7 @@ fn object_members_reference_previously_admitted_contracts_by_digest() {
     assert_eq!(
         store.evaluate(
             &parent,
-            &signed_evidence(operation, 20, &[&operator, &designer]),
+            &signed_evidence(operation, observed_at, &[&operator, &designer]),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)
@@ -284,7 +420,8 @@ fn object_members_reference_previously_admitted_contracts_by_digest() {
 fn time_switch_changes_quorum_after_boundary() {
     let operator = Signer::developer("operator");
     let designer = Signer::developer("designer");
-    let registry = registry(&[&operator, &designer]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator, &designer]);
     let operation = operation(b"time switch");
     let mut store = ContractStore::new();
     let digest = admitted(
@@ -299,7 +436,7 @@ fn time_switch_changes_quorum_after_boundary() {
     assert_eq!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation.clone(), 50, &[&operator]),
+            &signed_evidence(operation.clone(), clock.moment(40, 50), &[&operator]),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)
@@ -307,7 +444,7 @@ fn time_switch_changes_quorum_after_boundary() {
     assert!(matches!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation.clone(), 150, &[&operator]),
+            &signed_evidence(operation.clone(), clock.moment(140, 150), &[&operator]),
             &registry,
         ),
         Ok(EvaluationDecision::Rejected(
@@ -317,7 +454,7 @@ fn time_switch_changes_quorum_after_boundary() {
     assert_eq!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation, 150, &[&operator, &designer]),
+            &signed_evidence(operation, clock.moment(140, 150), &[&operator, &designer]),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)
@@ -327,7 +464,8 @@ fn time_switch_changes_quorum_after_boundary() {
 #[test]
 fn active_after_rule_models_timelock_release() {
     let operator = Signer::developer("operator");
-    let registry = registry(&[&operator]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator]);
     let operation = operation(b"timelock");
     let mut store = ContractStore::new();
     let digest = admitted(
@@ -341,7 +479,7 @@ fn active_after_rule_models_timelock_release() {
     assert_eq!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation.clone(), 99, &[&operator]),
+            &signed_evidence(operation.clone(), clock.moment(90, 99), &[&operator]),
             &registry,
         ),
         Ok(EvaluationDecision::Rejected(
@@ -351,7 +489,7 @@ fn active_after_rule_models_timelock_release() {
     assert_eq!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation, 100, &[&operator]),
+            &signed_evidence(operation, clock.moment(90, 100), &[&operator]),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)
@@ -362,7 +500,8 @@ fn active_after_rule_models_timelock_release() {
 fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
     let resolver = Signer::cluster("model-governance-panel");
     let other = Signer::developer("single-reviewer");
-    let registry = registry(&[&resolver, &other]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&resolver, &other]);
     let operation = operation(b"fork agreement");
     let divergence = digest(b"network fork");
     let resolution = digest(b"chosen canonical branch");
@@ -393,11 +532,11 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
         envelope: other.sign_reconciliation(&agreement),
     };
 
-    let mut wrong = evidence(operation.clone(), 20);
+    let mut wrong = evidence(operation.clone(), clock.moment(10, 20));
     wrong.agreements.push(wrong_fact);
-    let mut impostor = evidence(operation.clone(), 20);
+    let mut impostor = evidence(operation.clone(), clock.moment(10, 20));
     impostor.agreements.push(impostor_fact);
-    let mut matching = evidence(operation, 20);
+    let mut matching = evidence(operation, clock.moment(10, 20));
     matching.agreements.push(matching_fact);
 
     assert_eq!(
@@ -420,13 +559,18 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
 
 #[test]
 fn explicit_policy_can_escalate_to_psyche() {
-    let registry = KeyRegistry::new();
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[]);
     let operation = operation(b"ambiguous contract");
     let mut store = ContractStore::new();
     let digest = admitted(&mut store, Contract::new(Rule::EscalateToPsyche));
 
     assert_eq!(
-        store.evaluate(&digest, &evidence(operation, 10), &registry),
+        store.evaluate(
+            &digest,
+            &evidence(operation, clock.moment(1, 10)),
+            &registry
+        ),
         Ok(EvaluationDecision::EscalateToPsyche)
     );
 }
@@ -434,7 +578,8 @@ fn explicit_policy_can_escalate_to_psyche() {
 #[test]
 fn all_composes_content_addressed_children_and_preserves_escalation() {
     let operator = Signer::developer("operator");
-    let registry = registry(&[&operator]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator]);
     let operation = operation(b"escalating all");
     let mut store = ContractStore::new();
     let signed = admitted(
@@ -448,7 +593,11 @@ fn all_composes_content_addressed_children_and_preserves_escalation() {
     );
 
     assert!(matches!(
-        store.evaluate(&parent, &evidence(operation.clone(), 10), &registry),
+        store.evaluate(
+            &parent,
+            &evidence(operation.clone(), clock.moment(1, 10)),
+            &registry
+        ),
         Ok(EvaluationDecision::Rejected(
             EvaluationRejectionReason::SignatureMissing(_)
         ))
@@ -456,7 +605,7 @@ fn all_composes_content_addressed_children_and_preserves_escalation() {
     assert_eq!(
         store.evaluate(
             &parent,
-            &signed_evidence(operation, 10, &[&operator]),
+            &signed_evidence(operation, clock.moment(1, 10), &[&operator]),
             &registry,
         ),
         Ok(EvaluationDecision::EscalateToPsyche)
@@ -466,7 +615,8 @@ fn all_composes_content_addressed_children_and_preserves_escalation() {
 #[test]
 fn any_prefers_authorization_before_escalation() {
     let operator = Signer::developer("operator");
-    let registry = registry(&[&operator]);
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&operator]);
     let operation = operation(b"authorizing any");
     let mut store = ContractStore::new();
     let escalation = admitted(&mut store, Contract::new(Rule::EscalateToPsyche));
@@ -480,13 +630,17 @@ fn any_prefers_authorization_before_escalation() {
     );
 
     assert_eq!(
-        store.evaluate(&parent, &evidence(operation.clone(), 10), &registry),
+        store.evaluate(
+            &parent,
+            &evidence(operation.clone(), clock.moment(1, 10)),
+            &registry
+        ),
         Ok(EvaluationDecision::EscalateToPsyche)
     );
     assert_eq!(
         store.evaluate(
             &parent,
-            &signed_evidence(operation, 10, &[&operator]),
+            &signed_evidence(operation, clock.moment(1, 10), &[&operator]),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)
@@ -495,12 +649,17 @@ fn any_prefers_authorization_before_escalation() {
 
 #[test]
 fn missing_contract_is_evaluation_error_not_authorization_denial() {
+    let clock = AttestedClock::new();
     let store = ContractStore::new();
-    let registry = KeyRegistry::new();
+    let registry = registry_with_clock(&clock, &[]);
     let missing = contract_digest(b"not admitted");
 
     assert_eq!(
-        store.evaluate(&missing, &evidence(operation(b"missing"), 1), &registry),
+        store.evaluate(
+            &missing,
+            &evidence(operation(b"missing"), clock.moment(0, 1)),
+            &registry
+        ),
         Err(EvaluationError::MissingContract(missing))
     );
 }

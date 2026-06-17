@@ -9,22 +9,23 @@ use criome::command::CriomeDaemonCommand;
 use criome::command::CriomeRequestArgument;
 use criome::daemon::CriomeDaemon;
 use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
-use criome::language::OperationStatement;
+use criome::language::{AttestedMomentStatement, OperationStatement};
 use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
 #[cfg(feature = "nota-text")]
 use nota_next::NotaEncode;
 use signal_criome::{
-    AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
-    AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
-    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, AuthorizationScope,
-    AuthorizationStatus, BlsPublicKey, BlsSignature, ContentPurpose, ContentReference, Contract,
-    ContractName, ContractOperationHead, CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest,
-    EvaluationDecision, Evidence, Identity, IdentityLookup, IdentityRegistration, KeyPurpose,
-    ObjectDigest, OperationDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
-    RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule, SignRequest,
-    SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme,
+    AttestedMoment, AttestedMomentProposition, AuditContext, AuthorizationDenialReason,
+    AuthorizationDenialSource, AuthorizationEvaluation, AuthorizationExpired, AuthorizationGrant,
+    AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
+    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, BlsPublicKey, BlsSignature,
+    ContentPurpose, ContentReference, Contract, ContractName, ContractOperationHead, CriomeFrame,
+    CriomeFrameBody, CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity,
+    IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
+    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
+    RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, TimeSignature, TimeWindow,
     TimestampNanos,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
@@ -461,13 +462,27 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         .await
         .expect("start criome root");
     let signer = MasterKey::generate().expect("policy signer key");
+    let timekeeper = MasterKey::generate().expect("timekeeper key");
     let identity = Identity::developer(("operator").to_string());
+    let timekeeper_identity = Identity::cluster(("timekeeper").to_string());
 
     root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
         registration_with_key("operator", signer.public_key()),
     )))
     .await
     .expect("register policy signer")
+    .into_reply();
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        IdentityRegistration {
+            identity: timekeeper_identity.clone(),
+            public_key: timekeeper.public_key(),
+            fingerprint: PublicKeyFingerprint::new(("timekeeper-fingerprint").to_string()),
+            purpose: KeyPurpose::ReleaseAuthorization,
+            admission: None,
+        },
+    )))
+    .await
+    .expect("register timekeeper")
     .into_reply();
 
     let contract = Contract::new(Rule::SignedBy(identity.clone()));
@@ -481,10 +496,36 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     };
     let digest = admitted.into_payload();
     let operation = operation_digest(b"policy-evaluation");
-    let statement = OperationStatement::new(&identity, &operation).to_signing_bytes();
+    let proposition = AttestedMomentProposition {
+        window: TimeWindow {
+            opens_at: TimestampNanos::new(10),
+            closes_at: TimestampNanos::new(20),
+        },
+        required_signatures: RequiredSignatureThreshold::new(1),
+        authorities: vec![timekeeper_identity.clone()],
+    };
+    let observed_at = AttestedMoment {
+        signatures: vec![TimeSignature {
+            signer: timekeeper_identity,
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: timekeeper.public_key(),
+                signature: timekeeper.sign(
+                    AttestedMomentStatement::new(&proposition)
+                        .to_signing_bytes()
+                        .expect("moment statement")
+                        .as_slice(),
+                ),
+            },
+        }],
+        proposition,
+    };
+    let statement = OperationStatement::new(&identity, &operation, &observed_at)
+        .to_signing_bytes()
+        .expect("operation statement");
     let evidence = Evidence {
         operation,
-        observed_at: TimestampNanos::new(20),
+        observed_at,
         signatures: vec![SignatureEnvelope {
             scheme: SignatureScheme::Bls12_381MinPk,
             public_key: signer.public_key(),
