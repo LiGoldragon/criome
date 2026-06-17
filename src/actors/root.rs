@@ -1,8 +1,10 @@
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    AuthorizationAttestationRequest, BlsPublicKey, CriomeReply, CriomeRequest, Identity,
-    IdentityRegistration, IdentitySubscriptionToken, KeyPurpose, RejectionReason,
+    AuthorizationAttestationRequest, AuthorizationEvaluated, BlsPublicKey,
+    ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing, CriomeReply,
+    CriomeRequest, Identity, IdentityRegistration, IdentitySubscriptionToken, KeyPurpose,
+    RejectionReason,
 };
 
 use crate::actors::{
@@ -10,6 +12,7 @@ use crate::actors::{
     verifier,
 };
 use crate::admission::ClusterRoot;
+use crate::language::{ContractStore, KeyRegistry};
 use crate::master_key::MasterKey;
 use crate::{Error, Result, StoreLocation};
 
@@ -19,6 +22,7 @@ pub struct CriomeRoot {
     verifier: ActorRef<verifier::AttestationVerifier>,
     authorization: ActorRef<authorization::AuthorizationCoordinator>,
     subscription: ActorRef<subscription::SubscriptionRegistry>,
+    policy_store: ContractStore,
 }
 
 pub struct Arguments {
@@ -102,6 +106,7 @@ impl CriomeRoot {
             verifier,
             authorization,
             subscription,
+            policy_store: ContractStore::new(),
         }
     }
 
@@ -126,7 +131,7 @@ impl CriomeRoot {
         Ok(())
     }
 
-    async fn submit(&self, request: CriomeRequest) -> CriomeReply {
+    async fn submit(&mut self, request: CriomeRequest) -> CriomeReply {
         match request {
             CriomeRequest::Sign(request) => {
                 self.ask_signer(signer::SignContent::new(request)).await
@@ -191,6 +196,36 @@ impl CriomeRoot {
                 self.ask_authorization(authorization::RejectAuthorization::new(request))
                     .await
             }
+            CriomeRequest::AdmitContract(contract) => match self.policy_store.admit(contract) {
+                Ok(digest) => CriomeReply::ContractAdmitted(ContractAdmitted::new(digest)),
+                Err(error) => match error.reason() {
+                    Some(reason) => CriomeReply::ContractAdmissionRejected(
+                        ContractAdmissionRejected::new(reason.clone()),
+                    ),
+                    None => rejection(RejectionReason::MalformedRequest),
+                },
+            },
+            CriomeRequest::LookupContract(digest) => match self.policy_store.resolve(&digest) {
+                Ok(contract) => CriomeReply::ContractFound(ContractFound {
+                    digest,
+                    contract: contract.clone(),
+                }),
+                Err(_) => CriomeReply::ContractMissing(ContractMissing::new(digest)),
+            },
+            CriomeRequest::EvaluateAuthorization(evaluation) => match self.key_registry().await {
+                Some(registry) => match self.policy_store.evaluate(
+                    &evaluation.contract,
+                    &evaluation.evidence,
+                    &registry,
+                ) {
+                    Ok(decision) => CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
+                        contract: evaluation.contract,
+                        decision,
+                    }),
+                    Err(_) => rejection(RejectionReason::MalformedRequest),
+                },
+                None => rejection(RejectionReason::MalformedRequest),
+            },
             CriomeRequest::SubscribeIdentityUpdates(request) => {
                 let token = IdentitySubscriptionToken::new(request.into_payload());
                 self.ask_subscription(subscription::OpenIdentitySubscription { token })
@@ -266,6 +301,35 @@ impl CriomeRoot {
             .await
             .map(CriomeActorReply::into_reply)
             .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+
+    async fn key_registry(&self) -> Option<KeyRegistry> {
+        let reply = self
+            .registry
+            .ask(registry::ReadIdentitySnapshot)
+            .await
+            .ok()?
+            .into_reply();
+        let CriomeReply::IdentitySnapshot(snapshot) = reply else {
+            return None;
+        };
+        let mut key_registry = KeyRegistry::new();
+        for identity in snapshot.into_payload() {
+            match self
+                .registry
+                .ask(registry::ResolveIdentity::new(identity.identity))
+                .await
+            {
+                Ok(lookup) => {
+                    let Some(stored) = lookup.into_identity() else {
+                        continue;
+                    };
+                    key_registry.admit(stored.identity().clone(), stored.public_key().clone());
+                }
+                Err(_) => return None,
+            }
+        }
+        Some(key_registry)
     }
 }
 

@@ -9,20 +9,23 @@ use criome::command::CriomeDaemonCommand;
 use criome::command::CriomeRequestArgument;
 use criome::daemon::CriomeDaemon;
 use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
+use criome::language::OperationStatement;
+use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
 #[cfg(feature = "nota-text")]
 use nota_next::NotaEncode;
 use signal_criome::{
-    AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationExpired,
-    AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
+    AuditContext, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
+    AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
     AuthorizationPolicySatisfaction, AuthorizationRequestSlot, AuthorizationScope,
-    AuthorizationStatus, BlsPublicKey, BlsSignature, ContentPurpose, ContentReference,
+    AuthorizationStatus, BlsPublicKey, BlsSignature, ContentPurpose, ContentReference, Contract,
     ContractName, ContractOperationHead, CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest,
-    Identity, IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
-    RequiredSignatureThreshold, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
-    SignatureEnvelope, SignatureScheme, TimestampNanos,
+    EvaluationDecision, Evidence, Identity, IdentityLookup, IdentityRegistration, KeyPurpose,
+    ObjectDigest, OperationDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
+    RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule, SignRequest,
+    SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme,
+    TimestampNanos,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
@@ -58,6 +61,16 @@ fn registration(name: &str) -> IdentityRegistration {
     IdentityRegistration {
         identity: Identity::developer((name).to_string()),
         public_key: BlsPublicKey::new((format!("{name}-public-key")).to_string()),
+        fingerprint: PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
+        purpose: KeyPurpose::ReleaseAuthorization,
+        admission: None,
+    }
+}
+
+fn registration_with_key(name: &str, public_key: BlsPublicKey) -> IdentityRegistration {
+    IdentityRegistration {
+        identity: Identity::developer((name).to_string()),
+        public_key,
         fingerprint: PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
         purpose: KeyPurpose::ReleaseAuthorization,
         admission: None,
@@ -116,6 +129,10 @@ fn signature_envelope() -> SignatureEnvelope {
         public_key: BlsPublicKey::new(("public-key").to_string()),
         signature: BlsSignature::new(("signature").to_string()),
     }
+}
+
+fn operation_digest(seed: &[u8]) -> OperationDigest {
+    OperationDigest::from_bytes(seed)
 }
 
 fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
@@ -439,6 +456,62 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
 }
 
 #[tokio::test]
+async fn criome_root_admits_and_evaluates_policy_contracts() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("policy-contracts")))
+        .await
+        .expect("start criome root");
+    let signer = MasterKey::generate().expect("policy signer key");
+    let identity = Identity::developer(("operator").to_string());
+
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        registration_with_key("operator", signer.public_key()),
+    )))
+    .await
+    .expect("register policy signer")
+    .into_reply();
+
+    let contract = Contract::new(Rule::SignedBy(identity.clone()));
+    let admitted = root
+        .ask(SubmitRequest::new(CriomeRequest::AdmitContract(contract)))
+        .await
+        .expect("admit contract")
+        .into_reply();
+    let CriomeReply::ContractAdmitted(admitted) = admitted else {
+        panic!("expected ContractAdmitted, got {admitted:?}");
+    };
+    let digest = admitted.into_payload();
+    let operation = operation_digest(b"policy-evaluation");
+    let statement = OperationStatement::new(&identity, &operation).to_signing_bytes();
+    let evidence = Evidence {
+        operation,
+        observed_at: TimestampNanos::new(20),
+        signatures: vec![SignatureEnvelope {
+            scheme: SignatureScheme::Bls12_381MinPk,
+            public_key: signer.public_key(),
+            signature: signer.sign(&statement),
+        }],
+        agreements: Vec::new(),
+    };
+
+    let evaluated = root
+        .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+            AuthorizationEvaluation {
+                contract: digest,
+                evidence,
+            },
+        )))
+        .await
+        .expect("evaluate contract")
+        .into_reply();
+    let CriomeReply::AuthorizationEvaluated(evaluated) = evaluated else {
+        panic!("expected AuthorizationEvaluated, got {evaluated:?}");
+    };
+    assert_eq!(evaluated.decision, EvaluationDecision::Authorized);
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
 async fn expired_attestation_verifies_as_expired() {
     let root = CriomeRoot::start(RootArguments::new(store_location("expired-attestation")))
         .await
@@ -560,7 +633,6 @@ async fn restored_store_with_mismatched_master_key_fails_startup() {
 #[tokio::test]
 async fn cluster_root_gates_registration() {
     use criome::admission::RegistrationStatement;
-    use criome::master_key::MasterKey;
 
     let workspace = fixture_path("cluster-root-gate");
     let cluster_root = MasterKey::generate().expect("cluster root key");

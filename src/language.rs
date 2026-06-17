@@ -1,357 +1,597 @@
-//! Criome internal language proof of concept.
+//! Criome policy-language evaluator over the schema-emitted signal contract.
 //!
-//! The module models the eventual Criome policy language as a constrained
-//! expression tree over identity evidence. It is not on the public
-//! `signal-criome` wire yet; it is compiled design pressure for the schema in
-//! `schema/criome.language.schema`.
+//! Public policy nouns live in `signal-criome`: `Contract`, `Rule`,
+//! `PolicyMember`, `Evidence`, and `EvaluationDecision` are wire/schema types.
+//! This module owns only daemon-local runtime mechanics: admission into the
+//! content-addressed store, key lookup, and handwritten evaluation over those
+//! generated nouns.
 
-use signal_criome::{Identity, ObjectDigest, RequiredSignatureThreshold, TimestampNanos};
+use signal_criome::{
+    BlsPublicKey, Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
+    EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
+    QuorumShortfall, RequiredSignatureThreshold, Rule, SignatureScheme, Threshold,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Contract {
-    rule: Rule,
+use crate::master_key::VerifyBls;
+
+/// Store of admitted content-addressed contracts.
+///
+/// Admission rejects dangling references and malformed quorum declarations before
+/// a contract can become addressable by digest.
+#[derive(Debug, Clone, Default)]
+pub struct ContractStore {
+    entries: Vec<ContractEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Rule {
-    SignedBy(Identity),
-    All(Vec<Rule>),
-    Any(Vec<Rule>),
-    Threshold(Threshold),
-    ActiveAfter(TimedRule),
-    ActiveUntil(TimedRule),
-    TimeSwitch(TimeSwitch),
-    Agreement(AgreementRule),
-    EscalateToPsyche,
+pub struct ContractEntry {
+    digest: ContractDigest,
+    contract: Contract,
+}
+
+/// Maps an admitted identity to its admitted BLS public key.
+#[derive(Debug, Clone, Default)]
+pub struct KeyRegistry {
+    entries: Vec<KeyEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Threshold {
-    required_signatures: RequiredSignatureThreshold,
-    authorities: Vec<Identity>,
+pub struct KeyEntry {
+    identity: Identity,
+    public_key: BlsPublicKey,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TimedRule {
-    boundary: TimestampNanos,
-    rule: Box<Rule>,
+/// The canonical statement signed by a `SignedBy` leaf.
+pub struct OperationStatement<'a> {
+    signer: &'a Identity,
+    operation: &'a OperationDigest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TimeSwitch {
-    boundary: TimestampNanos,
-    before: Box<Rule>,
-    after: Box<Rule>,
+/// Evaluation errors are distinct from authorization denial. A denial is a valid
+/// `EvaluationDecision::Rejected`; an error means the store cannot resolve the
+/// contract graph.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EvaluationError {
+    #[error("referenced contract not present in store: {0:?}")]
+    MissingContract(ContractDigest),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgreementRule {
-    divergence: ObjectDigest,
-    resolution: ObjectDigest,
-    resolver: Identity,
+/// Contract admission failure.
+#[derive(Debug, thiserror::Error)]
+pub enum AdmissionError {
+    #[error("contract admission rejected: {0:?}")]
+    Rejected(ContractAdmissionRejectionReason),
+    #[error("contract digest: {0}")]
+    Digest(#[from] signal_criome::ContractDigestError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Evidence {
-    observed_at: TimestampNanos,
-    signatures: Vec<Identity>,
-    agreements: Vec<AgreementFact>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgreementFact {
-    divergence: ObjectDigest,
-    resolution: ObjectDigest,
-    resolver: Identity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    Authorized,
-    Rejected,
-    EscalateToPsyche,
-}
-
-impl Contract {
-    pub fn new(rule: Rule) -> Self {
-        Self { rule }
+impl AdmissionError {
+    pub fn rejected(reason: ContractAdmissionRejectionReason) -> Self {
+        Self::Rejected(reason)
     }
 
-    pub fn evaluate(&self, evidence: &Evidence) -> Decision {
-        self.rule.decide(evidence)
-    }
-
-    pub fn rule(&self) -> &Rule {
-        &self.rule
-    }
-}
-
-impl Rule {
-    pub fn signed_by(identity: Identity) -> Self {
-        Self::SignedBy(identity)
-    }
-
-    pub fn all(rules: Vec<Rule>) -> Self {
-        Self::All(rules)
-    }
-
-    pub fn any(rules: Vec<Rule>) -> Self {
-        Self::Any(rules)
-    }
-
-    pub fn threshold(threshold: Threshold) -> Self {
-        Self::Threshold(threshold)
-    }
-
-    pub fn active_after(timed_rule: TimedRule) -> Self {
-        Self::ActiveAfter(timed_rule)
-    }
-
-    pub fn active_until(timed_rule: TimedRule) -> Self {
-        Self::ActiveUntil(timed_rule)
-    }
-
-    pub fn time_switch(time_switch: TimeSwitch) -> Self {
-        Self::TimeSwitch(time_switch)
-    }
-
-    pub fn agreement(agreement: AgreementRule) -> Self {
-        Self::Agreement(agreement)
-    }
-
-    pub const fn escalate_to_psyche() -> Self {
-        Self::EscalateToPsyche
-    }
-
-    pub fn satisfied_by(&self, evidence: &Evidence) -> bool {
-        self.decide(evidence).is_authorized()
-    }
-
-    pub fn decide(&self, evidence: &Evidence) -> Decision {
+    pub fn reason(&self) -> Option<&ContractAdmissionRejectionReason> {
         match self {
-            Self::SignedBy(identity) => Decision::from_bool(evidence.has_signature_from(identity)),
-            Self::All(rules) => Decision::all(rules.iter().map(|rule| rule.decide(evidence))),
-            Self::Any(rules) => Decision::any(rules.iter().map(|rule| rule.decide(evidence))),
-            Self::Threshold(threshold) => Decision::from_bool(threshold.satisfied_by(evidence)),
+            Self::Rejected(reason) => Some(reason),
+            Self::Digest(_) => None,
+        }
+    }
+}
+
+impl ContractStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn admit(&mut self, contract: Contract) -> Result<ContractDigest, AdmissionError> {
+        ContractAdmission::new(&contract).validate_against(self)?;
+        let digest = contract.digest()?;
+        if !self.contains(&digest) {
+            self.entries.push(ContractEntry {
+                digest: digest.clone(),
+                contract,
+            });
+        }
+        Ok(digest)
+    }
+
+    pub fn resolve(&self, digest: &ContractDigest) -> Result<&Contract, EvaluationError> {
+        self.entries
+            .iter()
+            .find(|entry| &entry.digest == digest)
+            .map(|entry| &entry.contract)
+            .ok_or_else(|| EvaluationError::MissingContract(digest.clone()))
+    }
+
+    pub fn evaluate(
+        &self,
+        digest: &ContractDigest,
+        evidence: &Evidence,
+        registry: &KeyRegistry,
+    ) -> Result<EvaluationDecision, EvaluationError> {
+        self.resolve(digest)?
+            .rule()
+            .decide(evidence, self, registry)
+    }
+
+    fn contains(&self, digest: &ContractDigest) -> bool {
+        self.entries.iter().any(|entry| &entry.digest == digest)
+    }
+
+    fn evaluate_all(
+        &self,
+        references: &[ContractDigest],
+        evidence: &Evidence,
+        registry: &KeyRegistry,
+    ) -> Result<Vec<EvaluationDecision>, EvaluationError> {
+        references
+            .iter()
+            .map(|digest| self.evaluate(digest, evidence, registry))
+            .collect()
+    }
+}
+
+impl KeyRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Admit or replace the public key for `identity`.
+    pub fn admit(&mut self, identity: Identity, public_key: BlsPublicKey) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.identity == identity)
+        {
+            entry.public_key = public_key;
+        } else {
+            self.entries.push(KeyEntry {
+                identity,
+                public_key,
+            });
+        }
+    }
+
+    pub fn public_key(&self, identity: &Identity) -> Option<&BlsPublicKey> {
+        self.entries
+            .iter()
+            .find(|entry| &entry.identity == identity)
+            .map(|entry| &entry.public_key)
+    }
+}
+
+impl<'a> OperationStatement<'a> {
+    pub fn new(signer: &'a Identity, operation: &'a OperationDigest) -> Self {
+        Self { signer, operation }
+    }
+
+    pub fn to_signing_bytes(&self) -> Vec<u8> {
+        let mut bytes = b"CRIOME-OPERATION-AUTHORIZATION-V1".to_vec();
+        self.signer.encode_into(&mut bytes);
+        self.operation.object_digest().encode_into(&mut bytes);
+        bytes
+    }
+}
+
+struct ContractAdmission<'a> {
+    contract: &'a Contract,
+}
+
+impl<'a> ContractAdmission<'a> {
+    fn new(contract: &'a Contract) -> Self {
+        Self { contract }
+    }
+
+    fn validate_against(&self, store: &ContractStore) -> Result<(), AdmissionError> {
+        for reference in self.contract.rule().referenced_digests() {
+            if !store.contains(&reference) {
+                return Err(AdmissionError::rejected(
+                    ContractAdmissionRejectionReason::DanglingReference(reference),
+                ));
+            }
+        }
+        self.contract.rule().validate_shape()
+    }
+}
+
+trait ContractRule {
+    fn rule(&self) -> &Rule;
+}
+
+impl ContractRule for Contract {
+    fn rule(&self) -> &Rule {
+        self.payload()
+    }
+}
+
+trait RuleEvaluation {
+    fn decide(
+        &self,
+        evidence: &Evidence,
+        store: &ContractStore,
+        registry: &KeyRegistry,
+    ) -> Result<EvaluationDecision, EvaluationError>;
+
+    fn referenced_digests(&self) -> Vec<ContractDigest>;
+
+    fn validate_shape(&self) -> Result<(), AdmissionError>;
+}
+
+impl RuleEvaluation for Rule {
+    fn decide(
+        &self,
+        evidence: &Evidence,
+        store: &ContractStore,
+        registry: &KeyRegistry,
+    ) -> Result<EvaluationDecision, EvaluationError> {
+        match self {
+            Self::SignedBy(identity) => Ok(evidence.decision_for_signature(identity, registry)),
+            Self::All(references) => {
+                EvaluationDecision::all(store.evaluate_all(references, evidence, registry)?)
+            }
+            Self::Any(references) => {
+                EvaluationDecision::any(store.evaluate_all(references, evidence, registry)?)
+            }
+            Self::Threshold(threshold) => threshold.decide(evidence, store, registry),
             Self::ActiveAfter(timed_rule) => {
-                if evidence.observed_at().into_u64() >= timed_rule.boundary().into_u64() {
-                    timed_rule.rule().decide(evidence)
+                if evidence.observed_at.into_u64() >= timed_rule.boundary.into_u64() {
+                    Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
                 } else {
-                    Decision::Rejected
+                    Ok(EvaluationDecision::Rejected(
+                        EvaluationRejectionReason::OutsideTimeWindow,
+                    ))
                 }
             }
             Self::ActiveUntil(timed_rule) => {
-                if evidence.observed_at().into_u64() < timed_rule.boundary().into_u64() {
-                    timed_rule.rule().decide(evidence)
+                if evidence.observed_at.into_u64() < timed_rule.boundary.into_u64() {
+                    Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
                 } else {
-                    Decision::Rejected
+                    Ok(EvaluationDecision::Rejected(
+                        EvaluationRejectionReason::OutsideTimeWindow,
+                    ))
                 }
             }
-            Self::TimeSwitch(time_switch) => time_switch.active_rule(evidence).decide(evidence),
-            Self::Agreement(agreement) => {
-                Decision::from_bool(evidence.has_agreement_for(agreement))
+            Self::TimeSwitch(time_switch) => time_switch
+                .active_threshold(evidence)
+                .decide(evidence, store, registry),
+            Self::Agreement(agreement) => Ok(evidence.decision_for_agreement(agreement, registry)),
+            Self::EscalateToPsyche => Ok(EvaluationDecision::EscalateToPsyche),
+        }
+    }
+
+    fn referenced_digests(&self) -> Vec<ContractDigest> {
+        match self {
+            Self::All(references) | Self::Any(references) => references.clone(),
+            Self::Threshold(threshold) => threshold.referenced_digests(),
+            Self::TimeSwitch(time_switch) => {
+                let mut references = time_switch.before.referenced_digests();
+                references.extend(time_switch.after.referenced_digests());
+                references
             }
-            Self::EscalateToPsyche => Decision::EscalateToPsyche,
+            Self::SignedBy(_)
+            | Self::ActiveAfter(_)
+            | Self::ActiveUntil(_)
+            | Self::Agreement(_)
+            | Self::EscalateToPsyche => Vec::new(),
+        }
+    }
+
+    fn validate_shape(&self) -> Result<(), AdmissionError> {
+        match self {
+            Self::All(references) if references.is_empty() => Err(AdmissionError::rejected(
+                ContractAdmissionRejectionReason::EmptyConjunction,
+            )),
+            Self::Any(references) if references.is_empty() => Err(AdmissionError::rejected(
+                ContractAdmissionRejectionReason::EmptyDisjunction,
+            )),
+            Self::Threshold(threshold) => threshold.validate_shape(),
+            Self::TimeSwitch(time_switch) => {
+                time_switch.before.validate_shape()?;
+                time_switch.after.validate_shape()
+            }
+            _ => Ok(()),
         }
     }
 }
 
-impl Decision {
-    pub const fn from_bool(value: bool) -> Self {
-        if value {
-            Self::Authorized
+trait ThresholdEvaluation {
+    fn decide(
+        &self,
+        evidence: &Evidence,
+        store: &ContractStore,
+        registry: &KeyRegistry,
+    ) -> Result<EvaluationDecision, EvaluationError>;
+
+    fn referenced_digests(&self) -> Vec<ContractDigest>;
+
+    fn validate_shape(&self) -> Result<(), AdmissionError>;
+}
+
+impl ThresholdEvaluation for Threshold {
+    fn decide(
+        &self,
+        evidence: &Evidence,
+        store: &ContractStore,
+        registry: &KeyRegistry,
+    ) -> Result<EvaluationDecision, EvaluationError> {
+        let mut satisfied_members: Vec<PolicyMember> = Vec::new();
+        for member in &self.members {
+            if member.is_satisfied(evidence, store, registry)?
+                && !satisfied_members.contains(member)
+            {
+                satisfied_members.push(member.clone());
+            }
+        }
+        let required = self.required_signatures.into_u16();
+        let satisfied = satisfied_members.len() as u16;
+        Ok(if satisfied >= required {
+            EvaluationDecision::Authorized
         } else {
-            Self::Rejected
+            EvaluationDecision::Rejected(EvaluationRejectionReason::QuorumShort(QuorumShortfall {
+                required: RequiredSignatureThreshold::new(required.into()),
+                satisfied: RequiredSignatureThreshold::new(satisfied.into()),
+            }))
+        })
+    }
+
+    fn referenced_digests(&self) -> Vec<ContractDigest> {
+        self.members
+            .iter()
+            .filter_map(|member| match member {
+                PolicyMember::ObjectMember(digest) => Some(digest.clone()),
+                PolicyMember::KeyMember(_) => None,
+            })
+            .collect()
+    }
+
+    fn validate_shape(&self) -> Result<(), AdmissionError> {
+        if self.members.is_empty() {
+            return Err(AdmissionError::rejected(
+                ContractAdmissionRejectionReason::EmptyThreshold,
+            ));
+        }
+        let required = self.required_signatures.into_u16();
+        if required == 0 || required > self.members.len() as u16 {
+            return Err(AdmissionError::rejected(
+                ContractAdmissionRejectionReason::ThresholdUnsatisfiable,
+            ));
+        }
+        let mut unique_members: Vec<&PolicyMember> = Vec::new();
+        for member in &self.members {
+            if unique_members.contains(&member) {
+                return Err(AdmissionError::rejected(
+                    ContractAdmissionRejectionReason::DuplicatePolicyMember,
+                ));
+            }
+            unique_members.push(member);
+        }
+        Ok(())
+    }
+}
+
+trait TimeSwitchEvaluation {
+    fn active_threshold<'a>(&'a self, evidence: &Evidence) -> &'a Threshold;
+}
+
+impl TimeSwitchEvaluation for signal_criome::TimeSwitch {
+    fn active_threshold<'a>(&'a self, evidence: &Evidence) -> &'a Threshold {
+        if evidence.observed_at.into_u64() < self.boundary.into_u64() {
+            &self.before
+        } else {
+            &self.after
+        }
+    }
+}
+
+trait PolicyMemberEvaluation {
+    fn is_satisfied(
+        &self,
+        evidence: &Evidence,
+        store: &ContractStore,
+        registry: &KeyRegistry,
+    ) -> Result<bool, EvaluationError>;
+}
+
+impl PolicyMemberEvaluation for PolicyMember {
+    fn is_satisfied(
+        &self,
+        evidence: &Evidence,
+        store: &ContractStore,
+        registry: &KeyRegistry,
+    ) -> Result<bool, EvaluationError> {
+        match self {
+            Self::KeyMember(identity) => Ok(evidence.has_valid_signature_from(identity, registry)),
+            Self::ObjectMember(digest) => {
+                Ok(store.evaluate(digest, evidence, registry)?.is_authorized())
+            }
+        }
+    }
+}
+
+trait EvidenceVerification {
+    fn decision_for_signature(
+        &self,
+        identity: &Identity,
+        registry: &KeyRegistry,
+    ) -> EvaluationDecision;
+
+    fn decision_for_agreement(
+        &self,
+        agreement: &signal_criome::AgreementRule,
+        registry: &KeyRegistry,
+    ) -> EvaluationDecision;
+
+    fn has_valid_signature_from(&self, identity: &Identity, registry: &KeyRegistry) -> bool;
+
+    fn has_valid_agreement_for(
+        &self,
+        agreement: &signal_criome::AgreementRule,
+        registry: &KeyRegistry,
+    ) -> bool;
+}
+
+impl EvidenceVerification for Evidence {
+    fn decision_for_signature(
+        &self,
+        identity: &Identity,
+        registry: &KeyRegistry,
+    ) -> EvaluationDecision {
+        if self.has_valid_signature_from(identity, registry) {
+            EvaluationDecision::Authorized
+        } else {
+            EvaluationDecision::Rejected(EvaluationRejectionReason::SignatureMissing(
+                identity.clone(),
+            ))
         }
     }
 
-    pub const fn is_authorized(self) -> bool {
+    fn decision_for_agreement(
+        &self,
+        agreement: &signal_criome::AgreementRule,
+        registry: &KeyRegistry,
+    ) -> EvaluationDecision {
+        if self.has_valid_agreement_for(agreement, registry) {
+            EvaluationDecision::Authorized
+        } else {
+            EvaluationDecision::Rejected(EvaluationRejectionReason::AgreementMissing)
+        }
+    }
+
+    fn has_valid_signature_from(&self, identity: &Identity, registry: &KeyRegistry) -> bool {
+        let Some(admitted_key) = registry.public_key(identity) else {
+            return false;
+        };
+        let statement = OperationStatement::new(identity, &self.operation).to_signing_bytes();
+        self.signatures.iter().any(|envelope| {
+            matches!(envelope.scheme, SignatureScheme::Bls12_381MinPk)
+                && &envelope.public_key == admitted_key
+                && admitted_key.verify_bls(&envelope.signature, &statement)
+        })
+    }
+
+    fn has_valid_agreement_for(
+        &self,
+        agreement: &signal_criome::AgreementRule,
+        registry: &KeyRegistry,
+    ) -> bool {
+        let Some(resolver_key) = registry.public_key(&agreement.resolver) else {
+            return false;
+        };
+        let statement = agreement.reconciliation_bytes();
+        self.agreements.iter().any(|fact| {
+            agreement.matches(fact)
+                && matches!(fact.envelope.scheme, SignatureScheme::Bls12_381MinPk)
+                && &fact.envelope.public_key == resolver_key
+                && resolver_key.verify_bls(&fact.envelope.signature, &statement)
+        })
+    }
+}
+
+trait EvaluationDecisionLogic {
+    fn is_authorized(&self) -> bool;
+
+    fn all(decisions: Vec<EvaluationDecision>) -> Result<EvaluationDecision, EvaluationError>;
+
+    fn any(decisions: Vec<EvaluationDecision>) -> Result<EvaluationDecision, EvaluationError>;
+}
+
+impl EvaluationDecisionLogic for EvaluationDecision {
+    fn is_authorized(&self) -> bool {
         matches!(self, Self::Authorized)
     }
 
-    pub fn all(decisions: impl IntoIterator<Item = Self>) -> Self {
+    fn all(decisions: Vec<EvaluationDecision>) -> Result<EvaluationDecision, EvaluationError> {
         let mut saw_escalation = false;
         for decision in decisions {
             match decision {
                 Self::Authorized => {}
-                Self::Rejected => return Self::Rejected,
+                Self::Rejected(reason) => return Ok(Self::Rejected(reason)),
                 Self::EscalateToPsyche => saw_escalation = true,
             }
         }
-
         if saw_escalation {
-            Self::EscalateToPsyche
+            Ok(Self::EscalateToPsyche)
         } else {
-            Self::Authorized
+            Ok(Self::Authorized)
         }
     }
 
-    pub fn any(decisions: impl IntoIterator<Item = Self>) -> Self {
+    fn any(decisions: Vec<EvaluationDecision>) -> Result<EvaluationDecision, EvaluationError> {
         let mut saw_escalation = false;
+        let mut last_rejection = None;
         for decision in decisions {
             match decision {
-                Self::Authorized => return Self::Authorized,
-                Self::Rejected => {}
+                Self::Authorized => return Ok(Self::Authorized),
+                Self::Rejected(reason) => last_rejection = Some(reason),
                 Self::EscalateToPsyche => saw_escalation = true,
             }
         }
-
         if saw_escalation {
-            Self::EscalateToPsyche
+            Ok(Self::EscalateToPsyche)
         } else {
-            Self::Rejected
+            Ok(Self::Rejected(last_rejection.unwrap_or(
+                EvaluationRejectionReason::QuorumShort(QuorumShortfall {
+                    required: RequiredSignatureThreshold::new(1),
+                    satisfied: RequiredSignatureThreshold::new(0),
+                }),
+            )))
         }
     }
 }
 
-impl Threshold {
-    pub fn new(
-        required_signatures: RequiredSignatureThreshold,
-        authorities: Vec<Identity>,
-    ) -> Self {
-        Self {
-            required_signatures,
-            authorities,
-        }
-    }
+trait AgreementRuleVerification {
+    fn reconciliation_bytes(&self) -> Vec<u8>;
 
-    pub fn satisfied_by(&self, evidence: &Evidence) -> bool {
-        self.satisfied_count(evidence) >= self.required_signatures.into_u16()
-    }
-
-    pub fn satisfied_count(&self, evidence: &Evidence) -> u16 {
-        self.authorities
-            .iter()
-            .filter(|authority| evidence.has_signature_from(authority))
-            .count() as u16
-    }
-
-    pub const fn required_signatures(&self) -> RequiredSignatureThreshold {
-        self.required_signatures
-    }
-
-    pub fn authorities(&self) -> &[Identity] {
-        self.authorities.as_slice()
-    }
+    fn matches(&self, fact: &signal_criome::AgreementFact) -> bool;
 }
 
-impl TimedRule {
-    pub fn new(boundary: TimestampNanos, rule: Rule) -> Self {
-        Self {
-            boundary,
-            rule: Box::new(rule),
-        }
+impl AgreementRuleVerification for signal_criome::AgreementRule {
+    fn reconciliation_bytes(&self) -> Vec<u8> {
+        let mut bytes = b"CRIOME-RECONCILIATION-V1".to_vec();
+        self.divergence.encode_into(&mut bytes);
+        self.resolution.encode_into(&mut bytes);
+        self.resolver.encode_into(&mut bytes);
+        bytes
     }
 
-    pub const fn boundary(&self) -> TimestampNanos {
-        self.boundary
-    }
-
-    pub fn rule(&self) -> &Rule {
-        self.rule.as_ref()
-    }
-}
-
-impl TimeSwitch {
-    pub fn new(boundary: TimestampNanos, before: Rule, after: Rule) -> Self {
-        Self {
-            boundary,
-            before: Box::new(before),
-            after: Box::new(after),
-        }
-    }
-
-    pub fn active_rule(&self, evidence: &Evidence) -> &Rule {
-        if evidence.observed_at().into_u64() < self.boundary.into_u64() {
-            self.before.as_ref()
-        } else {
-            self.after.as_ref()
-        }
-    }
-
-    pub const fn boundary(&self) -> TimestampNanos {
-        self.boundary
-    }
-}
-
-impl AgreementRule {
-    pub fn new(divergence: ObjectDigest, resolution: ObjectDigest, resolver: Identity) -> Self {
-        Self {
-            divergence,
-            resolution,
-            resolver,
-        }
-    }
-
-    pub fn matches(&self, fact: &AgreementFact) -> bool {
+    fn matches(&self, fact: &signal_criome::AgreementFact) -> bool {
         self.divergence == fact.divergence
             && self.resolution == fact.resolution
             && self.resolver == fact.resolver
     }
+}
 
-    pub fn divergence(&self) -> &ObjectDigest {
-        &self.divergence
-    }
+trait CanonicalBytes {
+    fn encode_into(&self, bytes: &mut Vec<u8>);
+}
 
-    pub fn resolution(&self) -> &ObjectDigest {
-        &self.resolution
-    }
-
-    pub fn resolver(&self) -> &Identity {
-        &self.resolver
+impl CanonicalBytes for Identity {
+    fn encode_into(&self, bytes: &mut Vec<u8>) {
+        let (tag, name) = match self {
+            Identity::Persona(name) => (0u8, name.as_str()),
+            Identity::Agent(name) => (1u8, name.as_str()),
+            Identity::Host(name) => (2u8, name.as_str()),
+            Identity::Developer(name) => (3u8, name.as_str()),
+            Identity::Cluster(name) => (4u8, name.as_str()),
+        };
+        bytes.push(tag);
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
     }
 }
 
-impl Evidence {
-    pub fn new(observed_at: TimestampNanos) -> Self {
-        Self {
-            observed_at,
-            signatures: Vec::new(),
-            agreements: Vec::new(),
-        }
-    }
-
-    pub fn with_signature(mut self, identity: Identity) -> Self {
-        if !self.signatures.contains(&identity) {
-            self.signatures.push(identity);
-        }
-        self
-    }
-
-    pub fn with_agreement(mut self, fact: AgreementFact) -> Self {
-        if !self.agreements.contains(&fact) {
-            self.agreements.push(fact);
-        }
-        self
-    }
-
-    pub const fn observed_at(&self) -> TimestampNanos {
-        self.observed_at
-    }
-
-    pub fn has_signature_from(&self, identity: &Identity) -> bool {
-        self.signatures.contains(identity)
-    }
-
-    pub fn has_agreement_for(&self, agreement: &AgreementRule) -> bool {
-        self.agreements.iter().any(|fact| agreement.matches(fact))
-    }
-
-    pub fn signatures(&self) -> &[Identity] {
-        self.signatures.as_slice()
-    }
-
-    pub fn agreements(&self) -> &[AgreementFact] {
-        self.agreements.as_slice()
-    }
-}
-
-impl AgreementFact {
-    pub fn new(divergence: ObjectDigest, resolution: ObjectDigest, resolver: Identity) -> Self {
-        Self {
-            divergence,
-            resolution,
-            resolver,
-        }
+impl CanonicalBytes for ObjectDigest {
+    fn encode_into(&self, bytes: &mut Vec<u8>) {
+        let text = self.as_str();
+        bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(text.as_bytes());
     }
 }

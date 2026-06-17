@@ -1,67 +1,17 @@
-;; Criome internal language POC.
+;; Criome policy-language placement note.
 ;;
-;; Public key identity is the atom. A contract is a constrained policy
-;; expression over signatures, time, delegation, and reconciliation evidence.
-;; This is concept schema: it documents the intended schema nouns while the
-;; Rust POC in src/language.rs proves the evaluator shape.
+;; The public policy interface is not a daemon-local language schema. It lives
+;; in signal-criome's triad contract schema and is generated from there:
+;; Contract, Rule, PolicyMember, Threshold, Evidence, SignatureEnvelope,
+;; AuthorizationEvaluation, EvaluationDecision, and the AdmitContract /
+;; LookupContract / EvaluateAuthorization request roots.
+;;
+;; Criome consumes those signal-criome nouns in src/language.rs and supplies the
+;; handwritten Nexus body: admission into the content-addressed store, BLS
+;; verification, quorum evaluation, time-window checks, and reconciliation
+;; verdict verification. This file remains only as a local pointer so the daemon
+;; repo does not grow a second, drifting copy of the public contract surface.
 
 []
 []
-{
-  KeyAtom { public_key BlsPublicKey }
-  IdentityHandle { identity Identity }
-  Moment { value TimestampNanos }
-
-  Contract {
-    controller IdentityHandle
-    rule Rule
-  }
-
-  Rule [
-    (SignedBy IdentityHandle)
-    (All (Vector Rule))
-    (Any (Vector Rule))
-    (Threshold Threshold)
-    (ActiveAfter TimedRule)
-    (ActiveUntil TimedRule)
-    (TimeSwitch TimeSwitch)
-    (Agreement AgreementRule)
-    EscalateToPsyche
-  ]
-
-  Threshold {
-    required_signatures RequiredSignatureThreshold
-    authorities (Vector IdentityHandle)
-  }
-
-  TimedRule {
-    boundary Moment
-    rule Rule
-  }
-
-  TimeSwitch {
-    boundary Moment
-    before Rule
-    after Rule
-  }
-
-  AgreementRule {
-    divergence ObjectDigest
-    resolution ObjectDigest
-    resolver IdentityHandle
-  }
-
-  Evidence {
-    observed_at Moment
-    signatures (Vector IdentityHandle)
-    agreements (Vector AgreementFact)
-  }
-
-  AgreementFact {
-    divergence ObjectDigest
-    resolution ObjectDigest
-    resolver IdentityHandle
-  }
-
-  Decision [Authorized Rejected EscalateToPsyche]
-}
+{}
