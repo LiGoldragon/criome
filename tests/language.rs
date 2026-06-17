@@ -113,6 +113,42 @@ fn agreement_rule_accepts_only_matching_resolver_fact() {
 }
 
 #[test]
+fn explicit_policy_can_escalate_to_psyche() {
+    let contract = Contract::new(Rule::escalate_to_psyche());
+
+    assert_eq!(
+        contract.evaluate(&Evidence::new(moment(10))),
+        Decision::EscalateToPsyche
+    );
+}
+
+#[test]
+fn escalation_composes_through_all_after_required_rules_authorize() {
+    let contract = Contract::new(Rule::all(vec![
+        Rule::signed_by(developer("operator")),
+        Rule::escalate_to_psyche(),
+    ]));
+    let missing_signature = Evidence::new(moment(10));
+    let signed = Evidence::new(moment(10)).with_signature(developer("operator"));
+
+    assert_eq!(contract.evaluate(&missing_signature), Decision::Rejected);
+    assert_eq!(contract.evaluate(&signed), Decision::EscalateToPsyche);
+}
+
+#[test]
+fn any_prefers_authorization_before_escalation() {
+    let contract = Contract::new(Rule::any(vec![
+        Rule::escalate_to_psyche(),
+        Rule::signed_by(developer("operator")),
+    ]));
+    let unsigned = Evidence::new(moment(10));
+    let signed = Evidence::new(moment(10)).with_signature(developer("operator"));
+
+    assert_eq!(contract.evaluate(&unsigned), Decision::EscalateToPsyche);
+    assert_eq!(contract.evaluate(&signed), Decision::Authorized);
+}
+
+#[test]
 fn schema_sketch_names_every_poc_construct() {
     let schema = include_str!("../schema/criome.language.schema");
 
@@ -127,6 +163,7 @@ fn schema_sketch_names_every_poc_construct() {
         "Evidence",
         "AgreementFact",
         "Decision",
+        "EscalateToPsyche",
     ] {
         assert!(
             schema.contains(construct),

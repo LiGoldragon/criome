@@ -110,6 +110,11 @@ authorization decisions, and privilege elevations.*
     signing"*; criome routes an approval prompt to the meta authority over
     `meta-signal-criome`; the authority answers yes/no; criome then signs
     or denies.
+- **The internal policy-language POC also has an explicit
+  `EscalateToPsyche` outcome.** This is a contract-level decision result,
+  not a daemon-side prompt mechanism: the evaluator returns that the policy
+  requires psyche judgment, while the judgment and any later signed verdict
+  happen outside the finite evaluator.
 - **There are many criome daemons.** One per Unix user; new trust
   boundaries spawn new daemons. Complex policies that demand peer
   signatures find peers by predictable socket names (§"Peer discovery

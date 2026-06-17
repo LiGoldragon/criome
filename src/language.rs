@@ -22,6 +22,7 @@ pub enum Rule {
     ActiveUntil(TimedRule),
     TimeSwitch(TimeSwitch),
     Agreement(AgreementRule),
+    EscalateToPsyche,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,7 @@ pub struct AgreementFact {
 pub enum Decision {
     Authorized,
     Rejected,
+    EscalateToPsyche,
 }
 
 impl Contract {
@@ -76,11 +78,7 @@ impl Contract {
     }
 
     pub fn evaluate(&self, evidence: &Evidence) -> Decision {
-        if self.rule.satisfied_by(evidence) {
-            Decision::Authorized
-        } else {
-            Decision::Rejected
-        }
+        self.rule.decide(evidence)
     }
 
     pub fn rule(&self) -> &Rule {
@@ -121,24 +119,87 @@ impl Rule {
         Self::Agreement(agreement)
     }
 
+    pub const fn escalate_to_psyche() -> Self {
+        Self::EscalateToPsyche
+    }
+
     pub fn satisfied_by(&self, evidence: &Evidence) -> bool {
+        self.decide(evidence).is_authorized()
+    }
+
+    pub fn decide(&self, evidence: &Evidence) -> Decision {
         match self {
-            Self::SignedBy(identity) => evidence.has_signature_from(identity),
-            Self::All(rules) => rules.iter().all(|rule| rule.satisfied_by(evidence)),
-            Self::Any(rules) => rules.iter().any(|rule| rule.satisfied_by(evidence)),
-            Self::Threshold(threshold) => threshold.satisfied_by(evidence),
+            Self::SignedBy(identity) => Decision::from_bool(evidence.has_signature_from(identity)),
+            Self::All(rules) => Decision::all(rules.iter().map(|rule| rule.decide(evidence))),
+            Self::Any(rules) => Decision::any(rules.iter().map(|rule| rule.decide(evidence))),
+            Self::Threshold(threshold) => Decision::from_bool(threshold.satisfied_by(evidence)),
             Self::ActiveAfter(timed_rule) => {
-                evidence.observed_at().into_u64() >= timed_rule.boundary().into_u64()
-                    && timed_rule.rule().satisfied_by(evidence)
+                if evidence.observed_at().into_u64() >= timed_rule.boundary().into_u64() {
+                    timed_rule.rule().decide(evidence)
+                } else {
+                    Decision::Rejected
+                }
             }
             Self::ActiveUntil(timed_rule) => {
-                evidence.observed_at().into_u64() < timed_rule.boundary().into_u64()
-                    && timed_rule.rule().satisfied_by(evidence)
+                if evidence.observed_at().into_u64() < timed_rule.boundary().into_u64() {
+                    timed_rule.rule().decide(evidence)
+                } else {
+                    Decision::Rejected
+                }
             }
-            Self::TimeSwitch(time_switch) => {
-                time_switch.active_rule(evidence).satisfied_by(evidence)
+            Self::TimeSwitch(time_switch) => time_switch.active_rule(evidence).decide(evidence),
+            Self::Agreement(agreement) => {
+                Decision::from_bool(evidence.has_agreement_for(agreement))
             }
-            Self::Agreement(agreement) => evidence.has_agreement_for(agreement),
+            Self::EscalateToPsyche => Decision::EscalateToPsyche,
+        }
+    }
+}
+
+impl Decision {
+    pub const fn from_bool(value: bool) -> Self {
+        if value {
+            Self::Authorized
+        } else {
+            Self::Rejected
+        }
+    }
+
+    pub const fn is_authorized(self) -> bool {
+        matches!(self, Self::Authorized)
+    }
+
+    pub fn all(decisions: impl IntoIterator<Item = Self>) -> Self {
+        let mut saw_escalation = false;
+        for decision in decisions {
+            match decision {
+                Self::Authorized => {}
+                Self::Rejected => return Self::Rejected,
+                Self::EscalateToPsyche => saw_escalation = true,
+            }
+        }
+
+        if saw_escalation {
+            Self::EscalateToPsyche
+        } else {
+            Self::Authorized
+        }
+    }
+
+    pub fn any(decisions: impl IntoIterator<Item = Self>) -> Self {
+        let mut saw_escalation = false;
+        for decision in decisions {
+            match decision {
+                Self::Authorized => return Self::Authorized,
+                Self::Rejected => {}
+                Self::EscalateToPsyche => saw_escalation = true,
+            }
+        }
+
+        if saw_escalation {
+            Self::EscalateToPsyche
+        } else {
+            Self::Rejected
         }
     }
 }

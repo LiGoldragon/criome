@@ -26,6 +26,7 @@
     (ActiveUntil TimedRule)
     (TimeSwitch TimeSwitch)
     (Agreement AgreementRule)
+    EscalateToPsyche
   ]
 
   Threshold {
@@ -62,5 +63,5 @@
     resolver IdentityHandle
   }
 
-  Decision [Authorized Rejected]
+  Decision [Authorized Rejected EscalateToPsyche]
 }
