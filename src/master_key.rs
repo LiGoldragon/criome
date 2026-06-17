@@ -260,6 +260,7 @@ impl PurposeTag for ContentPurpose {
             ContentPurpose::Authorization => 4,
             ContentPurpose::Archive => 5,
             ContentPurpose::PrivilegeElevation => 6,
+            ContentPurpose::SpiritLogObject => 7,
         }
     }
 }

@@ -93,6 +93,9 @@ Criome owns:
 - The `Identity` enum vocabulary (`Persona`, `Agent`, `Host`,
   `Developer`, `Cluster`) — closed.
 - The attestation envelope format and signing/verification API.
+- The `SpiritLogObject` signing purpose used by the Spirit VCS mirror
+  path; Criome signs and verifies the object attestation, while Router
+  transports it and mirror fetches the object state.
 - The identity registry storage shape (in `criome.sema`).
 - The signing/verification API contract surface.
 - The `criome.pub` public-material publication conventions.

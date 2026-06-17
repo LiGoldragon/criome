@@ -12,10 +12,10 @@ Maintenance: `primary/skills/repo-intent.md`.*
 Today's `criome` is a **minimal Spartan BLS-signature authentication
 and attestation substrate** for the Persona ecosystem: a single
 Kameo-based daemon holding an identity registry, sign/verify
-primitives, delegation grants, a replay guard, and a typed audit log
-in `criome.sema` via `sema-engine` over the `sema` kernel. It is paired with
-the `signal-criome` contract and the target `meta-signal-criome` meta
-contract.
+primitives, Spirit log-object attestations, delegation grants, a replay
+guard, and a typed audit log in `criome.sema` via `sema-engine` over the
+`sema` kernel. It is paired with the `signal-criome` contract and the
+target `meta-signal-criome` meta contract.
 
 This repo is "today, not eventually." The **eventual** `Criome` is the
 universal computing paradigm expressed in Sema — replacing Git, the

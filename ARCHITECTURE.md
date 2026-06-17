@@ -4,7 +4,7 @@
 authentication and attestation substrate** for the Persona
 ecosystem. Identity registry, sign/verify primitives, and
 typed attestations over channel grants, archive fingerprints,
-authorization decisions, and privilege elevations.*
+authorization decisions, Spirit log objects, and privilege elevations.*
 
 > **Scope: today, not eventually.** This document describes
 > today's narrow `criome` daemon. The **eventual** `Criome`
@@ -46,7 +46,8 @@ authorization decisions, and privilege elevations.*
   register/lookup** typed identities (Persona, Agent,
   Host, Developer, Cluster), **emit attestations** signed
   by criome's root key only when a witness requires (e.g.,
-  ChannelGrantAttestation from `mind`).
+  ChannelGrantAttestation from `mind`, or Spirit log-object
+  attestation from `spirit`).
 - **Routed authorization is the Lojix integration path.**
   `lojix-daemon` submits the exact canonical `signal-lojix`
   request digest to its local `criome-daemon`. Criome routes

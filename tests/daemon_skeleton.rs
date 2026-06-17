@@ -65,15 +65,19 @@ fn registration(name: &str) -> IdentityRegistration {
 }
 
 fn sign_request(name: &str) -> SignRequest {
+    sign_request_for_purpose(name, ContentPurpose::SignedObject)
+}
+
+fn sign_request_for_purpose(name: &str, purpose: ContentPurpose) -> SignRequest {
     SignRequest {
         content: ContentReference {
             digest: ObjectDigest::from_bytes(b"fixture"),
-            purpose: ContentPurpose::SignedObject,
+            purpose,
             schema_version: PrincipalName::new(("fixture-schema").to_string()),
         },
         signer: Identity::developer((name).to_string()),
         audit_context: AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            purpose,
             audience: PrincipalName::new(("fixture-audience").to_string()),
             policy_version: PrincipalName::new(("fixture-policy").to_string()),
             nonce: ReplayNonce::new(("fixture-nonce").to_string()),
@@ -434,6 +438,53 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
         tampered_result.decision,
         signal_criome::VerificationDecision::InvalidSignature
     );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn spirit_log_object_attestation_signs_and_verifies() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("spirit-log-object")))
+        .await
+        .expect("start criome root");
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        registration("spirit"),
+    )))
+    .await
+    .expect("register spirit identity");
+
+    let sign_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::Sign(
+            sign_request_for_purpose("spirit", ContentPurpose::SpiritLogObject),
+        )))
+        .await
+        .expect("submit spirit log object sign request")
+        .into_reply();
+    let CriomeReply::SignReceipt(receipt) = sign_reply else {
+        panic!("expected SignReceipt, got {sign_reply:?}");
+    };
+    let attestation = receipt.attestation;
+    assert_eq!(attestation.content.purpose, ContentPurpose::SpiritLogObject);
+    assert_eq!(
+        attestation.audit_context.purpose,
+        ContentPurpose::SpiritLogObject
+    );
+    let content = attestation.content.clone();
+
+    let verify_reply = root
+        .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
+            signal_criome::VerifyRequest {
+                attestation,
+                content,
+            },
+        )))
+        .await
+        .expect("submit spirit log object verify request")
+        .into_reply();
+    let CriomeReply::VerificationResult(result) = verify_reply else {
+        panic!("expected VerificationResult, got {verify_reply:?}");
+    };
+    assert_eq!(result.decision, signal_criome::VerificationDecision::Valid);
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }

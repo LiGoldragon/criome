@@ -645,7 +645,7 @@ dependencies = [
 [[package]]
 name = "schema-rust-next"
 version = "0.5.3"
-source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#e2e20b6607afb473204b2adbec0df81697fd38fc"
+source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#733b76d39cbd3009bedd22899f2695b7d68b283a"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -736,7 +736,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#20ed63db945150db9714a2ff81db5d42df5522b8"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=criome-spirit-log-object-auth#374d833c6288bda995eae2f29bdd2b49ff9eaa9c"
 dependencies = [
  "blake3",
  "blst",
