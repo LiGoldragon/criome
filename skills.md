@@ -69,6 +69,11 @@ today's narrow scope; the eventual encompassment is named in
 - **Pending authorization is pushed.** Signature gathering may take
   time; clients observe `AuthorizationObservationStream` updates.
   Do not add polling loops for authorization completion.
+- **Authorized object updates are reference-only.** When policy
+  evaluation authorizes an operation, criome publishes
+  `AuthorizedObjectUpdate` with digest/kind, contract digest,
+  decision, and attested moment. Do not attach inline payload bytes to
+  this pulse; object bytes are fetched through router/mirror by digest.
 - **Meta-class operations use `meta-signal-criome`.** The `criome`
   CLI and `tui-criome` are meta clients of the user's own
   `criome-daemon`; they do not use ordinary `signal-criome` for

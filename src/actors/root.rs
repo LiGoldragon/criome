@@ -1,10 +1,11 @@
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    AuthorizationAttestationRequest, AuthorizationEvaluated, BlsPublicKey,
+    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizedObjectKind,
+    AuthorizedObjectReference, AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey,
     ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing, CriomeReply,
-    CriomeRequest, Identity, IdentityRegistration, IdentitySubscriptionToken, KeyPurpose,
-    RejectionReason,
+    CriomeRequest, EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken,
+    KeyPurpose, RejectionReason,
 };
 
 use crate::actors::{
@@ -205,6 +206,22 @@ impl CriomeRoot {
                         match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry)
                         {
                             Ok(decision) => {
+                                if decision == EvaluationDecision::Authorized {
+                                    self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                                        object: AuthorizedObjectReference {
+                                            digest: evaluation
+                                                .evidence
+                                                .operation
+                                                .object_digest()
+                                                .clone(),
+                                            kind: AuthorizedObjectKind::Operation,
+                                        },
+                                        contract: evaluation.contract.clone(),
+                                        decision: decision.clone(),
+                                        stamp: evaluation.evidence.stamp.clone(),
+                                    })
+                                    .await;
+                                }
                                 CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
                                     contract: evaluation.contract,
                                     decision,
@@ -217,6 +234,15 @@ impl CriomeRoot {
                     }
                     _ => rejection(RejectionReason::MalformedRequest),
                 }
+            }
+            CriomeRequest::ObserveAuthorizedObjects(request) => {
+                let token = AuthorizedObjectUpdateToken::new(request.into_payload());
+                self.ask_subscription(subscription::OpenAuthorizedObjectSubscription { token })
+                    .await
+            }
+            CriomeRequest::AuthorizedObjectUpdateRetraction(token) => {
+                self.ask_subscription(subscription::CloseAuthorizedObjectSubscription { token })
+                    .await
             }
             CriomeRequest::SubscribeIdentityUpdates(request) => {
                 let token = IdentitySubscriptionToken::new(request.into_payload());
@@ -326,6 +352,13 @@ impl CriomeRoot {
             },
             Err(_) => rejection(RejectionReason::MalformedRequest),
         }
+    }
+
+    async fn publish_authorized_object_update(&self, update: AuthorizedObjectUpdate) {
+        let _ = self
+            .subscription
+            .ask(subscription::PublishAuthorizedObjectUpdate::new(update))
+            .await;
     }
 
     async fn contract_store(&self) -> Option<ContractStore> {

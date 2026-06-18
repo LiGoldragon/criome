@@ -19,7 +19,8 @@ use signal_criome::{
     AttestedMoment, AttestedMomentProposition, AuditContext, AuthorizationDenialReason,
     AuthorizationDenialSource, AuthorizationEvaluation, AuthorizationExpired, AuthorizationGrant,
     AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
-    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, BlsPublicKey, BlsSignature,
+    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, AuthorizedObjectKind,
+    AuthorizedObjectObservation, AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature,
     ContentPurpose, ContentReference, Contract, ContractName, ContractOperationHead, CriomeFrame,
     CriomeFrameBody, CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity,
     IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
@@ -574,6 +575,40 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         panic!("expected AuthorizationEvaluated, got {evaluated:?}");
     };
     assert_eq!(evaluated.decision, EvaluationDecision::Authorized);
+    let observer = Identity::agent("component-observer".to_string());
+    let snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation::new(observer.clone()),
+        )))
+        .await
+        .expect("observe authorized objects")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(snapshot) = snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {snapshot:?}");
+    };
+    let updates = snapshot.into_payload();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(
+        updates[0].object.digest,
+        evidence.operation.object_digest().clone()
+    );
+    assert_eq!(updates[0].object.kind, AuthorizedObjectKind::Operation);
+    assert_eq!(updates[0].contract, digest);
+    assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
+    assert_eq!(updates[0].stamp, evidence.stamp);
+    let retracted = root
+        .ask(SubmitRequest::new(
+            CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken::new(
+                observer,
+            )),
+        ))
+        .await
+        .expect("close authorized object observation")
+        .into_reply();
+    assert!(matches!(
+        retracted,
+        CriomeReply::AuthorizedObjectUpdateRetracted(_)
+    ));
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 

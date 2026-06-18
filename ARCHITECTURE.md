@@ -102,6 +102,13 @@ authorization decisions, and privilege elevations.*
   the signature in time. The daemon verifies the moment and binds the
   signed bytes to that stamp. `TimeSignature` stays bare because it is
   the recursive root that creates an `AttestedMoment`.
+- **Authorized object updates are reference-only pulses.** A successful
+  policy evaluation publishes `AuthorizedObjectUpdate`: the authorized
+  object digest/kind, the policy contract digest, the decision, and the
+  attested moment. Criome does not carry object payloads; components use
+  the digest with the routing/object-distribution layer. The current
+  daemon records and exposes the stream through `SubscriptionRegistry`;
+  socket-level `SubscriptionEvent` fanout is a transport follow-up.
 - **Two policy classes are first-class:**
   - *Simple policy* — single-key self-owned. Criome holds the private
     key; only its own master-key signature is needed. The default and
