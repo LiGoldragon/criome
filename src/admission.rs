@@ -109,13 +109,13 @@ mod tests {
 
     fn member_registration(identity: Identity, public_key: BlsPublicKey) -> IdentityRegistration {
         let fingerprint = PublicKeyFingerprint::new(format!("fingerprint-{}", public_key.as_str()));
-        IdentityRegistration {
+        IdentityRegistration::new(
             identity,
             public_key,
             fingerprint,
-            purpose: KeyPurpose::AgentRequest,
-            admission: None,
-        }
+            KeyPurpose::AgentRequest,
+            None,
+        )
     }
 
     fn cluster_root_admission(

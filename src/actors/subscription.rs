@@ -111,7 +111,7 @@ impl SubscriptionRegistry {
         if !self.authorized_object_subscriptions.contains(&token) {
             self.authorized_object_subscriptions.push(token);
         }
-        CriomeReply::AuthorizedObjectUpdateSnapshot(AuthorizedObjectUpdateSnapshot::new(
+        CriomeReply::AuthorizedObjectUpdateSnapshot(AuthorizedObjectUpdateSnapshot::from_updates(
             self.authorized_object_updates
                 .iter()
                 .filter(|update| interest.matches_update(update))
@@ -184,7 +184,9 @@ impl SubscriptionRegistry {
         }
 
         self.authorized_object_updates.extend(triggered.clone());
-        CriomeReply::DueContractChecksEvaluated(DueContractChecksEvaluated::new(triggered))
+        CriomeReply::DueContractChecksEvaluated(DueContractChecksEvaluated::from_triggered(
+            triggered,
+        ))
     }
 }
 

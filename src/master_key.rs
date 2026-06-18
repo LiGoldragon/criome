@@ -171,7 +171,7 @@ impl<'a> AttestationPreimage<'a> {
             audit_context: &attestation.audit_context,
             scheme: &attestation.envelope.scheme,
             issued_at: attestation.issued_at.into_u64(),
-            expires_at: attestation.expires_at.map(TimestampNanos::into_u64),
+            expires_at: attestation.expires_at().map(TimestampNanos::into_u64),
         }
     }
 

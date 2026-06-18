@@ -400,14 +400,14 @@ impl CriomeTables {
             return Err(crate::Error::AuthorizationReplayAttempted);
         }
         let slot = self.next_authorization_slot()?;
-        let state = AuthorizationStateRecord {
-            request_slot: slot.request_slot(),
+        let state = AuthorizationStateRecord::new(
+            slot.request_slot(),
             request_digest,
             status,
             missing_authorities,
             grant,
             denial,
-        };
+        );
         let stored = StoredAuthorizationState::new(state);
         let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
         let replay_key = AuthorizationReplayKey::new(&replay_identity).into_string();

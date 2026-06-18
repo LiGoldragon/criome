@@ -102,7 +102,7 @@ impl AuthorizationCoordinator {
     }
 
     async fn authorize_signal_call(&self, authorization: SignalCallAuthorization) -> CriomeReply {
-        if let Some(expired_at) = authorization.expires_at
+        if let Some(expired_at) = authorization.expires_at()
             && self.clock.is_expired(expired_at)
         {
             return self.expire_authorization(authorization, expired_at).await;
@@ -117,12 +117,12 @@ impl AuthorizationCoordinator {
         };
         let state = stored.into_state();
         let request_slot = state.request_slot.clone();
-        CriomeReply::AuthorizationPending(AuthorizationPending {
-            request_slot: request_slot.clone(),
-            request_digest: authorization.request_digest,
-            missing_authorities: state.missing_authorities,
-            observation_token: AuthorizationObservationToken::new(request_slot),
-        })
+        CriomeReply::AuthorizationPending(AuthorizationPending::new(
+            request_slot.clone(),
+            authorization.request_digest,
+            state.missing_authorities().to_vec(),
+            AuthorizationObservationToken::new(request_slot),
+        ))
     }
 
     async fn expire_authorization(
@@ -152,7 +152,9 @@ impl AuthorizationCoordinator {
             .map(|stored| stored.into_state())
             .into_iter()
             .collect();
-        CriomeReply::AuthorizationObservationSnapshot(AuthorizationObservationSnapshot::new(state))
+        CriomeReply::AuthorizationObservationSnapshot(
+            AuthorizationObservationSnapshot::from_states(state),
+        )
     }
 
     async fn verify_authorization(&self, verification: AuthorizationVerification) -> CriomeReply {
@@ -202,9 +204,17 @@ impl AuthorizationCoordinator {
             .lookup_authorization_state(rejection.request_slot.clone())
             .await
         {
-            let mut state = stored.into_state();
-            state.status = AuthorizationStatus::Denied;
-            state.denial = Some(denial.clone());
+            let state = stored.into_state();
+            let missing_authorities = state.missing_authorities().to_vec();
+            let grant = state.grant().cloned();
+            let state = AuthorizationStateRecord::new(
+                state.request_slot,
+                state.request_digest,
+                AuthorizationStatus::Denied,
+                missing_authorities,
+                grant,
+                Some(denial.clone()),
+            );
             let _ = self.store_authorization_state(state).await;
         }
         CriomeReply::AuthorizationDenied(AuthorizationDenied {

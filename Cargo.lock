@@ -620,7 +620,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "schema-cc"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#abae95f999c09491c706f39b6fdef48a3530b7f1"
+source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#1de72dde6241b15299cd37fe096b3ef0e2f618b6"
 dependencies = [
  "nota-next",
  "prettyplease",
@@ -633,7 +633,7 @@ dependencies = [
 [[package]]
 name = "schema-next"
 version = "0.2.0"
-source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#abae95f999c09491c706f39b6fdef48a3530b7f1"
+source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#1de72dde6241b15299cd37fe096b3ef0e2f618b6"
 dependencies = [
  "blake3",
  "nota-next",
@@ -736,7 +736,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#e33ea04a142dbd77a4bbfe381d2592f3ea06a78d"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#521a8ed3cd2d6f52cc5a29d43cfa5243928689d5"
 dependencies = [
  "blake3",
  "blst",

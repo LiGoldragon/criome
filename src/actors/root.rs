@@ -397,7 +397,7 @@ impl CriomeRoot {
             return None;
         };
         let mut key_registry = KeyRegistry::new();
-        for identity in snapshot.into_payload() {
+        for identity in snapshot.into_identities() {
             match self
                 .registry
                 .ask(registry::ResolveIdentity::new(identity.identity))
@@ -465,13 +465,13 @@ impl Actor for CriomeRoot {
                 // directly to the store, bypassing the cluster-root gate (which
                 // governs externally-submitted keys via RegisterIdentity).
                 store
-                    .ask(store::StoreIdentity::new(IdentityRegistration {
-                        identity: criome_identity.clone(),
-                        public_key: master_public_key,
-                        fingerprint: master_key.fingerprint(),
-                        purpose: KeyPurpose::CriomeRoot,
-                        admission: None,
-                    }))
+                    .ask(store::StoreIdentity::new(IdentityRegistration::new(
+                        criome_identity.clone(),
+                        master_public_key,
+                        master_key.fingerprint(),
+                        KeyPurpose::CriomeRoot,
+                        None,
+                    )))
                     .await
                     .map_err(|error| {
                         Error::Startup(format!("register criome identity: {error}"))

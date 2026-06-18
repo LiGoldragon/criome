@@ -68,7 +68,7 @@ impl AttestationVerifier {
                 return self.result(
                     VerificationDecision::InvalidSignature,
                     Some(signer),
-                    request.attestation.expires_at,
+                    request.attestation.expires_at(),
                 );
             }
         }
@@ -84,27 +84,27 @@ impl AttestationVerifier {
             return self.result(
                 VerificationDecision::InvalidSignature,
                 Some(signer),
-                request.attestation.expires_at,
+                request.attestation.expires_at(),
             );
         }
 
         // A validly-signed but past-expiry attestation is Expired, not Valid.
         if request
             .attestation
-            .expires_at
+            .expires_at()
             .is_some_and(|deadline| self.clock.is_past(&deadline))
         {
             return self.result(
                 VerificationDecision::Expired,
                 Some(signer),
-                request.attestation.expires_at,
+                request.attestation.expires_at(),
             );
         }
 
         self.result(
             VerificationDecision::Valid,
             Some(signer),
-            request.attestation.expires_at,
+            request.attestation.expires_at(),
         )
     }
 
@@ -114,11 +114,7 @@ impl AttestationVerifier {
         identity: Option<signal_criome::Identity>,
         expires_at: Option<signal_criome::TimestampNanos>,
     ) -> CriomeReply {
-        CriomeReply::VerificationResult(VerificationResult {
-            decision,
-            identity,
-            expires_at,
-        })
+        CriomeReply::VerificationResult(VerificationResult::new(decision, identity, expires_at))
     }
 }
 

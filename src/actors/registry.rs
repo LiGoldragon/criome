@@ -99,7 +99,7 @@ impl IdentityRegistry {
         // over the registration statement. Dev/virgin daemons (no configured
         // root) skip the gate.
         if let Some(root) = &self.cluster_root {
-            match &registration.admission {
+            match registration.admission() {
                 Some(admission) if root.admits(&registration, admission) => {}
                 _ => return rejection(RejectionReason::UnauthorizedRegistration),
             }
@@ -141,7 +141,7 @@ impl IdentityRegistry {
 
     async fn snapshot(&self) -> CriomeReply {
         match self.snapshot_records().await {
-            Ok(records) => CriomeReply::IdentitySnapshot(IdentitySnapshot::new(
+            Ok(records) => CriomeReply::IdentitySnapshot(IdentitySnapshot::from_identities(
                 records
                     .into_iter()
                     .map(|identity| IdentityReceipt {

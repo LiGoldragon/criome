@@ -375,7 +375,7 @@ impl ThresholdEvaluation for Threshold {
         registry: &KeyRegistry,
     ) -> Result<EvaluationDecision, EvaluationError> {
         let mut satisfied_members: Vec<PolicyMember> = Vec::new();
-        for member in &self.members {
+        for member in self.members() {
             if member.is_satisfied(evidence, store, registry)?
                 && !satisfied_members.contains(member)
             {
@@ -395,7 +395,7 @@ impl ThresholdEvaluation for Threshold {
     }
 
     fn referenced_digests(&self) -> Vec<ContractDigest> {
-        self.members
+        self.members()
             .iter()
             .filter_map(|member| match member {
                 PolicyMember::ObjectMember(digest) => Some(digest.clone()),
@@ -405,19 +405,19 @@ impl ThresholdEvaluation for Threshold {
     }
 
     fn validate_shape(&self) -> Result<(), AdmissionError> {
-        if self.members.is_empty() {
+        if self.members().is_empty() {
             return Err(AdmissionError::rejected(
                 ContractAdmissionRejectionReason::EmptyThreshold,
             ));
         }
         let required = self.required_signatures.into_u16();
-        if required == 0 || required > self.members.len() as u16 {
+        if required == 0 || required > self.members().len() as u16 {
             return Err(AdmissionError::rejected(
                 ContractAdmissionRejectionReason::ThresholdUnsatisfiable,
             ));
         }
         let mut unique_members: Vec<&PolicyMember> = Vec::new();
-        for member in &self.members {
+        for member in self.members() {
             if unique_members.contains(&member) {
                 return Err(AdmissionError::rejected(
                     ContractAdmissionRejectionReason::DuplicatePolicyMember,
@@ -526,7 +526,7 @@ impl EvidenceVerification for Evidence {
         else {
             return false;
         };
-        self.signatures.iter().any(|envelope| {
+        self.signatures().iter().any(|envelope| {
             envelope.stamp == self.stamp
                 && matches!(envelope.envelope.scheme, SignatureScheme::Bls12_381MinPk)
                 && &envelope.envelope.public_key == admitted_key
@@ -542,7 +542,7 @@ impl EvidenceVerification for Evidence {
         let Some(resolver_key) = registry.public_key(&agreement.resolver) else {
             return false;
         };
-        self.agreements.iter().any(|fact| {
+        self.agreements().iter().any(|fact| {
             let Ok(statement) = agreement.reconciliation_bytes(&fact.signature.stamp) else {
                 return false;
             };
@@ -570,7 +570,7 @@ impl AttestedMomentVerification for AttestedMoment {
     }
 
     fn rejection_reason(&self, registry: &KeyRegistry) -> Option<EvaluationRejectionReason> {
-        let authorities = &self.proposition.authorities;
+        let authorities = self.proposition.authorities();
         let required = self.proposition.required_signatures.into_u16();
         if self.proposition.window.opens_at.into_u64()
             >= self.proposition.window.closes_at.into_u64()
@@ -585,7 +585,7 @@ impl AttestedMomentVerification for AttestedMoment {
             return Some(EvaluationRejectionReason::TimeNotProven);
         };
         let mut satisfied: Vec<Identity> = Vec::new();
-        for signature in &self.signatures {
+        for signature in self.signatures() {
             if !authorities.contains(&signature.signer) || satisfied.contains(&signature.signer) {
                 continue;
             }

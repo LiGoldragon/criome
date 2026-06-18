@@ -61,41 +61,41 @@ fn daemon_configuration(name: &str) -> CriomeDaemonConfiguration {
 }
 
 fn registration(name: &str) -> IdentityRegistration {
-    IdentityRegistration {
-        identity: Identity::developer((name).to_string()),
-        public_key: BlsPublicKey::new((format!("{name}-public-key")).to_string()),
-        fingerprint: PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
-        purpose: KeyPurpose::ReleaseAuthorization,
-        admission: None,
-    }
+    IdentityRegistration::new(
+        Identity::developer((name).to_string()),
+        BlsPublicKey::new((format!("{name}-public-key")).to_string()),
+        PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
+        KeyPurpose::ReleaseAuthorization,
+        None,
+    )
 }
 
 fn registration_with_key(name: &str, public_key: BlsPublicKey) -> IdentityRegistration {
-    IdentityRegistration {
-        identity: Identity::developer((name).to_string()),
+    IdentityRegistration::new(
+        Identity::developer((name).to_string()),
         public_key,
-        fingerprint: PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
-        purpose: KeyPurpose::ReleaseAuthorization,
-        admission: None,
-    }
+        PublicKeyFingerprint::new((format!("{name}-fingerprint")).to_string()),
+        KeyPurpose::ReleaseAuthorization,
+        None,
+    )
 }
 
 fn sign_request(name: &str) -> SignRequest {
-    SignRequest {
-        content: ContentReference {
+    SignRequest::new(
+        ContentReference {
             digest: ObjectDigest::from_bytes(b"fixture"),
             purpose: ContentPurpose::SignedObject,
             schema_version: PrincipalName::new(("fixture-schema").to_string()),
         },
-        signer: Identity::developer((name).to_string()),
-        audit_context: AuditContext {
+        Identity::developer((name).to_string()),
+        AuditContext {
             purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new(("fixture-audience").to_string()),
             policy_version: PrincipalName::new(("fixture-policy").to_string()),
             nonce: ReplayNonce::new(("fixture-nonce").to_string()),
         },
-        expires_at: None,
-    }
+        None,
+    )
 }
 
 fn authorization_scope() -> AuthorizationScope {
@@ -115,15 +115,15 @@ fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
 }
 
 fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallAuthorization {
-    SignalCallAuthorization {
-        request_digest: ObjectDigest::from_bytes(seed),
-        contract: contract_name(),
-        operation: contract_operation_head(),
-        scope: authorization_scope(),
-        requester: Identity::developer(("operator").to_string()),
-        nonce: ReplayNonce::new((nonce).to_string()),
-        expires_at: None,
-    }
+    SignalCallAuthorization::new(
+        ObjectDigest::from_bytes(seed),
+        contract_name(),
+        contract_operation_head(),
+        authorization_scope(),
+        Identity::developer(("operator").to_string()),
+        ReplayNonce::new((nonce).to_string()),
+        None,
+    )
 }
 
 fn signature_envelope() -> SignatureEnvelope {
@@ -136,20 +136,20 @@ fn signature_envelope() -> SignatureEnvelope {
 
 fn stamped_signature_envelope() -> StampedSignatureEnvelope {
     StampedSignatureEnvelope {
-        stamp: AttestedMoment {
-            proposition: AttestedMomentProposition {
-                window: TimeWindow {
+        stamp: AttestedMoment::new(
+            AttestedMomentProposition::new(
+                TimeWindow {
                     opens_at: TimestampNanos::new(1),
                     closes_at: TimestampNanos::new(2),
                 },
-                required_signatures: RequiredSignatureThreshold::new(1),
-                authorities: vec![Identity::cluster(("timekeeper").to_string())],
-            },
-            signatures: vec![TimeSignature {
+                RequiredSignatureThreshold::new(1),
+                vec![Identity::cluster(("timekeeper").to_string())],
+            ),
+            vec![TimeSignature {
                 signer: Identity::cluster(("timekeeper").to_string()),
                 envelope: signature_envelope(),
             }],
-        },
+        ),
         envelope: signature_envelope(),
     }
 }
@@ -159,23 +159,23 @@ fn operation_digest(seed: &[u8]) -> OperationDigest {
 }
 
 fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
-    AuthorizationGrant {
-        request_slot: AuthorizationRequestSlot::new(("authorization-grant-slot").to_string()),
-        authorized_object_digest: ObjectDigest::from_bytes(seed),
-        authorized_contract: contract_name(),
-        authorized_operation: contract_operation_head(),
-        authorization_scope: authorization_scope(),
-        policy_satisfaction: AuthorizationPolicySatisfaction {
-            policy_class: AuthorizationPolicyClass::SimpleSelfSigned,
-            required_signature_threshold: RequiredSignatureThreshold::new(1),
-            satisfied_signers: vec![Identity::cluster(("criome-master").to_string())],
-        },
-        signature_result: SignatureAuthorizationResult::SingleSignature,
-        signatures: vec![stamped_signature_envelope()],
-        issued_by: Identity::cluster(("criome-master").to_string()),
-        issued_at: TimestampNanos::new(1),
-        expires_at: None,
-    }
+    AuthorizationGrant::new(
+        AuthorizationRequestSlot::new(("authorization-grant-slot").to_string()),
+        ObjectDigest::from_bytes(seed),
+        contract_name(),
+        contract_operation_head(),
+        authorization_scope(),
+        AuthorizationPolicySatisfaction::new(
+            AuthorizationPolicyClass::SimpleSelfSigned,
+            RequiredSignatureThreshold::new(1),
+            vec![Identity::cluster(("criome-master").to_string())],
+        ),
+        SignatureAuthorizationResult::SingleSignature,
+        vec![stamped_signature_envelope()],
+        Identity::cluster(("criome-master").to_string()),
+        TimestampNanos::new(1),
+        None,
+    )
 }
 
 fn pending_authorization(reply: CriomeReply) -> signal_criome::AuthorizationPending {
@@ -249,7 +249,7 @@ async fn authorize_signal_call_records_observable_signing_state() {
         .into_reply();
     let pending = pending_authorization(reply);
     assert_eq!(pending.request_digest, request_digest);
-    assert!(pending.missing_authorities.is_empty());
+    assert!(pending.missing_authorities().is_empty());
 
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
@@ -261,10 +261,10 @@ async fn authorize_signal_call_records_observable_signing_state() {
     let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
-    assert_eq!(snapshot.payload().len(), 1);
-    assert_eq!(snapshot.payload()[0].request_slot, pending.request_slot);
-    assert_eq!(snapshot.payload()[0].request_digest, request_digest);
-    assert_eq!(snapshot.payload()[0].status, AuthorizationStatus::Signing);
+    assert_eq!(snapshot.states().len(), 1);
+    assert_eq!(snapshot.states()[0].request_slot, pending.request_slot);
+    assert_eq!(snapshot.states()[0].request_digest, request_digest);
+    assert_eq!(snapshot.states()[0].status, AuthorizationStatus::Signing);
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -288,10 +288,15 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     );
     let second = pending_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
-            SignalCallAuthorization {
-                nonce: ReplayNonce::new(("second-nonce").to_string()),
-                ..authorization
-            },
+            SignalCallAuthorization::new(
+                authorization.request_digest.clone(),
+                authorization.contract.clone(),
+                authorization.operation.clone(),
+                authorization.scope.clone(),
+                authorization.requester.clone(),
+                ReplayNonce::new(("second-nonce").to_string()),
+                authorization.expires_at(),
+            ),
         )))
         .await
         .expect("submit second authorization")
@@ -312,10 +317,15 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
     let root = CriomeRoot::start(RootArguments::new(store_location("authorization-expired")))
         .await
         .expect("start criome root");
-    let authorization = SignalCallAuthorization {
-        expires_at: Some(TimestampNanos::new(0)),
-        ..signal_call_authorization_with_nonce(b"expired authorization request", "expired-nonce")
-    };
+    let authorization = SignalCallAuthorization::new(
+        ObjectDigest::from_bytes(b"expired authorization request"),
+        contract_name(),
+        contract_operation_head(),
+        authorization_scope(),
+        Identity::developer(("operator").to_string()),
+        ReplayNonce::new(("expired-nonce").to_string()),
+        Some(TimestampNanos::new(0)),
+    );
     let request_digest = authorization.request_digest.clone();
 
     let expired = expired_authorization(
@@ -338,10 +348,10 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
     let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
-    assert_eq!(snapshot.payload().len(), 1);
-    assert_eq!(snapshot.payload()[0].request_slot, expired.request_slot);
-    assert_eq!(snapshot.payload()[0].request_digest, request_digest);
-    assert_eq!(snapshot.payload()[0].status, AuthorizationStatus::Expired);
+    assert_eq!(snapshot.states().len(), 1);
+    assert_eq!(snapshot.states()[0].request_slot, expired.request_slot);
+    assert_eq!(snapshot.states()[0].request_digest, request_digest);
+    assert_eq!(snapshot.states()[0].status, AuthorizationStatus::Expired);
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -496,13 +506,13 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     .expect("register policy signer")
     .into_reply();
     root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
-        IdentityRegistration {
-            identity: timekeeper_identity.clone(),
-            public_key: timekeeper.public_key(),
-            fingerprint: PublicKeyFingerprint::new(("timekeeper-fingerprint").to_string()),
-            purpose: KeyPurpose::ReleaseAuthorization,
-            admission: None,
-        },
+        IdentityRegistration::new(
+            timekeeper_identity.clone(),
+            timekeeper.public_key(),
+            PublicKeyFingerprint::new(("timekeeper-fingerprint").to_string()),
+            KeyPurpose::ReleaseAuthorization,
+            None,
+        ),
     )))
     .await
     .expect("register timekeeper")
@@ -520,16 +530,17 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     };
     let digest = admitted.into_payload();
     let operation = operation_digest(b"policy-evaluation");
-    let proposition = AttestedMomentProposition {
-        window: TimeWindow {
+    let proposition = AttestedMomentProposition::new(
+        TimeWindow {
             opens_at: TimestampNanos::new(10),
             closes_at: TimestampNanos::new(20),
         },
-        required_signatures: RequiredSignatureThreshold::new(1),
-        authorities: vec![timekeeper_identity.clone()],
-    };
-    let stamp = AttestedMoment {
-        signatures: vec![TimeSignature {
+        RequiredSignatureThreshold::new(1),
+        vec![timekeeper_identity.clone()],
+    );
+    let stamp = AttestedMoment::new(
+        proposition.clone(),
+        vec![TimeSignature {
             signer: timekeeper_identity.clone(),
             envelope: SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
@@ -542,16 +553,15 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
                 ),
             },
         }],
-        proposition,
-    };
+    );
     let statement = OperationStatement::new(&identity, &operation, &stamp)
         .to_signing_bytes()
         .expect("operation statement");
-    let evidence = Evidence {
-        component: ComponentKind::Spirit,
+    let evidence = Evidence::new(
+        ComponentKind::Spirit,
         operation,
-        stamp: stamp.clone(),
-        signatures: vec![StampedSignatureEnvelope {
+        stamp.clone(),
+        vec![StampedSignatureEnvelope {
             stamp,
             envelope: SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
@@ -559,8 +569,8 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
                 signature: signer.sign(&statement),
             },
         }],
-        agreements: Vec::new(),
-    };
+        Vec::new(),
+    );
 
     let evaluation = AuthorizationEvaluation {
         contract: digest.clone(),
@@ -591,7 +601,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let CriomeReply::AuthorizedObjectUpdateSnapshot(snapshot) = snapshot else {
         panic!("expected AuthorizedObjectUpdateSnapshot, got {snapshot:?}");
     };
-    let updates = snapshot.into_payload();
+    let updates = snapshot.into_updates();
     assert_eq!(updates.len(), 1);
     assert_eq!(
         updates[0].object.digest,
@@ -617,7 +627,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         panic!("expected AuthorizedObjectUpdateSnapshot, got {mirror_snapshot:?}");
     };
     assert!(
-        mirror_snapshot.into_payload().is_empty(),
+        mirror_snapshot.into_updates().is_empty(),
         "component filters keep unrelated pulses out of snapshots"
     );
 
@@ -649,16 +659,17 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         ))
     );
 
-    let later_proposition = AttestedMomentProposition {
-        window: TimeWindow {
+    let later_proposition = AttestedMomentProposition::new(
+        TimeWindow {
             opens_at: TimestampNanos::new(30),
             closes_at: TimestampNanos::new(40),
         },
-        required_signatures: RequiredSignatureThreshold::new(1),
-        authorities: vec![timekeeper_identity.clone()],
-    };
-    let later_stamp = AttestedMoment {
-        signatures: vec![TimeSignature {
+        RequiredSignatureThreshold::new(1),
+        vec![timekeeper_identity.clone()],
+    );
+    let later_stamp = AttestedMoment::new(
+        later_proposition.clone(),
+        vec![TimeSignature {
             signer: timekeeper_identity,
             envelope: SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
@@ -671,8 +682,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
                 ),
             },
         }],
-        proposition: later_proposition,
-    };
+    );
     let due = root
         .ask(SubmitRequest::new(CriomeRequest::RunDueContractChecks(
             later_stamp.clone(),
@@ -683,7 +693,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let CriomeReply::DueContractChecksEvaluated(due) = due else {
         panic!("expected DueContractChecksEvaluated, got {due:?}");
     };
-    let triggered = due.into_payload();
+    let triggered = due.into_triggered();
     assert_eq!(triggered.len(), 1);
     assert_eq!(triggered[0].object, time_result);
     assert_eq!(triggered[0].contract, digest);
@@ -702,7 +712,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let CriomeReply::AuthorizedObjectUpdateSnapshot(time_snapshot) = time_snapshot else {
         panic!("expected AuthorizedObjectUpdateSnapshot, got {time_snapshot:?}");
     };
-    assert_eq!(time_snapshot.into_payload().len(), 1);
+    assert_eq!(time_snapshot.into_updates().len(), 1);
 
     let retracted = root
         .ask(SubmitRequest::new(
@@ -789,10 +799,21 @@ async fn expired_attestation_verifies_as_expired() {
     .expect("register operator identity");
 
     // Sign with an expiry one nanosecond after the epoch — long past.
-    let request = SignRequest {
-        expires_at: Some(TimestampNanos::new(1)),
-        ..sign_request("operator")
-    };
+    let request = SignRequest::new(
+        ContentReference {
+            digest: ObjectDigest::from_bytes(b"fixture"),
+            purpose: ContentPurpose::SignedObject,
+            schema_version: PrincipalName::new(("fixture-schema").to_string()),
+        },
+        Identity::developer(("operator").to_string()),
+        AuditContext {
+            purpose: ContentPurpose::SignedObject,
+            audience: PrincipalName::new(("fixture-audience").to_string()),
+            policy_version: PrincipalName::new(("fixture-policy").to_string()),
+            nonce: ReplayNonce::new(("fixture-nonce").to_string()),
+        },
+        Some(TimestampNanos::new(1)),
+    );
     let sign_reply = root
         .ask(SubmitRequest::new(CriomeRequest::Sign(request)))
         .await
@@ -926,13 +947,19 @@ async fn cluster_root_gates_registration() {
 
     // A registration carrying a valid cluster-root admission over its statement
     // is accepted.
-    let mut admitted = registration("operator");
-    let statement = RegistrationStatement::from_registration(&admitted).to_signing_bytes();
-    admitted.admission = Some(SignatureEnvelope {
-        scheme: SignatureScheme::Bls12_381MinPk,
-        public_key: cluster_root.public_key(),
-        signature: cluster_root.sign(&statement),
-    });
+    let registration = registration("operator");
+    let statement = RegistrationStatement::from_registration(&registration).to_signing_bytes();
+    let admitted = IdentityRegistration::new(
+        registration.identity,
+        registration.public_key,
+        registration.fingerprint,
+        registration.purpose,
+        Some(SignatureEnvelope {
+            scheme: SignatureScheme::Bls12_381MinPk,
+            public_key: cluster_root.public_key(),
+            signature: cluster_root.sign(&statement),
+        }),
+    );
     let accepted = root
         .ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
             admitted,

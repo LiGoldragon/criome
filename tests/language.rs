@@ -122,18 +122,18 @@ impl AttestedClock {
         required_signatures: u64,
         authorities: Vec<Identity>,
     ) -> AttestedMoment {
-        let proposition = AttestedMomentProposition {
-            window: TimeWindow {
+        let proposition = AttestedMomentProposition::new(
+            TimeWindow {
                 opens_at: moment(opens_at),
                 closes_at: moment(closes_at),
             },
-            required_signatures: RequiredSignatureThreshold::new(required_signatures),
+            RequiredSignatureThreshold::new(required_signatures),
             authorities,
-        };
-        AttestedMoment {
-            signatures: vec![self.authority.sign_moment(&proposition)],
-            proposition,
-        }
+        );
+        AttestedMoment::new(
+            proposition.clone(),
+            vec![self.authority.sign_moment(&proposition)],
+        )
     }
 }
 
@@ -219,13 +219,13 @@ fn contract_digest(value: &[u8]) -> ContractDigest {
 }
 
 fn evidence(operation: OperationDigest, stamp: AttestedMoment) -> Evidence {
-    Evidence {
-        component: ComponentKind::Spirit,
+    Evidence::new(
+        ComponentKind::Spirit,
         operation,
         stamp,
-        signatures: Vec::new(),
-        agreements: Vec::new(),
-    }
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 fn signed_evidence(
@@ -233,23 +233,20 @@ fn signed_evidence(
     stamp: AttestedMoment,
     signers: &[&Signer],
 ) -> Evidence {
-    Evidence {
-        component: ComponentKind::Spirit,
-        operation: operation.clone(),
-        stamp: stamp.clone(),
-        signatures: signers
+    Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        stamp.clone(),
+        signers
             .iter()
             .map(|signer| signer.sign_operation(&operation, &stamp))
             .collect(),
-        agreements: Vec::new(),
-    }
+        Vec::new(),
+    )
 }
 
 fn threshold(required: u64, members: Vec<PolicyMember>) -> Threshold {
-    Threshold {
-        required_signatures: RequiredSignatureThreshold::new(required),
-        members,
-    }
+    Threshold::new(RequiredSignatureThreshold::new(required), members)
 }
 
 fn key_member(signer: &Signer) -> PolicyMember {
@@ -289,16 +286,16 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
     let digest = admitted(&mut store, contract);
 
     let one_signature = signed_evidence(operation.clone(), stamp.clone(), &[&operator]);
-    let duplicate_signature = Evidence {
-        component: ComponentKind::Spirit,
-        operation: operation.clone(),
-        stamp: stamp.clone(),
-        signatures: vec![
+    let duplicate_signature = Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        stamp.clone(),
+        vec![
             operator.sign_operation(&operation, &stamp),
             operator.sign_operation(&operation, &stamp),
         ],
-        agreements: Vec::new(),
-    };
+        Vec::new(),
+    );
     let two_signatures = signed_evidence(operation, stamp, &[&operator, &designer]);
 
     assert!(matches!(
@@ -360,13 +357,13 @@ fn operation_signature_is_bound_to_the_attested_moment() {
         &mut store,
         Contract::new(Rule::SignedBy(operator.identity())),
     );
-    let evidence = Evidence {
-        component: ComponentKind::Spirit,
-        operation: operation.clone(),
-        stamp: replayed_moment,
-        signatures: vec![operator.sign_operation(&operation, &signed_moment)],
-        agreements: Vec::new(),
-    };
+    let evidence = Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        replayed_moment,
+        vec![operator.sign_operation(&operation, &signed_moment)],
+        Vec::new(),
+    );
 
     assert!(matches!(
         store.evaluate(&contract, &evidence, &registry),
@@ -555,12 +552,27 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
         signature: other.sign_reconciliation(&agreement, &agreement_stamp),
     };
 
-    let mut wrong = evidence(operation.clone(), clock.moment(10, 20));
-    wrong.agreements.push(wrong_fact);
-    let mut impostor = evidence(operation.clone(), clock.moment(10, 20));
-    impostor.agreements.push(impostor_fact);
-    let mut matching = evidence(operation, clock.moment(10, 20));
-    matching.agreements.push(matching_fact);
+    let wrong = Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        clock.moment(10, 20),
+        Vec::new(),
+        vec![wrong_fact],
+    );
+    let impostor = Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        clock.moment(10, 20),
+        Vec::new(),
+        vec![impostor_fact],
+    );
+    let matching = Evidence::new(
+        ComponentKind::Spirit,
+        operation,
+        clock.moment(10, 20),
+        Vec::new(),
+        vec![matching_fact],
+    );
 
     assert_eq!(
         store.evaluate(&contract_digest, &wrong, &registry),
@@ -617,10 +629,20 @@ fn agreement_signature_is_bound_to_its_attested_moment() {
         signature: signed,
     };
 
-    let mut replayed = evidence(operation.clone(), clock.moment(10, 20));
-    replayed.agreements.push(replayed_fact);
-    let mut matching = evidence(operation, clock.moment(10, 20));
-    matching.agreements.push(matching_fact);
+    let replayed = Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        clock.moment(10, 20),
+        Vec::new(),
+        vec![replayed_fact],
+    );
+    let matching = Evidence::new(
+        ComponentKind::Spirit,
+        operation,
+        clock.moment(10, 20),
+        Vec::new(),
+        vec![matching_fact],
+    );
 
     assert_eq!(
         store.evaluate(&contract_digest, &replayed, &registry),

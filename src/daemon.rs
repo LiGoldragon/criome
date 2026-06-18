@@ -39,7 +39,7 @@ impl CriomeDaemon {
         Self {
             socket: PathBuf::from(configuration.socket_path.as_str()),
             store: StoreLocation::new(configuration.store_path.as_str()),
-            cluster_root: configuration.cluster_root,
+            cluster_root: configuration.cluster_root().cloned(),
         }
     }
 

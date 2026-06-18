@@ -101,18 +101,19 @@ impl AttestationSigner {
             return rejection(RejectionReason::UnknownIdentity);
         }
         let issued_at = self.clock.timestamp();
-        let mut attestation = Attestation {
-            content: request.content,
-            signer: self.criome_identity.clone(),
-            envelope: SignatureEnvelope {
+        let expires_at = request.expires_at();
+        let mut attestation = Attestation::new(
+            request.content,
+            self.criome_identity.clone(),
+            SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
                 public_key: self.master_key.public_key(),
                 signature: BlsSignature::new(String::new()),
             },
             issued_at,
-            expires_at: request.expires_at,
-            audit_context: request.audit_context,
-        };
+            expires_at,
+            request.audit_context,
+        );
         // Sign the full attestation statement (everything but the signature),
         // then fill in the real signature.
         let signing_bytes = AttestationPreimage::from_attestation(&attestation).to_signing_bytes();
@@ -127,36 +128,31 @@ impl AttestationSigner {
     }
 
     async fn attest_archive(&self, request: ArchiveAttestationRequest) -> CriomeReply {
-        let sign = SignRequest {
-            content: ContentReference {
+        let sign = SignRequest::new(
+            ContentReference {
                 digest: request.release.artifact,
                 purpose: ContentPurpose::Archive,
                 schema_version: request.release.component,
             },
-            signer: request.release.authorized_by,
-            audit_context: request.audit_context,
-            expires_at: None,
-        };
+            request.release.authorized_by,
+            request.audit_context,
+            None,
+        );
         self.sign_as_receipt(sign).await
     }
 
     async fn attest_channel_grant(&self, request: ChannelGrantAttestationRequest) -> CriomeReply {
-        let sign = SignRequest {
-            content: request.grant_content,
-            signer: request.source,
-            audit_context: request.audit_context,
-            expires_at: None,
-        };
+        let sign = SignRequest::new(
+            request.grant_content,
+            request.source,
+            request.audit_context,
+            None,
+        );
         self.sign_as_receipt(sign).await
     }
 
     async fn attest_authorization(&self, request: AttestAuthorization) -> CriomeReply {
-        let sign = SignRequest {
-            content: request.content,
-            signer: request.source,
-            audit_context: request.audit_context,
-            expires_at: None,
-        };
+        let sign = SignRequest::new(request.content, request.source, request.audit_context, None);
         self.sign_as_receipt(sign).await
     }
 
