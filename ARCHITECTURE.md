@@ -14,8 +14,7 @@ authorization decisions, and privilege elevations.*
 > and auth/security across the stack. Today's Spartan criome
 > is one step toward that eventual shape, bringing forward
 > the auth/identity slice. See
-> `~/primary/ESSENCE.md` §"Today and eventually — different
-> things, different names".
+> `INTENT.md` §"Why this repo exists".
 
 > **Archaeology note.** Prior to this rewrite, today's
 > `criome` was the sema-ecosystem records validator
@@ -613,8 +612,8 @@ Current implementation status:
 
 ## See also
 
-- `~/primary/ESSENCE.md` §"Today and eventually" — the
-  scope discipline this ARCH applies.
+- `INTENT.md` §"Why this repo exists" — the scope discipline
+  this ARCH applies.
 - `~/primary/skills/kameo.md` — the actor runtime.
 - `~/primary/skills/actor-systems.md` — the actor
   discipline.

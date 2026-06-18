@@ -81,6 +81,6 @@ verify/sign/register logic.
   escalation kinds, peer discovery, and actor topology.
 - `skills.md` — repo-specific required reading.
 - `../signal-criome/ARCHITECTURE.md` — the wire contract.
-- `primary/ESSENCE.md` §"Today and eventually" — the scope discipline
+- This file's "Why this repo exists" section — the scope discipline
   separating today's criome from the eventual Criome.
 - `primary/skills/component-triad.md` — repo triad structure.

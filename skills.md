@@ -20,15 +20,15 @@ Read `ARCHITECTURE.md` for this repo's shape.
 ## Today vs eventually
 
 Today's criome is **narrow and Spartan**. The eventual `Criome`
-(per `~/primary/ESSENCE.md` §"Today and eventually") subsumes
+(per this repo's `INTENT.md`) subsumes
 everything — validation, identity, programming, version control,
 network identity, web request handling — expressed in Sema.
 Today's Spartan criome is one step toward that eventual shape,
 bringing forward the auth/identity slice and nothing else.
 
 When working here, hold the distinction: today's code serves
-today's narrow scope; the eventual encompassment is described in
-ESSENCE, not in this repo.
+today's narrow scope; the eventual encompassment is named in
+`INTENT.md` so this repo does not silently grow into the horizon.
 
 
 ## Hard invariants for an agent working here
@@ -117,8 +117,7 @@ Criome does **not** own:
 ## See also
 
 - `ARCHITECTURE.md` — this repo's shape.
-- `~/primary/ESSENCE.md` §"Today and eventually" — the scope
-  discipline.
+- `INTENT.md` §"Why this repo exists" — the scope discipline.
 - `~/primary/skills/kameo.md` — actor runtime.
 - `~/primary/skills/actor-systems.md` — actor discipline.
 - `~/primary/skills/contract-repo.md` — `signal-criome`'s
