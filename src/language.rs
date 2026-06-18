@@ -572,10 +572,24 @@ impl AttestedMomentVerification for AttestedMoment {
     fn rejection_reason(&self, registry: &KeyRegistry) -> Option<EvaluationRejectionReason> {
         let authorities = self.proposition.authorities();
         let required = self.proposition.required_signatures.into_u16();
+        // Fork-safe majority guard, scoped to the time-attestation / head-quorum
+        // path only. A decentralized quorum clock (Spirit ay3y) and the
+        // quorum-backed objects it stamps (Spirit m0p2) must not be
+        // single-node-attestable: fork-safety requires that the declared
+        // required_signatures be a strict majority of the authorities, so two
+        // disjoint quorums can never attest conflicting moments or heads. A lone
+        // authority is the degenerate single-machine self-quorum (Spirit 9s52):
+        // n=1, required=1 passes because 1 > 0. The general caller-declared
+        // m-of-n policy evaluator Threshold::validate_shape (this file, the
+        // `required > self.members().len()` check) deliberately stays plain
+        // m-of-n and must NOT receive this majority guard — doing so would
+        // regress legitimate required=1 (any one delegate) and required=n
+        // (unanimity) policies.
         if self.proposition.window.opens_at.into_u64()
             >= self.proposition.window.closes_at.into_u64()
             || required == 0
             || required > authorities.len() as u16
+            || required <= (authorities.len() as u16) / 2
             || DuplicateIdentityScan::new(authorities).has_duplicates()
         {
             return Some(EvaluationRejectionReason::TimeNotProven);

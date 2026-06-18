@@ -135,6 +135,33 @@ impl AttestedClock {
             vec![self.authority.sign_moment(&proposition)],
         )
     }
+
+    fn moment_signed_by(
+        &self,
+        opens_at: u64,
+        closes_at: u64,
+        required_signatures: u64,
+        authority_signers: &[&Signer],
+    ) -> AttestedMoment {
+        let proposition = AttestedMomentProposition::new(
+            TimeWindow {
+                opens_at: moment(opens_at),
+                closes_at: moment(closes_at),
+            },
+            RequiredSignatureThreshold::new(required_signatures),
+            authority_signers
+                .iter()
+                .map(|signer| signer.identity())
+                .collect(),
+        );
+        AttestedMoment::new(
+            proposition.clone(),
+            authority_signers
+                .iter()
+                .map(|signer| signer.sign_moment(&proposition))
+                .collect(),
+        )
+    }
 }
 
 struct ReconciliationStatement<'a> {
@@ -798,4 +825,60 @@ fn schema_names_public_policy_surface() {
             "schema note should name {construct}"
         );
     }
+}
+
+#[test]
+fn time_attestation_demands_strict_majority_of_authorities() {
+    // Fork-safe majority guard on the time-attestation path: a moment whose
+    // declared required_signatures is not a strict majority of its authorities
+    // is TimeNotProven, even when every authority has validly signed, so two
+    // disjoint quorums can never attest conflicting moments (Spirit ay3y/m0p2).
+    // Every moment below is signed by all of its authorities, so signature
+    // shortfall is never the cause — only the majority shape is under test.
+    let operator = Signer::developer("operator");
+    let authorities: Vec<Signer> = (0..4)
+        .map(|index| Signer::cluster(&format!("timekeeper-{index}")))
+        .collect();
+    let clock = AttestedClock::new();
+    let mut registry = registry_with_clock(&clock, &[&operator]);
+    for authority in &authorities {
+        registry.admit(authority.identity(), authority.public_key());
+    }
+    let mut store = ContractStore::new();
+    let contract = admitted(
+        &mut store,
+        Contract::new(Rule::SignedBy(operator.identity())),
+    );
+
+    let outcome = |required: u64, count: usize| {
+        let authority_signers: Vec<&Signer> = authorities[..count].iter().collect();
+        let stamp = clock.moment_signed_by(10, 20, required, &authority_signers);
+        let operation = operation(b"majority-guard probe");
+        let evidence = signed_evidence(operation, stamp, &[&operator]);
+        store.evaluate(&contract, &evidence, &registry)
+    };
+
+    // n=1, required=1 -> ACCEPTED: degenerate single-machine self-quorum
+    // (Spirit 9s52); 1 is a strict majority of 1 because 1 > 0.
+    assert_eq!(outcome(1, 1), Ok(EvaluationDecision::Authorized));
+    // n=2, required=1 -> REJECTED: 1 is not > 1, single-node-attestable.
+    assert!(matches!(
+        outcome(1, 2),
+        Ok(EvaluationDecision::Rejected(
+            EvaluationRejectionReason::TimeNotProven
+        ))
+    ));
+    // n=2, required=2 -> ACCEPTED: unanimity is a majority of 2.
+    assert_eq!(outcome(2, 2), Ok(EvaluationDecision::Authorized));
+    // n=3, required=2 -> ACCEPTED: 2 > 1.
+    assert_eq!(outcome(2, 3), Ok(EvaluationDecision::Authorized));
+    // n=4, required=2 -> REJECTED: 2 is not > 2, two disjoint pairs could fork.
+    assert!(matches!(
+        outcome(2, 4),
+        Ok(EvaluationDecision::Rejected(
+            EvaluationRejectionReason::TimeNotProven
+        ))
+    ));
+    // n=4, required=3 -> ACCEPTED: 3 > 2.
+    assert_eq!(outcome(3, 4), Ok(EvaluationDecision::Authorized));
 }
