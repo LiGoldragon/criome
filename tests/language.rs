@@ -7,8 +7,8 @@ use signal_criome::{
     AgreementFact, AgreementRule, AttestedMoment, AttestedMomentProposition, BlsPublicKey,
     Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
     EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
-    RequiredSignatureThreshold, Rule, SignatureEnvelope, SignatureScheme, Threshold, TimeSignature,
-    TimeSwitch, TimeWindow, TimedRule, TimestampNanos,
+    RequiredSignatureThreshold, Rule, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
+    Threshold, TimeSignature, TimeSwitch, TimeWindow, TimedRule, TimestampNanos,
 };
 
 struct Signer {
@@ -44,16 +44,19 @@ impl Signer {
         &self,
         operation: &OperationDigest,
         stamp: &AttestedMoment,
-    ) -> SignatureEnvelope {
-        SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: self.public_key(),
-            signature: self.key.sign(
-                OperationStatement::new(&self.identity, operation, stamp)
-                    .to_signing_bytes()
-                    .expect("operation statement")
-                    .as_slice(),
-            ),
+    ) -> StampedSignatureEnvelope {
+        StampedSignatureEnvelope {
+            stamp: stamp.clone(),
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: self.public_key(),
+                signature: self.key.sign(
+                    OperationStatement::new(&self.identity, operation, stamp)
+                        .to_signing_bytes()
+                        .expect("operation statement")
+                        .as_slice(),
+                ),
+            },
         }
     }
 
@@ -73,15 +76,22 @@ impl Signer {
         }
     }
 
-    fn sign_reconciliation(&self, agreement: &AgreementRule) -> SignatureEnvelope {
-        SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: self.public_key(),
-            signature: self.key.sign(
-                ReconciliationStatement::new(agreement)
-                    .to_signing_bytes()
-                    .as_slice(),
-            ),
+    fn sign_reconciliation(
+        &self,
+        agreement: &AgreementRule,
+        stamp: &AttestedMoment,
+    ) -> StampedSignatureEnvelope {
+        StampedSignatureEnvelope {
+            stamp: stamp.clone(),
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: self.public_key(),
+                signature: self.key.sign(
+                    ReconciliationStatement::new(agreement, stamp)
+                        .to_signing_bytes()
+                        .as_slice(),
+                ),
+            },
         }
     }
 }
@@ -129,11 +139,12 @@ impl AttestedClock {
 
 struct ReconciliationStatement<'a> {
     agreement: &'a AgreementRule,
+    stamp: &'a AttestedMoment,
 }
 
 impl<'a> ReconciliationStatement<'a> {
-    fn new(agreement: &'a AgreementRule) -> Self {
-        Self { agreement }
+    fn new(agreement: &'a AgreementRule, stamp: &'a AttestedMoment) -> Self {
+        Self { agreement, stamp }
     }
 
     fn to_signing_bytes(&self) -> Vec<u8> {
@@ -141,6 +152,13 @@ impl<'a> ReconciliationStatement<'a> {
         self.agreement.divergence.as_str().encode_into(&mut bytes);
         self.agreement.resolution.as_str().encode_into(&mut bytes);
         self.agreement.resolver.encode_into(&mut bytes);
+        self.stamp
+            .proposition
+            .digest()
+            .expect("stamp digest")
+            .object_digest()
+            .as_str()
+            .encode_into(&mut bytes);
         bytes
     }
 }
@@ -513,23 +531,24 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
     let contract = Contract::new(Rule::Agreement(agreement.clone()));
     let mut store = ContractStore::new();
     let contract_digest = admitted(&mut store, contract);
+    let agreement_stamp = clock.moment(10, 20);
     let matching_fact = AgreementFact {
         divergence: divergence.clone(),
         resolution: resolution.clone(),
         resolver: resolver.identity(),
-        envelope: resolver.sign_reconciliation(&agreement),
+        signature: resolver.sign_reconciliation(&agreement, &agreement_stamp),
     };
     let wrong_fact = AgreementFact {
         divergence,
         resolution: digest(b"other branch"),
         resolver: resolver.identity(),
-        envelope: resolver.sign_reconciliation(&agreement),
+        signature: resolver.sign_reconciliation(&agreement, &agreement_stamp),
     };
     let impostor_fact = AgreementFact {
         divergence: agreement.divergence.clone(),
         resolution,
         resolver: resolver.identity(),
-        envelope: other.sign_reconciliation(&agreement),
+        signature: other.sign_reconciliation(&agreement, &agreement_stamp),
     };
 
     let mut wrong = evidence(operation.clone(), clock.moment(10, 20));
@@ -547,6 +566,60 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
     );
     assert_eq!(
         store.evaluate(&contract_digest, &impostor, &registry),
+        Ok(EvaluationDecision::Rejected(
+            EvaluationRejectionReason::AgreementMissing
+        ))
+    );
+    assert_eq!(
+        store.evaluate(&contract_digest, &matching, &registry),
+        Ok(EvaluationDecision::Authorized)
+    );
+}
+
+#[test]
+fn agreement_signature_is_bound_to_its_attested_moment() {
+    let resolver = Signer::cluster("model-governance-panel");
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[&resolver]);
+    let operation = operation(b"stamp-bound agreement");
+    let divergence = digest(b"network fork");
+    let resolution = digest(b"chosen canonical branch");
+    let agreement = AgreementRule {
+        divergence: divergence.clone(),
+        resolution: resolution.clone(),
+        resolver: resolver.identity(),
+    };
+    let mut store = ContractStore::new();
+    let contract_digest = admitted(
+        &mut store,
+        Contract::new(Rule::Agreement(agreement.clone())),
+    );
+    let signed_stamp = clock.moment(10, 20);
+    let replayed_stamp = clock.moment(20, 30);
+    let signed = resolver.sign_reconciliation(&agreement, &signed_stamp);
+    let replayed_fact = AgreementFact {
+        divergence: divergence.clone(),
+        resolution: resolution.clone(),
+        resolver: resolver.identity(),
+        signature: StampedSignatureEnvelope {
+            stamp: replayed_stamp,
+            envelope: signed.envelope.clone(),
+        },
+    };
+    let matching_fact = AgreementFact {
+        divergence,
+        resolution,
+        resolver: resolver.identity(),
+        signature: signed,
+    };
+
+    let mut replayed = evidence(operation.clone(), clock.moment(10, 20));
+    replayed.agreements.push(replayed_fact);
+    let mut matching = evidence(operation, clock.moment(10, 20));
+    matching.agreements.push(matching_fact);
+
+    assert_eq!(
+        store.evaluate(&contract_digest, &replayed, &registry),
         Ok(EvaluationDecision::Rejected(
             EvaluationRejectionReason::AgreementMissing
         ))

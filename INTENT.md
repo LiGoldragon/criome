@@ -24,12 +24,20 @@ network identity, validation, and auth/security across the stack.
 Today's Spartan daemon is one realization step that brings forward the
 auth/identity slice; it does not carry the eventual scope.
 
-The internal policy-language POC lives on that realization path: it models
+The internal policy-language slice lives on that realization path: it models
 Criome contracts as a finite typed rule tree over signatures, quorum /
-timelock evidence, and reconciliation facts. A contract may also return an
+timelock evidence, and reconciliation facts, with contracts admitted into
+the component-local SEMA store by content digest. A contract may also return an
 explicit `EscalateToPsyche` decision. That is a typed outcome, not a hidden
 side effect: Criome says the policy requires psyche judgment; another layer
 performs that judgment and supplies any later signed verdict.
+
+Policy quorum signatures are stamped with crystallized time. The public
+contract carries `StampedSignatureEnvelope` for operation evidence,
+adjudicator agreement facts, routed signature submissions, and authorization
+grants. The daemon verifies the attached `AttestedMoment` and binds policy /
+agreement signature bytes to that stamp; the only bare signature envelopes in
+the time path are the `TimeSignature` values that create an `AttestedMoment`.
 
 ## Load-bearing constraints
 

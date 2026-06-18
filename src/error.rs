@@ -41,6 +41,8 @@ pub enum Error {
     UnexpectedSignalFrame { got: String },
     #[error("authorization replay attempted")]
     AuthorizationReplayAttempted,
+    #[error("contract admission rejected: {0:?}")]
+    ContractAdmissionRejected(signal_criome::ContractAdmissionRejectionReason),
     #[error("missing request record")]
     MissingRequestRecord,
     #[error("too many request records: expected exactly one")]

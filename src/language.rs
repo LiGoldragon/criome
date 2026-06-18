@@ -96,6 +96,15 @@ impl ContractStore {
         Self::default()
     }
 
+    pub fn from_contracts(contracts: impl IntoIterator<Item = (ContractDigest, Contract)>) -> Self {
+        Self {
+            entries: contracts
+                .into_iter()
+                .map(|(digest, contract)| ContractEntry { digest, contract })
+                .collect(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -518,9 +527,10 @@ impl EvidenceVerification for Evidence {
             return false;
         };
         self.signatures.iter().any(|envelope| {
-            matches!(envelope.scheme, SignatureScheme::Bls12_381MinPk)
-                && &envelope.public_key == admitted_key
-                && admitted_key.verify_bls(&envelope.signature, &statement)
+            envelope.stamp == self.stamp
+                && matches!(envelope.envelope.scheme, SignatureScheme::Bls12_381MinPk)
+                && &envelope.envelope.public_key == admitted_key
+                && admitted_key.verify_bls(&envelope.envelope.signature, &statement)
         })
     }
 
@@ -532,12 +542,18 @@ impl EvidenceVerification for Evidence {
         let Some(resolver_key) = registry.public_key(&agreement.resolver) else {
             return false;
         };
-        let statement = agreement.reconciliation_bytes();
         self.agreements.iter().any(|fact| {
+            let Ok(statement) = agreement.reconciliation_bytes(&fact.signature.stamp) else {
+                return false;
+            };
             agreement.matches(fact)
-                && matches!(fact.envelope.scheme, SignatureScheme::Bls12_381MinPk)
-                && &fact.envelope.public_key == resolver_key
-                && resolver_key.verify_bls(&fact.envelope.signature, &statement)
+                && fact.signature.stamp.rejection_reason(registry).is_none()
+                && matches!(
+                    fact.signature.envelope.scheme,
+                    SignatureScheme::Bls12_381MinPk
+                )
+                && &fact.signature.envelope.public_key == resolver_key
+                && resolver_key.verify_bls(&fact.signature.envelope.signature, &statement)
         })
     }
 }
@@ -665,18 +681,23 @@ impl EvaluationDecisionLogic for EvaluationDecision {
 }
 
 trait AgreementRuleVerification {
-    fn reconciliation_bytes(&self) -> Vec<u8>;
+    fn reconciliation_bytes(&self, stamp: &AttestedMoment) -> Result<Vec<u8>, StatementError>;
 
     fn matches(&self, fact: &signal_criome::AgreementFact) -> bool;
 }
 
 impl AgreementRuleVerification for signal_criome::AgreementRule {
-    fn reconciliation_bytes(&self) -> Vec<u8> {
+    fn reconciliation_bytes(&self, stamp: &AttestedMoment) -> Result<Vec<u8>, StatementError> {
         let mut bytes = b"CRIOME-RECONCILIATION-V1".to_vec();
         self.divergence.encode_into(&mut bytes);
         self.resolution.encode_into(&mut bytes);
         self.resolver.encode_into(&mut bytes);
-        bytes
+        stamp
+            .proposition
+            .digest()?
+            .object_digest()
+            .encode_into(&mut bytes);
+        Ok(bytes)
     }
 
     fn matches(&self, fact: &signal_criome::AgreementFact) -> bool {

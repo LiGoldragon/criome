@@ -2,15 +2,16 @@ use kameo::actor::{Actor, ActorRef};
 use kameo::message::{Context, Message};
 use signal_criome::{
     Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, Identity, IdentityRegistration,
-    IdentityRevocation, ObjectDigest, PrincipalStatus, SignatureSolicitationRoute,
-    SignatureSubmission,
+    AuthorizationStateRecord, AuthorizationStatus, Contract, ContractAdmissionRejectionReason,
+    ContractDigest, Identity, IdentityRegistration, IdentityRevocation, ObjectDigest,
+    PrincipalStatus, SignatureSolicitationRoute, SignatureSubmission,
 };
 
+use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
     AuthorizationReplayIdentity, CriomeTables, StoreLocation, StoredAttestation,
-    StoredAuthorizationState, StoredIdentity, StoredRevocation, StoredSignatureSolicitation,
-    StoredSignatureSubmission,
+    StoredAuthorizationState, StoredContract, StoredIdentity, StoredRevocation,
+    StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
 pub struct StoreKernel {
@@ -53,6 +54,16 @@ pub struct LookupAuthorizationState {
 }
 
 pub struct ReadAuthorizationSnapshot;
+
+pub struct StoreContract {
+    contract: Contract,
+}
+
+pub struct LookupContract {
+    digest: ContractDigest,
+}
+
+pub struct ReadContractSnapshot;
 
 pub struct StoreSignatureSolicitation {
     route: SignatureSolicitationRoute,
@@ -99,6 +110,13 @@ enum AuthorizationStateCreationOutcome {
     StoreUnavailable(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContractStorageOutcome {
+    Stored(Box<StoredContract>),
+    Rejected(ContractAdmissionRejectionReason),
+    StoreUnavailable(String),
+}
+
 #[derive(kameo::Reply)]
 pub struct LookupAuthorizationStateReply {
     state: Option<StoredAuthorizationState>,
@@ -107,6 +125,21 @@ pub struct LookupAuthorizationStateReply {
 #[derive(kameo::Reply)]
 pub struct AuthorizationSnapshotReply {
     states: Vec<StoredAuthorizationState>,
+}
+
+#[derive(kameo::Reply)]
+pub struct ContractStorageReply {
+    outcome: ContractStorageOutcome,
+}
+
+#[derive(kameo::Reply)]
+pub struct LookupContractReply {
+    contract: Option<StoredContract>,
+}
+
+#[derive(kameo::Reply)]
+pub struct ContractSnapshotReply {
+    contracts: Vec<StoredContract>,
 }
 
 #[derive(kameo::Reply)]
@@ -182,6 +215,18 @@ impl CreateAuthorizationState {
 impl LookupAuthorizationState {
     pub fn new(request_slot: AuthorizationRequestSlot) -> Self {
         Self { request_slot }
+    }
+}
+
+impl StoreContract {
+    pub fn new(contract: Contract) -> Self {
+        Self { contract }
+    }
+}
+
+impl LookupContract {
+    pub fn new(digest: ContractDigest) -> Self {
+        Self { digest }
     }
 }
 
@@ -261,6 +306,41 @@ impl LookupAuthorizationStateReply {
 impl AuthorizationSnapshotReply {
     pub fn into_states(self) -> Vec<StoredAuthorizationState> {
         self.states
+    }
+}
+
+impl ContractStorageReply {
+    fn from_result(result: crate::Result<StoredContract>) -> Self {
+        let outcome = match result {
+            Ok(contract) => ContractStorageOutcome::Stored(Box::new(contract)),
+            Err(crate::Error::ContractAdmissionRejected(reason)) => {
+                ContractStorageOutcome::Rejected(reason)
+            }
+            Err(error) => ContractStorageOutcome::StoreUnavailable(error.to_string()),
+        };
+        Self { outcome }
+    }
+
+    pub fn into_result(self) -> crate::Result<StoredContract> {
+        match self.outcome {
+            ContractStorageOutcome::Stored(contract) => Ok(*contract),
+            ContractStorageOutcome::Rejected(reason) => {
+                Err(crate::Error::ContractAdmissionRejected(reason))
+            }
+            ContractStorageOutcome::StoreUnavailable(error) => Err(crate::Error::ActorCall(error)),
+        }
+    }
+}
+
+impl LookupContractReply {
+    pub fn into_contract(self) -> Option<StoredContract> {
+        self.contract
+    }
+}
+
+impl ContractSnapshotReply {
+    pub fn into_contracts(self) -> Vec<StoredContract> {
+        self.contracts
     }
 }
 
@@ -357,6 +437,48 @@ impl StoreKernel {
                 .cmp(right.state().request_slot.as_str())
         });
         Ok(states)
+    }
+
+    fn store_contract(&self, contract: Contract) -> crate::Result<StoredContract> {
+        let mut snapshot = self.contract_snapshot_store()?;
+        let digest = snapshot
+            .admit(contract.clone())
+            .map_err(Self::admission_error)?;
+        let stored = StoredContract::new(digest, contract);
+        self.tables.put_contract(&stored)?;
+        Ok(stored)
+    }
+
+    fn lookup_contract(&self, digest: &ContractDigest) -> crate::Result<Option<StoredContract>> {
+        self.tables.contract(digest)
+    }
+
+    fn contract_snapshot(&self) -> crate::Result<Vec<StoredContract>> {
+        let mut contracts = self.tables.contracts()?;
+        contracts.sort_by(|left, right| {
+            left.digest()
+                .object_digest()
+                .as_ref()
+                .cmp(right.digest().object_digest().as_ref())
+        });
+        Ok(contracts)
+    }
+
+    fn contract_snapshot_store(&self) -> crate::Result<ContractStore> {
+        Ok(ContractStore::from_contracts(
+            self.contract_snapshot()?
+                .into_iter()
+                .map(StoredContract::into_parts),
+        ))
+    }
+
+    fn admission_error(error: AdmissionError) -> crate::Error {
+        match error.reason() {
+            Some(reason) => crate::Error::ContractAdmissionRejected(reason.clone()),
+            None => crate::Error::UnexpectedSignalFrame {
+                got: error.to_string(),
+            },
+        }
     }
 
     fn store_signature_solicitation(
@@ -503,6 +625,44 @@ impl Message<ReadAuthorizationSnapshot> for StoreKernel {
     ) -> Self::Reply {
         self.authorization_snapshot()
             .map(|states| AuthorizationSnapshotReply { states })
+    }
+}
+
+impl Message<StoreContract> for StoreKernel {
+    type Reply = ContractStorageReply;
+
+    async fn handle(
+        &mut self,
+        message: StoreContract,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        ContractStorageReply::from_result(self.store_contract(message.contract))
+    }
+}
+
+impl Message<LookupContract> for StoreKernel {
+    type Reply = crate::Result<LookupContractReply>;
+
+    async fn handle(
+        &mut self,
+        message: LookupContract,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.lookup_contract(&message.digest)
+            .map(|contract| LookupContractReply { contract })
+    }
+}
+
+impl Message<ReadContractSnapshot> for StoreKernel {
+    type Reply = crate::Result<ContractSnapshotReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadContractSnapshot,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.contract_snapshot()
+            .map(|contracts| ContractSnapshotReply { contracts })
     }
 }
 

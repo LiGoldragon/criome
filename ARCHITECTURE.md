@@ -95,6 +95,13 @@ authorization decisions, and privilege elevations.*
   request is constituted by *signatures over the canonical request
   digest that satisfy criome's policy* for that request. A grant for
   one request cannot authorize another.
+- **Quorum-bearing signatures are stamped.** Operation evidence,
+  adjudicator agreement facts, routed signature submissions, and
+  authorization grants carry `StampedSignatureEnvelope`: the bare
+  BLS envelope plus the crystallized-past `AttestedMoment` that places
+  the signature in time. The daemon verifies the moment and binds the
+  signed bytes to that stamp. `TimeSignature` stays bare because it is
+  the recursive root that creates an `AttestedMoment`.
 - **Two policy classes are first-class:**
   - *Simple policy* — single-key self-owned. Criome holds the private
     key; only its own master-key signature is needed. The default and
@@ -557,6 +564,9 @@ Current implementation status:
 - `RegisterIdentity`, `LookupIdentity`, `RevokeIdentity`,
   and `SubscribeIdentityUpdates` route through the Kameo
   actor tree and the component-local sema-engine store.
+  When a cluster-root public key is configured, `RegisterIdentity`
+  accepts only registrations carrying a valid cluster-root BLS
+  admission signature over the canonical registration statement.
 - `Sign` and attestation requests require a registered
   signer and persist a typed attestation record, signed
   with **real `blst` BLS12-381 (min-pk)**. The signer signs
@@ -584,10 +594,18 @@ Current implementation status:
   returns `Expired`, not `Valid`. The signer/verifier build
   the identical preimage, so no signed field (notably the
   expiry) can be altered without breaking the signature.
-  **Still open** (`primary-kr40`): `RegisterIdentity` does
-  not yet verify a cluster-root/Developer admission
-  signature, so the registry is self-asserted until that
-  trust-root lands.
+- `AdmitContract`, `LookupContract`, and `EvaluateAuthorization`
+  route through the component-local sema-engine store. The
+  `criome-contract` family stores content-addressed policy contracts
+  durably by `ContractDigest`; admission validation rejects dangling
+  references against the durable contract set, and evaluation rebuilds
+  a pure in-memory evaluator snapshot from SEMA records. The
+  contract DAG therefore survives daemon restart.
+- Policy evaluation consumes stamped operation signatures and stamped
+  agreement facts. An operation signature must carry the same
+  `AttestedMoment` as the evaluated evidence, and an agreement signature
+  signs the agreement plus its own moment digest; swapping a stamp
+  invalidates the signature.
 - `AuthorizationCoordinator` is present as a data-bearing Kameo
   actor. It asks `StoreKernel` to mint durable authorization request
   slots, records `AuthorizeSignalCall` as durable signing-state,

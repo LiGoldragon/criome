@@ -25,8 +25,8 @@ use signal_criome::{
     IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
     PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
     RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
-    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, TimeSignature, TimeWindow,
-    TimestampNanos,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
+    TimeSignature, TimeWindow, TimestampNanos,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
@@ -132,6 +132,26 @@ fn signature_envelope() -> SignatureEnvelope {
     }
 }
 
+fn stamped_signature_envelope() -> StampedSignatureEnvelope {
+    StampedSignatureEnvelope {
+        stamp: AttestedMoment {
+            proposition: AttestedMomentProposition {
+                window: TimeWindow {
+                    opens_at: TimestampNanos::new(1),
+                    closes_at: TimestampNanos::new(2),
+                },
+                required_signatures: RequiredSignatureThreshold::new(1),
+                authorities: vec![Identity::cluster(("timekeeper").to_string())],
+            },
+            signatures: vec![TimeSignature {
+                signer: Identity::cluster(("timekeeper").to_string()),
+                envelope: signature_envelope(),
+            }],
+        },
+        envelope: signature_envelope(),
+    }
+}
+
 fn operation_digest(seed: &[u8]) -> OperationDigest {
     OperationDigest::from_bytes(seed)
 }
@@ -149,7 +169,7 @@ fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
             satisfied_signers: vec![Identity::cluster(("criome-master").to_string())],
         },
         signature_result: SignatureAuthorizationResult::SingleSignature,
-        signatures: vec![signature_envelope()],
+        signatures: vec![stamped_signature_envelope()],
         issued_by: Identity::cluster(("criome-master").to_string()),
         issued_at: TimestampNanos::new(1),
         expires_at: None,
@@ -458,7 +478,8 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
 
 #[tokio::test]
 async fn criome_root_admits_and_evaluates_policy_contracts() {
-    let root = CriomeRoot::start(RootArguments::new(store_location("policy-contracts")))
+    let store = store_location("policy-contracts");
+    let root = CriomeRoot::start(RootArguments::new(store.clone()))
         .await
         .expect("start criome root");
     let signer = MasterKey::generate().expect("policy signer key");
@@ -486,6 +507,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     .into_reply();
 
     let contract = Contract::new(Rule::SignedBy(identity.clone()));
+    let expected_contract = contract.clone();
     let admitted = root
         .ask(SubmitRequest::new(CriomeRequest::AdmitContract(contract)))
         .await
@@ -525,21 +547,25 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         .expect("operation statement");
     let evidence = Evidence {
         operation,
-        stamp,
-        signatures: vec![SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: signer.public_key(),
-            signature: signer.sign(&statement),
+        stamp: stamp.clone(),
+        signatures: vec![StampedSignatureEnvelope {
+            stamp,
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: signer.public_key(),
+                signature: signer.sign(&statement),
+            },
         }],
         agreements: Vec::new(),
     };
 
+    let evaluation = AuthorizationEvaluation {
+        contract: digest.clone(),
+        evidence: evidence.clone(),
+    };
     let evaluated = root
         .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
-            AuthorizationEvaluation {
-                contract: digest,
-                evidence,
-            },
+            evaluation.clone(),
         )))
         .await
         .expect("evaluate contract")
@@ -550,6 +576,43 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     assert_eq!(evaluated.decision, EvaluationDecision::Authorized);
 
     CriomeRoot::stop(root).await.expect("stop criome root");
+
+    let restarted = CriomeRoot::start(RootArguments::new(store))
+        .await
+        .expect("restart criome root");
+    let found = restarted
+        .ask(SubmitRequest::new(CriomeRequest::LookupContract(
+            digest.clone(),
+        )))
+        .await
+        .expect("lookup persisted contract")
+        .into_reply();
+    assert_eq!(
+        found,
+        CriomeReply::ContractFound(signal_criome::ContractFound {
+            digest: digest.clone(),
+            contract: expected_contract,
+        })
+    );
+    let evaluated_after_restart = restarted
+        .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+            evaluation,
+        )))
+        .await
+        .expect("evaluate persisted contract")
+        .into_reply();
+    let CriomeReply::AuthorizationEvaluated(evaluated_after_restart) = evaluated_after_restart
+    else {
+        panic!("expected AuthorizationEvaluated, got {evaluated_after_restart:?}");
+    };
+    assert_eq!(
+        evaluated_after_restart.decision,
+        EvaluationDecision::Authorized
+    );
+
+    CriomeRoot::stop(restarted)
+        .await
+        .expect("stop restarted criome root");
 }
 
 #[tokio::test]

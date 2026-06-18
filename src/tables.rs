@@ -13,20 +13,21 @@ use sema_engine::{
 };
 use signal_criome::{
     Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Identity, IdentityReceipt,
-    IdentityRegistration, IdentityRevocation, KeyPurpose, ObjectDigest, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, ReplayNonce, SignatureSolicitationRoute,
+    AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Contract, ContractDigest,
+    Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation, KeyPurpose, ObjectDigest,
+    PrincipalName, PrincipalStatus, PublicKeyFingerprint, ReplayNonce, SignatureSolicitationRoute,
     SignatureSubmission,
 };
 
 use crate::Result;
 
-const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(2);
+const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(3);
 const IDENTITIES: TableName = TableName::new("identities");
 const REVOCATIONS: TableName = TableName::new("revocations");
 const ATTESTATIONS: TableName = TableName::new("attestations");
 const AUTHORIZATION_STATES: TableName = TableName::new("authorization_requests");
 const AUTHORIZATION_REPLAY_NONCES: TableName = TableName::new("authorization_replay_nonces");
+const CONTRACTS: TableName = TableName::new("contracts");
 const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitations");
 const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
 const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot");
@@ -38,6 +39,7 @@ const REVOCATIONS_FAMILY: &str = "criome-revocation";
 const ATTESTATIONS_FAMILY: &str = "criome-attestation";
 const AUTHORIZATION_STATES_FAMILY: &str = "criome-authorization-state";
 const AUTHORIZATION_REPLAY_NONCES_FAMILY: &str = "criome-authorization-replay-nonce";
+const CONTRACTS_FAMILY: &str = "criome-contract";
 const SIGNATURE_SOLICITATIONS_FAMILY: &str = "criome-signature-solicitation";
 const SUBMITTED_SIGNATURES_FAMILY: &str = "criome-submitted-signature";
 const ATTESTATION_NEXT_SLOT_FAMILY: &str = "criome-attestation-slot";
@@ -209,6 +211,12 @@ pub struct StoredSignatureSubmission {
     submission: SignatureSubmission,
 }
 
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredContract {
+    digest: ContractDigest,
+    contract: Contract,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationReplayIdentity {
     requester: Identity,
@@ -231,6 +239,24 @@ impl AuthorizationReplayIdentity {
     }
 }
 
+impl StoredContract {
+    pub fn new(digest: ContractDigest, contract: Contract) -> Self {
+        Self { digest, contract }
+    }
+
+    pub fn digest(&self) -> &ContractDigest {
+        &self.digest
+    }
+
+    pub fn contract(&self) -> &Contract {
+        &self.contract
+    }
+
+    pub fn into_parts(self) -> (ContractDigest, Contract) {
+        (self.digest, self.contract)
+    }
+}
+
 pub struct CriomeTables {
     engine: Engine,
     identities: TableReference<StoredIdentity>,
@@ -238,6 +264,7 @@ pub struct CriomeTables {
     attestations: TableReference<StoredAttestation>,
     authorization_states: TableReference<StoredAuthorizationState>,
     authorization_replay_nonces: TableReference<AuthorizationRequestSlot>,
+    contracts: TableReference<StoredContract>,
     signature_solicitations: TableReference<StoredSignatureSolicitation>,
     submitted_signatures: TableReference<StoredSignatureSubmission>,
     attestation_next_slot: TableReference<u64>,
@@ -261,6 +288,8 @@ impl CriomeTables {
             AUTHORIZATION_REPLAY_NONCES,
             AUTHORIZATION_REPLAY_NONCES_FAMILY,
         ))?;
+        let contracts =
+            engine.register_table(Self::family_descriptor(CONTRACTS, CONTRACTS_FAMILY))?;
         let signature_solicitations = engine.register_table(Self::family_descriptor(
             SIGNATURE_SOLICITATIONS,
             SIGNATURE_SOLICITATIONS_FAMILY,
@@ -284,6 +313,7 @@ impl CriomeTables {
             attestations,
             authorization_states,
             authorization_replay_nonces,
+            contracts,
             signature_solicitations,
             submitted_signatures,
             attestation_next_slot,
@@ -413,6 +443,21 @@ impl CriomeTables {
     ) -> Result<Option<AuthorizationRequestSlot>> {
         let key = AuthorizationReplayKey::new(replay_identity).into_string();
         self.read_key(self.authorization_replay_nonces, key)
+    }
+
+    pub fn put_contract(&self, contract: &StoredContract) -> Result<()> {
+        let key = ContractDigestKey::new(contract.digest()).into_string();
+        self.upsert(self.contracts, key, contract.clone())?;
+        Ok(())
+    }
+
+    pub fn contract(&self, digest: &ContractDigest) -> Result<Option<StoredContract>> {
+        let key = ContractDigestKey::new(digest).into_string();
+        self.read_key(self.contracts, key)
+    }
+
+    pub fn contracts(&self) -> Result<Vec<StoredContract>> {
+        self.read_all(self.contracts)
     }
 
     pub fn put_signature_solicitation(
@@ -632,6 +677,22 @@ impl AuthorizationSlotKey {
 
     fn into_string(self) -> String {
         self.slot
+    }
+}
+
+struct ContractDigestKey {
+    digest: String,
+}
+
+impl ContractDigestKey {
+    fn new(digest: &ContractDigest) -> Self {
+        Self {
+            digest: digest.object_digest().as_ref().to_string(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.digest
     }
 }
 

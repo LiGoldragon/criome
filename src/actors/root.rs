@@ -12,7 +12,7 @@ use crate::actors::{
     verifier,
 };
 use crate::admission::ClusterRoot;
-use crate::language::{ContractStore, KeyRegistry};
+use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
 use crate::{Error, Result, StoreLocation};
 
@@ -22,7 +22,7 @@ pub struct CriomeRoot {
     verifier: ActorRef<verifier::AttestationVerifier>,
     authorization: ActorRef<authorization::AuthorizationCoordinator>,
     subscription: ActorRef<subscription::SubscriptionRegistry>,
-    policy_store: ContractStore,
+    store: ActorRef<store::StoreKernel>,
 }
 
 pub struct Arguments {
@@ -99,6 +99,7 @@ impl CriomeRoot {
         verifier: ActorRef<verifier::AttestationVerifier>,
         authorization: ActorRef<authorization::AuthorizationCoordinator>,
         subscription: ActorRef<subscription::SubscriptionRegistry>,
+        store: ActorRef<store::StoreKernel>,
     ) -> Self {
         Self {
             registry,
@@ -106,7 +107,7 @@ impl CriomeRoot {
             verifier,
             authorization,
             subscription,
-            policy_store: ContractStore::new(),
+            store,
         }
     }
 
@@ -196,36 +197,27 @@ impl CriomeRoot {
                 self.ask_authorization(authorization::RejectAuthorization::new(request))
                     .await
             }
-            CriomeRequest::AdmitContract(contract) => match self.policy_store.admit(contract) {
-                Ok(digest) => CriomeReply::ContractAdmitted(ContractAdmitted::new(digest)),
-                Err(error) => match error.reason() {
-                    Some(reason) => CriomeReply::ContractAdmissionRejected(
-                        ContractAdmissionRejected::new(reason.clone()),
-                    ),
-                    None => rejection(RejectionReason::MalformedRequest),
-                },
-            },
-            CriomeRequest::LookupContract(digest) => match self.policy_store.resolve(&digest) {
-                Ok(contract) => CriomeReply::ContractFound(ContractFound {
-                    digest,
-                    contract: contract.clone(),
-                }),
-                Err(_) => CriomeReply::ContractMissing(ContractMissing::new(digest)),
-            },
-            CriomeRequest::EvaluateAuthorization(evaluation) => match self.key_registry().await {
-                Some(registry) => match self.policy_store.evaluate(
-                    &evaluation.contract,
-                    &evaluation.evidence,
-                    &registry,
-                ) {
-                    Ok(decision) => CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
-                        contract: evaluation.contract,
-                        decision,
-                    }),
-                    Err(_) => rejection(RejectionReason::MalformedRequest),
-                },
-                None => rejection(RejectionReason::MalformedRequest),
-            },
+            CriomeRequest::AdmitContract(contract) => self.admit_contract(contract).await,
+            CriomeRequest::LookupContract(digest) => self.lookup_contract(digest).await,
+            CriomeRequest::EvaluateAuthorization(evaluation) => {
+                match (self.key_registry().await, self.contract_store().await) {
+                    (Some(registry), Some(store)) => {
+                        match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry)
+                        {
+                            Ok(decision) => {
+                                CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
+                                    contract: evaluation.contract,
+                                    decision,
+                                })
+                            }
+                            Err(EvaluationError::MissingContract(digest)) => {
+                                CriomeReply::ContractMissing(ContractMissing::new(digest))
+                            }
+                        }
+                    }
+                    _ => rejection(RejectionReason::MalformedRequest),
+                }
+            }
             CriomeRequest::SubscribeIdentityUpdates(request) => {
                 let token = IdentitySubscriptionToken::new(request.into_payload());
                 self.ask_subscription(subscription::OpenIdentitySubscription { token })
@@ -301,6 +293,51 @@ impl CriomeRoot {
             .await
             .map(CriomeActorReply::into_reply)
             .unwrap_or_else(|_error| rejection(RejectionReason::MalformedRequest))
+    }
+
+    async fn admit_contract(&self, contract: signal_criome::Contract) -> CriomeReply {
+        match self.store.ask(store::StoreContract::new(contract)).await {
+            Ok(reply) => match reply.into_result() {
+                Ok(contract) => {
+                    let (digest, _contract) = contract.into_parts();
+                    CriomeReply::ContractAdmitted(ContractAdmitted::new(digest))
+                }
+                Err(Error::ContractAdmissionRejected(reason)) => {
+                    CriomeReply::ContractAdmissionRejected(ContractAdmissionRejected::new(reason))
+                }
+                Err(_) => rejection(RejectionReason::MalformedRequest),
+            },
+            Err(_) => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
+    async fn lookup_contract(&self, digest: signal_criome::ContractDigest) -> CriomeReply {
+        match self
+            .store
+            .ask(store::LookupContract::new(digest.clone()))
+            .await
+        {
+            Ok(reply) => match reply.into_contract() {
+                Some(stored) => {
+                    let (digest, contract) = stored.into_parts();
+                    CriomeReply::ContractFound(ContractFound { digest, contract })
+                }
+                None => CriomeReply::ContractMissing(ContractMissing::new(digest)),
+            },
+            Err(_) => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
+    async fn contract_store(&self) -> Option<ContractStore> {
+        let contracts = self
+            .store
+            .ask(store::ReadContractSnapshot)
+            .await
+            .ok()?
+            .into_contracts()
+            .into_iter()
+            .map(crate::tables::StoredContract::into_parts);
+        Some(ContractStore::from_contracts(contracts))
     }
 
     async fn key_registry(&self) -> Option<KeyRegistry> {
@@ -437,6 +474,7 @@ impl Actor for CriomeRoot {
             verifier,
             authorization,
             subscription,
+            store,
         ))
     }
 }
