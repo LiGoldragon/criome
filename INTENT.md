@@ -44,7 +44,9 @@ differentiator, object digest/kind, policy contract digest, decision, and
 attested moment. Components subscribe to the event classes related to their
 function through `AuthorizedObjectInterest`; criome stores the pulse and
 filters snapshots/publications by subscriber interest rather than computing
-one global affected-component set.
+one global affected-component set. The authorized-object stream token binds
+subscriber identity and interest, so one component can hold and retract several
+separate interests independently.
 
 Time-driven pulses are contract-programmed, not an ambient global
 heartbeat. Accepting a contract with an after-time condition schedules a

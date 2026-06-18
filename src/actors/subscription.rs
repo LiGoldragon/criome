@@ -21,7 +21,7 @@ use crate::actors::{CriomeActorReply, actor_reply, registry, rejection};
 pub struct SubscriptionRegistry {
     registry: ActorRef<registry::IdentityRegistry>,
     identity_subscriptions: Vec<IdentitySubscriptionToken>,
-    authorized_object_subscriptions: Vec<AuthorizedObjectSubscription>,
+    authorized_object_subscriptions: Vec<AuthorizedObjectUpdateToken>,
     authorized_object_updates: Vec<AuthorizedObjectUpdate>,
     contract_time_checks: Vec<ContractTimeCheck>,
 }
@@ -41,7 +41,6 @@ pub struct CloseIdentitySubscription {
 
 pub struct OpenAuthorizedObjectSubscription {
     pub token: AuthorizedObjectUpdateToken,
-    pub interest: AuthorizedObjectInterest,
 }
 
 pub struct CloseAuthorizedObjectSubscription {
@@ -63,12 +62,6 @@ pub struct RunDueContractChecks {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, kameo::Reply)]
 pub struct AuthorizedObjectPublication {
     subscriber_count: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AuthorizedObjectSubscription {
-    token: AuthorizedObjectUpdateToken,
-    interest: AuthorizedObjectInterest,
 }
 
 trait AuthorizedObjectFilter {
@@ -113,20 +106,10 @@ impl SubscriptionRegistry {
     fn open_authorized_object_subscription(
         &mut self,
         token: AuthorizedObjectUpdateToken,
-        interest: AuthorizedObjectInterest,
     ) -> CriomeReply {
-        if let Some(existing) = self
-            .authorized_object_subscriptions
-            .iter_mut()
-            .find(|existing| existing.token == token)
-        {
-            existing.interest = interest.clone();
-        } else {
-            self.authorized_object_subscriptions
-                .push(AuthorizedObjectSubscription {
-                    token,
-                    interest: interest.clone(),
-                });
+        let interest = token.interest.clone();
+        if !self.authorized_object_subscriptions.contains(&token) {
+            self.authorized_object_subscriptions.push(token);
         }
         CriomeReply::AuthorizedObjectUpdateSnapshot(AuthorizedObjectUpdateSnapshot::new(
             self.authorized_object_updates
@@ -144,7 +127,7 @@ impl SubscriptionRegistry {
         match self
             .authorized_object_subscriptions
             .iter()
-            .position(|existing| existing.token == token)
+            .position(|existing| existing == &token)
         {
             Some(index) => {
                 self.authorized_object_subscriptions.remove(index);
@@ -163,7 +146,7 @@ impl SubscriptionRegistry {
         let subscriber_count = self
             .authorized_object_subscriptions
             .iter()
-            .filter(|subscription| subscription.interest.matches_update(&update))
+            .filter(|token| token.interest.matches_update(&update))
             .count();
         self.authorized_object_updates.push(update);
         AuthorizedObjectPublication { subscriber_count }
@@ -287,7 +270,7 @@ impl Message<OpenAuthorizedObjectSubscription> for SubscriptionRegistry {
         message: OpenAuthorizedObjectSubscription,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        actor_reply(self.open_authorized_object_subscription(message.token, message.interest))
+        actor_reply(self.open_authorized_object_subscription(message.token))
     }
 }
 

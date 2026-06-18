@@ -692,7 +692,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let time_snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
             AuthorizedObjectObservation {
-                subscriber: Identity::agent("time-observer".to_string()),
+                subscriber: observer.clone(),
                 interest: AuthorizedObjectInterest::ObjectKind(AuthorizedObjectKind::Time),
             },
         )))
@@ -706,9 +706,10 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
 
     let retracted = root
         .ask(SubmitRequest::new(
-            CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken::new(
-                observer,
-            )),
+            CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken {
+                subscriber: observer.clone(),
+                interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+            }),
         ))
         .await
         .expect("close authorized object observation")
@@ -717,6 +718,24 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         retracted,
         CriomeReply::AuthorizedObjectUpdateRetracted(_)
     ));
+
+    let time_retracted = root
+        .ask(SubmitRequest::new(
+            CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken {
+                subscriber: observer,
+                interest: AuthorizedObjectInterest::ObjectKind(AuthorizedObjectKind::Time),
+            }),
+        ))
+        .await
+        .expect("close time authorized object observation")
+        .into_reply();
+    assert!(
+        matches!(
+            time_retracted,
+            CriomeReply::AuthorizedObjectUpdateRetracted(_)
+        ),
+        "authorized-object retraction is scoped to one subscriber interest"
+    );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 

@@ -110,8 +110,10 @@ authorization decisions, and privilege elevations.*
   distribution layer. Components subscribe with `AuthorizedObjectInterest`
   for the event classes related to their function; `SubscriptionRegistry`
   filters snapshots and publications by that declared interest instead of
-  criome computing a universal affected-component set. Socket-level
-  `SubscriptionEvent` fanout is a transport follow-up.
+  criome computing a universal affected-component set. The stream token carries
+  both subscriber identity and interest, so retraction closes one
+  `(subscriber, interest)` observation. Socket-level `SubscriptionEvent`
+  fanout is a transport follow-up.
 - **Time-driven pulses are contract-programmed.** There is no ambient global
   heartbeat. Accepting a contract with an after-time condition schedules a
   later check of that contract against related events; when the crystallized

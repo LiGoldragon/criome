@@ -74,6 +74,9 @@ today's narrow scope; the eventual encompassment is named in
   `AuthorizedObjectUpdate` with digest/kind, contract digest,
   decision, and attested moment. Do not attach inline payload bytes to
   this pulse; object bytes are fetched through router/mirror by digest.
+  `AuthorizedObjectUpdateToken` includes the subscriber and
+  `AuthorizedObjectInterest`; retraction is per `(subscriber, interest)`,
+  not per subscriber.
 - **Meta-class operations use `meta-signal-criome`.** The `criome`
   CLI and `tui-criome` are meta clients of the user's own
   `criome-daemon`; they do not use ordinary `signal-criome` for

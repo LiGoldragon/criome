@@ -238,8 +238,10 @@ impl CriomeRoot {
             }
             CriomeRequest::ObserveAuthorizedObjects(request) => {
                 self.ask_subscription(subscription::OpenAuthorizedObjectSubscription {
-                    token: AuthorizedObjectUpdateToken::new(request.subscriber),
-                    interest: request.interest,
+                    token: AuthorizedObjectUpdateToken {
+                        subscriber: request.subscriber,
+                        interest: request.interest,
+                    },
                 })
                 .await
             }
