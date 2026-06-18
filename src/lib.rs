@@ -6,6 +6,7 @@
 
 pub mod actors;
 pub mod admission;
+pub mod ceremony;
 pub mod command;
 pub mod daemon;
 pub mod error;

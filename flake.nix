@@ -146,6 +146,23 @@
                 ${context.pkgs.gnugrep}/bin/grep -F 'Authorization expiry and replay guard' ${./ARCHITECTURE.md} > /dev/null
                 touch "$out"
               '';
+          criome-cluster-root-admission-ceremony =
+            context.pkgs.runCommand "criome-cluster-root-admission-ceremony" { }
+              ''
+                set -euo pipefail
+
+                # The minting half exists: a data-bearing ceremony noun and its
+                # offline bin, not a daemon client.
+                ${context.pkgs.gnugrep}/bin/grep -F 'pub struct ClusterRootCeremony' ${./src}/ceremony.rs > /dev/null
+                ${context.pkgs.gnugrep}/bin/grep -F 'CRIOME_CLUSTER_ROOT_KEY' ${./src}/ceremony.rs > /dev/null
+                ! ${context.pkgs.gnugrep}/bin/grep -F 'CriomeClient' ${./src}/ceremony.rs
+                # The four ceremony tests proving the minted admission is real.
+                ${context.pkgs.gnugrep}/bin/grep -F 'minted_admission_passes_the_real_cluster_root_gate' ${./src}/ceremony.rs > /dev/null
+                ${context.pkgs.gnugrep}/bin/grep -F 'admitted_registration_survives_a_nota_round_trip' ${./src}/ceremony.rs > /dev/null
+                ${context.pkgs.gnugrep}/bin/grep -F 'persisted_key_reloads_and_still_admits' ${./src}/ceremony.rs > /dev/null
+                ${context.pkgs.gnugrep}/bin/grep -F 'admission_minted_by_a_different_key_is_not_admitted' ${./src}/ceremony.rs > /dev/null
+                touch "$out"
+              '';
           fmt = context.craneLib.cargoFmt { inherit (context) src; };
           clippy = context.craneLib.cargoClippy (
             context.commonArgs

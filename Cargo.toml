@@ -20,6 +20,11 @@ required-features = ["nota-text"]
 name = "criome-daemon"
 path = "src/bin/criome-daemon.rs"
 
+[[bin]]
+name              = "criome-cluster-root"
+path              = "src/bin/criome-cluster-root.rs"
+required-features = ["nota-text"]
+
 [features]
 default = []
 nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text"]
