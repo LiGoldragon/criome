@@ -39,6 +39,13 @@ grants. The daemon verifies the attached `AttestedMoment` and binds policy /
 agreement signature bytes to that stamp; the only bare signature envelopes in
 the time path are the `TimeSignature` values that create an `AttestedMoment`.
 
+Time-driven pulses are contract-programmed, not an ambient global
+heartbeat. Accepting a contract with an after-time condition schedules a
+later check of that contract against related events; when the crystallized
+time condition matures, criome checks whether those events happened, and if
+they did not, triggers a new acceptance for the resulting time-based state
+to be quorum-signed.
+
 ## Load-bearing constraints
 
 *Criome verifies; Persona decides.* This is the operative principle.

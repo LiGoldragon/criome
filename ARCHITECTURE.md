@@ -109,6 +109,13 @@ authorization decisions, and privilege elevations.*
   the digest with the routing/object-distribution layer. The current
   daemon records and exposes the stream through `SubscriptionRegistry`;
   socket-level `SubscriptionEvent` fanout is a transport follow-up.
+- **Time-driven pulses are contract-programmed.** There is no ambient global
+  heartbeat. Accepting a contract with an after-time condition schedules a
+  later check of that contract against related events; when the crystallized
+  time condition matures, criome checks whether those events happened, and if
+  they did not, triggers a new acceptance for the time-based condition's
+  resulting state to be quorum-signed and propagated as another reference-only
+  pulse.
 - **Two policy classes are first-class:**
   - *Simple policy* — single-key self-owned. Criome holds the private
     key; only its own master-key signature is needed. The default and
