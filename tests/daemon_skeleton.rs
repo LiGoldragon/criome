@@ -19,11 +19,12 @@ use signal_criome::{
     AttestedMoment, AttestedMomentProposition, AuditContext, AuthorizationDenialReason,
     AuthorizationDenialSource, AuthorizationEvaluation, AuthorizationExpired, AuthorizationGrant,
     AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
-    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, AuthorizedObjectKind,
-    AuthorizedObjectObservation, AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature,
-    ContentPurpose, ContentReference, Contract, ContractName, ContractOperationHead, CriomeFrame,
-    CriomeFrameBody, CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity,
-    IdentityLookup, IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
+    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, AuthorizedObjectInterest,
+    AuthorizedObjectKind, AuthorizedObjectObservation, AuthorizedObjectUpdateToken, BlsPublicKey,
+    BlsSignature, ComponentKind, ComponentObjectInterest, ContentPurpose, ContentReference,
+    Contract, ContractName, ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody,
+    CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity, IdentityLookup,
+    IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
     PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
     RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
     SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
@@ -529,7 +530,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     };
     let stamp = AttestedMoment {
         signatures: vec![TimeSignature {
-            signer: timekeeper_identity,
+            signer: timekeeper_identity.clone(),
             envelope: SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
                 public_key: timekeeper.public_key(),
@@ -547,6 +548,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         .to_signing_bytes()
         .expect("operation statement");
     let evidence = Evidence {
+        component: ComponentKind::Spirit,
         operation,
         stamp: stamp.clone(),
         signatures: vec![StampedSignatureEnvelope {
@@ -578,7 +580,10 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let observer = Identity::agent("component-observer".to_string());
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
-            AuthorizedObjectObservation::new(observer.clone()),
+            AuthorizedObjectObservation {
+                subscriber: observer.clone(),
+                interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+            },
         )))
         .await
         .expect("observe authorized objects")
@@ -592,10 +597,113 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         updates[0].object.digest,
         evidence.operation.object_digest().clone()
     );
+    assert_eq!(updates[0].object.component, ComponentKind::Spirit);
     assert_eq!(updates[0].object.kind, AuthorizedObjectKind::Operation);
     assert_eq!(updates[0].contract, digest);
     assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
     assert_eq!(updates[0].stamp, evidence.stamp);
+
+    let mirror_snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                subscriber: Identity::agent("mirror-observer".to_string()),
+                interest: AuthorizedObjectInterest::Component(ComponentKind::Mirror),
+            },
+        )))
+        .await
+        .expect("observe mirror authorized objects")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(mirror_snapshot) = mirror_snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {mirror_snapshot:?}");
+    };
+    assert!(
+        mirror_snapshot.into_payload().is_empty(),
+        "component filters keep unrelated pulses out of snapshots"
+    );
+
+    let time_result = signal_criome::AuthorizedObjectReference {
+        component: ComponentKind::Spirit,
+        digest: ObjectDigest::from_bytes(b"timeout-result"),
+        kind: AuthorizedObjectKind::Time,
+    };
+    let check = ContractTimeCheck {
+        contract: digest.clone(),
+        due_at: TimestampNanos::new(25),
+        result: time_result.clone(),
+        absent: AuthorizedObjectInterest::ComponentObject(ComponentObjectInterest {
+            component: ComponentKind::Mirror,
+            kind: AuthorizedObjectKind::Operation,
+        }),
+    };
+    let scheduled = root
+        .ask(SubmitRequest::new(
+            CriomeRequest::ScheduleContractTimeCheck(check.clone()),
+        ))
+        .await
+        .expect("schedule contract time check")
+        .into_reply();
+    assert_eq!(
+        scheduled,
+        CriomeReply::ContractTimeCheckScheduled(signal_criome::ContractTimeCheckScheduled::new(
+            check
+        ))
+    );
+
+    let later_proposition = AttestedMomentProposition {
+        window: TimeWindow {
+            opens_at: TimestampNanos::new(30),
+            closes_at: TimestampNanos::new(40),
+        },
+        required_signatures: RequiredSignatureThreshold::new(1),
+        authorities: vec![timekeeper_identity.clone()],
+    };
+    let later_stamp = AttestedMoment {
+        signatures: vec![TimeSignature {
+            signer: timekeeper_identity,
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: timekeeper.public_key(),
+                signature: timekeeper.sign(
+                    AttestedMomentStatement::new(&later_proposition)
+                        .to_signing_bytes()
+                        .expect("later moment statement")
+                        .as_slice(),
+                ),
+            },
+        }],
+        proposition: later_proposition,
+    };
+    let due = root
+        .ask(SubmitRequest::new(CriomeRequest::RunDueContractChecks(
+            later_stamp.clone(),
+        )))
+        .await
+        .expect("run due contract checks")
+        .into_reply();
+    let CriomeReply::DueContractChecksEvaluated(due) = due else {
+        panic!("expected DueContractChecksEvaluated, got {due:?}");
+    };
+    let triggered = due.into_payload();
+    assert_eq!(triggered.len(), 1);
+    assert_eq!(triggered[0].object, time_result);
+    assert_eq!(triggered[0].contract, digest);
+    assert_eq!(triggered[0].stamp, later_stamp);
+
+    let time_snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                subscriber: Identity::agent("time-observer".to_string()),
+                interest: AuthorizedObjectInterest::ObjectKind(AuthorizedObjectKind::Time),
+            },
+        )))
+        .await
+        .expect("observe time authorized objects")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(time_snapshot) = time_snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {time_snapshot:?}");
+    };
+    assert_eq!(time_snapshot.into_payload().len(), 1);
+
     let retracted = root
         .ask(SubmitRequest::new(
             CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken::new(

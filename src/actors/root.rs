@@ -209,6 +209,7 @@ impl CriomeRoot {
                                 if decision == EvaluationDecision::Authorized {
                                     self.publish_authorized_object_update(AuthorizedObjectUpdate {
                                         object: AuthorizedObjectReference {
+                                            component: evaluation.evidence.component,
                                             digest: evaluation
                                                 .evidence
                                                 .operation
@@ -236,12 +237,22 @@ impl CriomeRoot {
                 }
             }
             CriomeRequest::ObserveAuthorizedObjects(request) => {
-                let token = AuthorizedObjectUpdateToken::new(request.into_payload());
-                self.ask_subscription(subscription::OpenAuthorizedObjectSubscription { token })
-                    .await
+                self.ask_subscription(subscription::OpenAuthorizedObjectSubscription {
+                    token: AuthorizedObjectUpdateToken::new(request.subscriber),
+                    interest: request.interest,
+                })
+                .await
             }
             CriomeRequest::AuthorizedObjectUpdateRetraction(token) => {
                 self.ask_subscription(subscription::CloseAuthorizedObjectSubscription { token })
+                    .await
+            }
+            CriomeRequest::ScheduleContractTimeCheck(check) => {
+                self.ask_subscription(subscription::ScheduleContractTimeCheck::new(check))
+                    .await
+            }
+            CriomeRequest::RunDueContractChecks(stamp) => {
+                self.ask_subscription(subscription::RunDueContractChecks::new(stamp))
                     .await
             }
             CriomeRequest::SubscribeIdentityUpdates(request) => {

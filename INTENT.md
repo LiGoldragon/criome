@@ -39,6 +39,13 @@ grants. The daemon verifies the attached `AttestedMoment` and binds policy /
 agreement signature bytes to that stamp; the only bare signature envelopes in
 the time path are the `TimeSignature` values that create an `AttestedMoment`.
 
+Authorized object pulses are subscriber-filtered. A pulse carries a component
+differentiator, object digest/kind, policy contract digest, decision, and
+attested moment. Components subscribe to the event classes related to their
+function through `AuthorizedObjectInterest`; criome stores the pulse and
+filters snapshots/publications by subscriber interest rather than computing
+one global affected-component set.
+
 Time-driven pulses are contract-programmed, not an ambient global
 heartbeat. Accepting a contract with an after-time condition schedules a
 later check of that contract against related events; when the crystallized

@@ -104,18 +104,24 @@ authorization decisions, and privilege elevations.*
   the recursive root that creates an `AttestedMoment`.
 - **Authorized object updates are reference-only pulses.** A successful
   policy evaluation publishes `AuthorizedObjectUpdate`: the authorized
-  object digest/kind, the policy contract digest, the decision, and the
-  attested moment. Criome does not carry object payloads; components use
-  the digest with the routing/object-distribution layer. The current
-  daemon records and exposes the stream through `SubscriptionRegistry`;
-  socket-level `SubscriptionEvent` fanout is a transport follow-up.
+  object's component differentiator, digest/kind, the policy contract
+  digest, the decision, and the attested moment. Criome does not carry
+  object payloads; components use the digest with the routing/object-
+  distribution layer. Components subscribe with `AuthorizedObjectInterest`
+  for the event classes related to their function; `SubscriptionRegistry`
+  filters snapshots and publications by that declared interest instead of
+  criome computing a universal affected-component set. Socket-level
+  `SubscriptionEvent` fanout is a transport follow-up.
 - **Time-driven pulses are contract-programmed.** There is no ambient global
   heartbeat. Accepting a contract with an after-time condition schedules a
   later check of that contract against related events; when the crystallized
   time condition matures, criome checks whether those events happened, and if
   they did not, triggers a new acceptance for the time-based condition's
   resulting state to be quorum-signed and propagated as another reference-only
-  pulse.
+  pulse. The current POC exposes this as explicit
+  `ScheduleContractTimeCheck` / `RunDueContractChecks` signal requests; a
+  durable scheduler actor/table can replace the explicit trigger without
+  changing the pulse shape.
 - **Two policy classes are first-class:**
   - *Simple policy* — single-key self-owned. Criome holds the private
     key; only its own master-key signature is needed. The default and

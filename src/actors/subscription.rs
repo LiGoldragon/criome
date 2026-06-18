@@ -2,9 +2,10 @@ use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use signal_criome::{
-    AuthorizedObjectUpdate, AuthorizedObjectUpdateRetracted, AuthorizedObjectUpdateSnapshot,
-    AuthorizedObjectUpdateToken, CriomeReply, IdentitySubscriptionToken, RejectionReason,
-    SubscriptionRetracted,
+    AttestedMoment, AuthorizedObjectInterest, AuthorizedObjectUpdate,
+    AuthorizedObjectUpdateRetracted, AuthorizedObjectUpdateSnapshot, AuthorizedObjectUpdateToken,
+    ContractTimeCheck, ContractTimeCheckScheduled, CriomeReply, DueContractChecksEvaluated,
+    IdentitySubscriptionToken, RejectionReason, SubscriptionRetracted,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, registry, rejection};
@@ -20,8 +21,9 @@ use crate::actors::{CriomeActorReply, actor_reply, registry, rejection};
 pub struct SubscriptionRegistry {
     registry: ActorRef<registry::IdentityRegistry>,
     identity_subscriptions: Vec<IdentitySubscriptionToken>,
-    authorized_object_subscriptions: Vec<AuthorizedObjectUpdateToken>,
+    authorized_object_subscriptions: Vec<AuthorizedObjectSubscription>,
     authorized_object_updates: Vec<AuthorizedObjectUpdate>,
+    contract_time_checks: Vec<ContractTimeCheck>,
 }
 
 #[derive(Clone)]
@@ -39,6 +41,7 @@ pub struct CloseIdentitySubscription {
 
 pub struct OpenAuthorizedObjectSubscription {
     pub token: AuthorizedObjectUpdateToken,
+    pub interest: AuthorizedObjectInterest,
 }
 
 pub struct CloseAuthorizedObjectSubscription {
@@ -49,9 +52,27 @@ pub struct PublishAuthorizedObjectUpdate {
     update: AuthorizedObjectUpdate,
 }
 
+pub struct ScheduleContractTimeCheck {
+    check: ContractTimeCheck,
+}
+
+pub struct RunDueContractChecks {
+    stamp: AttestedMoment,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, kameo::Reply)]
 pub struct AuthorizedObjectPublication {
     subscriber_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthorizedObjectSubscription {
+    token: AuthorizedObjectUpdateToken,
+    interest: AuthorizedObjectInterest,
+}
+
+trait AuthorizedObjectFilter {
+    fn matches_update(&self, update: &AuthorizedObjectUpdate) -> bool;
 }
 
 impl SubscriptionRegistry {
@@ -61,6 +82,7 @@ impl SubscriptionRegistry {
             identity_subscriptions: Vec::new(),
             authorized_object_subscriptions: Vec::new(),
             authorized_object_updates: Vec::new(),
+            contract_time_checks: Vec::new(),
         }
     }
 
@@ -91,12 +113,27 @@ impl SubscriptionRegistry {
     fn open_authorized_object_subscription(
         &mut self,
         token: AuthorizedObjectUpdateToken,
+        interest: AuthorizedObjectInterest,
     ) -> CriomeReply {
-        if !self.authorized_object_subscriptions.contains(&token) {
-            self.authorized_object_subscriptions.push(token);
+        if let Some(existing) = self
+            .authorized_object_subscriptions
+            .iter_mut()
+            .find(|existing| existing.token == token)
+        {
+            existing.interest = interest.clone();
+        } else {
+            self.authorized_object_subscriptions
+                .push(AuthorizedObjectSubscription {
+                    token,
+                    interest: interest.clone(),
+                });
         }
         CriomeReply::AuthorizedObjectUpdateSnapshot(AuthorizedObjectUpdateSnapshot::new(
-            self.authorized_object_updates.clone(),
+            self.authorized_object_updates
+                .iter()
+                .filter(|update| interest.matches_update(update))
+                .cloned()
+                .collect(),
         ))
     }
 
@@ -107,7 +144,7 @@ impl SubscriptionRegistry {
         match self
             .authorized_object_subscriptions
             .iter()
-            .position(|existing| existing == &token)
+            .position(|existing| existing.token == token)
         {
             Some(index) => {
                 self.authorized_object_subscriptions.remove(index);
@@ -123,10 +160,48 @@ impl SubscriptionRegistry {
         &mut self,
         update: AuthorizedObjectUpdate,
     ) -> AuthorizedObjectPublication {
+        let subscriber_count = self
+            .authorized_object_subscriptions
+            .iter()
+            .filter(|subscription| subscription.interest.matches_update(&update))
+            .count();
         self.authorized_object_updates.push(update);
-        AuthorizedObjectPublication {
-            subscriber_count: self.authorized_object_subscriptions.len(),
+        AuthorizedObjectPublication { subscriber_count }
+    }
+
+    fn schedule_contract_time_check(&mut self, check: ContractTimeCheck) -> CriomeReply {
+        self.contract_time_checks.push(check.clone());
+        CriomeReply::ContractTimeCheckScheduled(ContractTimeCheckScheduled::new(check))
+    }
+
+    fn run_due_contract_checks(&mut self, stamp: AttestedMoment) -> CriomeReply {
+        let closed_at = *stamp.proposition.window.closes_at.payload();
+        let (due, pending): (Vec<_>, Vec<_>) = self
+            .contract_time_checks
+            .drain(..)
+            .partition(|check| *check.due_at.payload() <= closed_at);
+        self.contract_time_checks = pending;
+
+        let mut triggered = Vec::new();
+        for check in due {
+            if self
+                .authorized_object_updates
+                .iter()
+                .any(|update| check.absent.matches_update(update))
+            {
+                continue;
+            }
+
+            triggered.push(AuthorizedObjectUpdate {
+                object: check.result,
+                contract: check.contract,
+                decision: signal_criome::EvaluationDecision::Authorized,
+                stamp: stamp.clone(),
+            });
         }
+
+        self.authorized_object_updates.extend(triggered.clone());
+        CriomeReply::DueContractChecksEvaluated(DueContractChecksEvaluated::new(triggered))
     }
 }
 
@@ -136,9 +211,35 @@ impl PublishAuthorizedObjectUpdate {
     }
 }
 
+impl ScheduleContractTimeCheck {
+    pub fn new(check: ContractTimeCheck) -> Self {
+        Self { check }
+    }
+}
+
+impl RunDueContractChecks {
+    pub fn new(stamp: AttestedMoment) -> Self {
+        Self { stamp }
+    }
+}
+
 impl AuthorizedObjectPublication {
     pub const fn subscriber_count(self) -> usize {
         self.subscriber_count
+    }
+}
+
+impl AuthorizedObjectFilter for AuthorizedObjectInterest {
+    fn matches_update(&self, update: &AuthorizedObjectUpdate) -> bool {
+        match self {
+            Self::AnyAuthorizedObject => true,
+            Self::Component(component) => update.object.component == *component,
+            Self::ObjectKind(kind) => update.object.kind == *kind,
+            Self::ComponentObject(component_object) => {
+                update.object.component == component_object.component
+                    && update.object.kind == component_object.kind
+            }
+        }
     }
 }
 
@@ -186,7 +287,7 @@ impl Message<OpenAuthorizedObjectSubscription> for SubscriptionRegistry {
         message: OpenAuthorizedObjectSubscription,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        actor_reply(self.open_authorized_object_subscription(message.token))
+        actor_reply(self.open_authorized_object_subscription(message.token, message.interest))
     }
 }
 
@@ -211,5 +312,29 @@ impl Message<PublishAuthorizedObjectUpdate> for SubscriptionRegistry {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.publish_authorized_object_update(message.update)
+    }
+}
+
+impl Message<ScheduleContractTimeCheck> for SubscriptionRegistry {
+    type Reply = CriomeActorReply;
+
+    async fn handle(
+        &mut self,
+        message: ScheduleContractTimeCheck,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        actor_reply(self.schedule_contract_time_check(message.check))
+    }
+}
+
+impl Message<RunDueContractChecks> for SubscriptionRegistry {
+    type Reply = CriomeActorReply;
+
+    async fn handle(
+        &mut self,
+        message: RunDueContractChecks,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        actor_reply(self.run_due_contract_checks(message.stamp))
     }
 }

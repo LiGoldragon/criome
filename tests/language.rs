@@ -5,7 +5,7 @@ use criome::language::{
 use criome::master_key::MasterKey;
 use signal_criome::{
     AgreementFact, AgreementRule, AttestedMoment, AttestedMomentProposition, BlsPublicKey,
-    Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
+    ComponentKind, Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
     EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
     RequiredSignatureThreshold, Rule, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
     Threshold, TimeSignature, TimeSwitch, TimeWindow, TimedRule, TimestampNanos,
@@ -220,6 +220,7 @@ fn contract_digest(value: &[u8]) -> ContractDigest {
 
 fn evidence(operation: OperationDigest, stamp: AttestedMoment) -> Evidence {
     Evidence {
+        component: ComponentKind::Spirit,
         operation,
         stamp,
         signatures: Vec::new(),
@@ -233,6 +234,7 @@ fn signed_evidence(
     signers: &[&Signer],
 ) -> Evidence {
     Evidence {
+        component: ComponentKind::Spirit,
         operation: operation.clone(),
         stamp: stamp.clone(),
         signatures: signers
@@ -288,6 +290,7 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
 
     let one_signature = signed_evidence(operation.clone(), stamp.clone(), &[&operator]);
     let duplicate_signature = Evidence {
+        component: ComponentKind::Spirit,
         operation: operation.clone(),
         stamp: stamp.clone(),
         signatures: vec![
@@ -358,6 +361,7 @@ fn operation_signature_is_bound_to_the_attested_moment() {
         Contract::new(Rule::SignedBy(operator.identity())),
     );
     let evidence = Evidence {
+        component: ComponentKind::Spirit,
         operation: operation.clone(),
         stamp: replayed_moment,
         signatures: vec![operator.sign_operation(&operation, &signed_moment)],
