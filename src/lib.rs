@@ -8,6 +8,8 @@ pub mod actors;
 pub mod admission;
 pub mod command;
 pub mod daemon;
+#[cfg(feature = "nota-text")]
+pub mod deploy_encode;
 pub mod error;
 pub mod language;
 pub mod master_key;

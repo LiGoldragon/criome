@@ -66,11 +66,28 @@
           context = mkContext system;
         in
         {
+          # The daemon package: NO nota-text, so the daemon binary cannot parse
+          # NOTA at all. It carries only `criome-daemon`, which accepts exactly
+          # one pre-generated rkyv `SignalFile` argument. This is the package the
+          # `criome.nix` NixOS module runs in `ExecStart`.
           default = context.craneLib.buildPackage (
             context.commonArgs
             // {
               inherit (context) cargoArtifacts;
+              pname = "criome";
+              meta.mainProgram = "criome-daemon";
+            }
+          );
+          # The text/encoder package: built WITH nota-text, so it carries the
+          # `criome` CLI client and the `criome-encode-configuration` deploy
+          # encoder. This is the package the module runs in `ExecStartPre` to
+          # seal typed NOTA into the daemon's rkyv configuration.
+          text = context.craneLib.buildPackage (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
               cargoExtraArgs = "--features nota-text";
+              pname = "criome-text";
               meta.mainProgram = "criome";
             }
           );
@@ -168,13 +185,27 @@
               RUSTDOCFLAGS = "-D warnings";
             }
           );
+          # The criome deploy path on a single REAL NixOS guest: the criome.nix
+          # module encodes typed NOTA -> rkyv in ExecStartPre, runs
+          # `criome-daemon <config.rkyv>` (one argument, no flags), binds its
+          # 0600 socket, persists its 0600 master key at the store-derived path,
+          # and self-resumes from persisted SEMA + key across a restart. Needs
+          # /dev/kvm to boot; the driver builds and evaluates everywhere.
+          criome-node = import ./nix/tests/criome-node.nix {
+            inherit (context) pkgs;
+            daemonPackage = self.packages.${system}.default;
+            encoderPackage = self.packages.${system}.text;
+            criomeModule = self.nixosModules.criome;
+          };
         }
       );
+
+      nixosModules.criome = import ./nix/modules/criome.nix;
 
       apps = forSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/criome";
+          program = "${self.packages.${system}.text}/bin/criome";
         };
         daemon = {
           type = "app";

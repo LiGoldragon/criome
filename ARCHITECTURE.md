@@ -573,6 +573,11 @@ src/text.rs                Nexus/NOTA projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
 src/command.rs             CLI client process-boundary logic
 src/daemon.rs              Unix-socket daemon wrapper around CriomeRoot
+src/deploy_encode.rs       deploy-time NOTA → rkyv config encoder (nota-text)
+src/bin/criome-daemon.rs   daemon entry: one rkyv SignalFile argument
+src/bin/criome-encode-configuration.rs  deploy encoder bin (nota-text)
+nix/modules/criome.nix     NixOS systemd module (ExecStartPre encodes, ExecStart runs one-arg daemon)
+nix/tests/criome-node.nix  single-node nixosTest: boot, socket up, restart self-resume
 tests/*.rs                 round-trip + architectural-truth tests
 ```
 
