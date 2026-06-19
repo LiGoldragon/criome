@@ -571,9 +571,15 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         }],
         Vec::new(),
     );
+    let authorized_head = signal_criome::AuthorizedObjectReference {
+        component: ComponentKind::Spirit,
+        digest: evidence.operation.object_digest().clone(),
+        kind: AuthorizedObjectKind::Head,
+    };
 
     let evaluation = AuthorizationEvaluation {
         contract: digest.clone(),
+        object: authorized_head.clone(),
         evidence: evidence.clone(),
     };
     let evaluated = root
@@ -603,15 +609,32 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     };
     let updates = snapshot.into_updates();
     assert_eq!(updates.len(), 1);
-    assert_eq!(
-        updates[0].object.digest,
-        evidence.operation.object_digest().clone()
-    );
-    assert_eq!(updates[0].object.component, ComponentKind::Spirit);
-    assert_eq!(updates[0].object.kind, AuthorizedObjectKind::Operation);
+    assert_eq!(updates[0].object, authorized_head);
     assert_eq!(updates[0].contract, digest);
     assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
     assert_eq!(updates[0].stamp, evidence.stamp);
+
+    let rejected_mismatch = root
+        .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+            AuthorizationEvaluation {
+                contract: digest.clone(),
+                object: signal_criome::AuthorizedObjectReference {
+                    component: ComponentKind::Spirit,
+                    digest: ObjectDigest::from_bytes(b"not-the-signed-operation"),
+                    kind: AuthorizedObjectKind::Head,
+                },
+                evidence: evidence.clone(),
+            },
+        )))
+        .await
+        .expect("reject mismatched authorization object")
+        .into_reply();
+    assert_eq!(
+        rejected_mismatch,
+        CriomeReply::Rejection(signal_criome::Rejection::new(
+            RejectionReason::MalformedRequest
+        ))
+    );
 
     let mirror_snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(

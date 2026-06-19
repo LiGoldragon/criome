@@ -1,11 +1,10 @@
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizedObjectKind,
-    AuthorizedObjectReference, AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey,
-    ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing, CriomeReply,
-    CriomeRequest, EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken,
-    KeyPurpose, RejectionReason,
+    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizedObjectUpdate,
+    AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
+    ContractFound, ContractMissing, CriomeReply, CriomeRequest, EvaluationDecision, Identity,
+    IdentityRegistration, IdentitySubscriptionToken, KeyPurpose, RejectionReason,
 };
 
 use crate::actors::{
@@ -203,20 +202,17 @@ impl CriomeRoot {
             CriomeRequest::EvaluateAuthorization(evaluation) => {
                 match (self.key_registry().await, self.contract_store().await) {
                     (Some(registry), Some(store)) => {
+                        if &evaluation.object.digest
+                            != evaluation.evidence.operation.object_digest()
+                        {
+                            return rejection(RejectionReason::MalformedRequest);
+                        }
                         match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry)
                         {
                             Ok(decision) => {
                                 if decision == EvaluationDecision::Authorized {
                                     self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                                        object: AuthorizedObjectReference {
-                                            component: evaluation.evidence.component,
-                                            digest: evaluation
-                                                .evidence
-                                                .operation
-                                                .object_digest()
-                                                .clone(),
-                                            kind: AuthorizedObjectKind::Operation,
-                                        },
+                                        object: evaluation.object,
                                         contract: evaluation.contract.clone(),
                                         decision: decision.clone(),
                                         stamp: evaluation.evidence.stamp.clone(),
