@@ -345,6 +345,59 @@ fn invalid_time_attestation_rejects_before_policy_evaluation() {
 }
 
 #[test]
+fn submajority_time_authority_rejects_attested_moment() {
+    let operator = Signer::developer("operator");
+    let first_timekeeper = Signer::cluster("first-timekeeper");
+    let second_timekeeper = Signer::cluster("second-timekeeper");
+    let third_timekeeper = Signer::cluster("third-timekeeper");
+    let fourth_timekeeper = Signer::cluster("fourth-timekeeper");
+    let fifth_timekeeper = Signer::cluster("fifth-timekeeper");
+    let registry = registry(&[
+        &operator,
+        &first_timekeeper,
+        &second_timekeeper,
+        &third_timekeeper,
+        &fourth_timekeeper,
+        &fifth_timekeeper,
+    ]);
+    let proposition = AttestedMomentProposition::new(
+        TimeWindow {
+            opens_at: moment(10),
+            closes_at: moment(20),
+        },
+        RequiredSignatureThreshold::new(2),
+        vec![
+            first_timekeeper.identity(),
+            second_timekeeper.identity(),
+            third_timekeeper.identity(),
+            fourth_timekeeper.identity(),
+            fifth_timekeeper.identity(),
+        ],
+    );
+    let stamp = AttestedMoment::new(
+        proposition.clone(),
+        vec![
+            first_timekeeper.sign_moment(&proposition),
+            second_timekeeper.sign_moment(&proposition),
+        ],
+    );
+    let operation = operation(b"submajority time authority");
+    let mut store = ContractStore::new();
+    let contract = admitted(
+        &mut store,
+        Contract::new(Rule::SignedBy(operator.identity())),
+    );
+    let evidence = signed_evidence(operation, stamp, &[&operator]);
+
+    assert_eq!(
+        store.evaluate(&contract, &evidence, &registry),
+        Ok(EvaluationDecision::Rejected(
+            EvaluationRejectionReason::TimeNotProven
+        ))
+    );
+}
+
+#[test]
 fn operation_signature_is_bound_to_the_attested_moment() {
     let operator = Signer::developer("operator");
     let clock = AttestedClock::new();
@@ -385,6 +438,31 @@ fn admission_rejects_duplicate_quorum_members_before_evaluation() {
     assert_eq!(
         admission_reason(store.admit(contract).expect_err("duplicate member")),
         ContractAdmissionRejectionReason::DuplicatePolicyMember
+    );
+}
+
+#[test]
+fn admission_rejects_submajority_thresholds_before_evaluation() {
+    let operator = Signer::developer("operator");
+    let designer = Signer::developer("designer");
+    let auditor = Signer::developer("auditor");
+    let reviewer = Signer::developer("reviewer");
+    let maintainer = Signer::developer("maintainer");
+    let mut store = ContractStore::new();
+    let contract = Contract::new(Rule::Threshold(threshold(
+        2,
+        vec![
+            key_member(&operator),
+            key_member(&designer),
+            key_member(&auditor),
+            key_member(&reviewer),
+            key_member(&maintainer),
+        ],
+    )));
+
+    assert_eq!(
+        admission_reason(store.admit(contract).expect_err("submajority threshold")),
+        ContractAdmissionRejectionReason::ThresholdUnsatisfiable
     );
 }
 
@@ -439,23 +517,42 @@ fn object_members_reference_previously_admitted_contracts_by_digest() {
 fn time_switch_changes_quorum_after_boundary() {
     let operator = Signer::developer("operator");
     let designer = Signer::developer("designer");
+    let auditor = Signer::developer("auditor");
     let clock = AttestedClock::new();
-    let registry = registry_with_clock(&clock, &[&operator, &designer]);
+    let registry = registry_with_clock(&clock, &[&operator, &designer, &auditor]);
     let operation = operation(b"time switch");
     let mut store = ContractStore::new();
     let digest = admitted(
         &mut store,
         Contract::new(Rule::TimeSwitch(TimeSwitch {
             boundary: moment(100),
-            before: threshold(1, vec![key_member(&operator), key_member(&designer)]),
-            after: threshold(2, vec![key_member(&operator), key_member(&designer)]),
+            before: threshold(
+                2,
+                vec![
+                    key_member(&operator),
+                    key_member(&designer),
+                    key_member(&auditor),
+                ],
+            ),
+            after: threshold(
+                3,
+                vec![
+                    key_member(&operator),
+                    key_member(&designer),
+                    key_member(&auditor),
+                ],
+            ),
         })),
     );
 
     assert_eq!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation.clone(), clock.moment(40, 50), &[&operator]),
+            &signed_evidence(
+                operation.clone(),
+                clock.moment(40, 50),
+                &[&operator, &designer]
+            ),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)
@@ -463,7 +560,11 @@ fn time_switch_changes_quorum_after_boundary() {
     assert!(matches!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation.clone(), clock.moment(140, 150), &[&operator]),
+            &signed_evidence(
+                operation.clone(),
+                clock.moment(140, 150),
+                &[&operator, &designer]
+            ),
             &registry,
         ),
         Ok(EvaluationDecision::Rejected(
@@ -473,7 +574,11 @@ fn time_switch_changes_quorum_after_boundary() {
     assert_eq!(
         store.evaluate(
             &digest,
-            &signed_evidence(operation, clock.moment(140, 150), &[&operator, &designer]),
+            &signed_evidence(
+                operation,
+                clock.moment(140, 150),
+                &[&operator, &designer, &auditor]
+            ),
             &registry,
         ),
         Ok(EvaluationDecision::Authorized)

@@ -411,7 +411,7 @@ impl ThresholdEvaluation for Threshold {
             ));
         }
         let required = self.required_signatures.into_u16();
-        if required == 0 || required > self.members().len() as u16 {
+        if !QuorumShape::new(required, self.members().len()).is_valid_majority() {
             return Err(AdmissionError::rejected(
                 ContractAdmissionRejectionReason::ThresholdUnsatisfiable,
             ));
@@ -574,8 +574,7 @@ impl AttestedMomentVerification for AttestedMoment {
         let required = self.proposition.required_signatures.into_u16();
         if self.proposition.window.opens_at.into_u64()
             >= self.proposition.window.closes_at.into_u64()
-            || required == 0
-            || required > authorities.len() as u16
+            || !QuorumShape::new(required, authorities.len()).is_valid_majority()
             || DuplicateIdentityScan::new(authorities).has_duplicates()
         {
             return Some(EvaluationRejectionReason::TimeNotProven);
@@ -604,6 +603,26 @@ impl AttestedMomentVerification for AttestedMoment {
         } else {
             Some(EvaluationRejectionReason::TimeNotProven)
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuorumShape {
+    required: u16,
+    authorities: usize,
+}
+
+impl QuorumShape {
+    fn new(required: u16, authorities: usize) -> Self {
+        Self {
+            required,
+            authorities,
+        }
+    }
+
+    fn is_valid_majority(&self) -> bool {
+        let required = usize::from(self.required);
+        required != 0 && required <= self.authorities && required > self.authorities / 2
     }
 }
 
