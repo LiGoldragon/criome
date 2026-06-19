@@ -27,7 +27,7 @@ nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text
 [dependencies]
 blake3       = "1"
 blst         = "0.3"
-kameo        = { version = "0.20", default-features = false, features = ["macros", "tracing"] }
+kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
 nota-next    = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
@@ -44,3 +44,6 @@ tempfile = "3"
 unsafe_code = "forbid"
 unused      = { level = "warn", priority = -1 }
 dead_code   = "warn"
+
+[patch.crates-io]
+kameo = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main" }
