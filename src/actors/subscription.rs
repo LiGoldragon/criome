@@ -60,9 +60,7 @@ pub struct RunDueContractChecks {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, kameo::Reply)]
-pub struct AuthorizedObjectPublication {
-    subscriber_count: usize,
-}
+pub struct AuthorizedObjectPublication;
 
 trait AuthorizedObjectFilter {
     fn matches_update(&self, update: &AuthorizedObjectUpdate) -> bool;
@@ -143,13 +141,8 @@ impl SubscriptionRegistry {
         &mut self,
         update: AuthorizedObjectUpdate,
     ) -> AuthorizedObjectPublication {
-        let subscriber_count = self
-            .authorized_object_subscriptions
-            .iter()
-            .filter(|token| token.interest.matches_update(&update))
-            .count();
         self.authorized_object_updates.push(update);
-        AuthorizedObjectPublication { subscriber_count }
+        AuthorizedObjectPublication
     }
 
     fn schedule_contract_time_check(&mut self, check: ContractTimeCheck) -> CriomeReply {
@@ -205,12 +198,6 @@ impl ScheduleContractTimeCheck {
 impl RunDueContractChecks {
     pub fn new(stamp: AttestedMoment) -> Self {
         Self { stamp }
-    }
-}
-
-impl AuthorizedObjectPublication {
-    pub const fn subscriber_count(self) -> usize {
-        self.subscriber_count
     }
 }
 
