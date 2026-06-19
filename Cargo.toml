@@ -20,9 +20,23 @@ required-features = ["nota-text"]
 name = "criome-daemon"
 path = "src/bin/criome-daemon.rs"
 
+[[bin]]
+name = "criome-cluster-witness-test"
+path = "src/bin/criome-cluster-witness-test.rs"
+required-features = ["cluster-witness"]
+
+[[bin]]
+name = "criome-write-configuration"
+path = "src/bin/criome-write-configuration.rs"
+required-features = ["cluster-witness"]
+
 [features]
 default = []
 nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text"]
+# The criome-cluster test harness binaries (the authorization witness and its
+# daemon-config encoder) — designer report 704, Stage A. Excluded from
+# production builds; the NixOS cluster test enables it.
+cluster-witness = []
 
 [dependencies]
 blake3       = "1"

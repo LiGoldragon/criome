@@ -74,6 +74,19 @@
               meta.mainProgram = "criome";
             }
           );
+
+          # The criome-cluster test harness build (designer report 704, Stage A):
+          # criome-daemon plus the authorization witness-test and its rkyv-config
+          # encoder. The NixOS cluster test consumes these; production uses
+          # `default`. The criome CLI bin (nota-text) is skipped here.
+          cluster-witness = context.craneLib.buildPackage (
+            context.commonArgs
+            // {
+              inherit (context) cargoArtifacts;
+              cargoExtraArgs = "--features cluster-witness --bins";
+              meta.mainProgram = "criome-cluster-witness-test";
+            }
+          );
         }
       );
 
