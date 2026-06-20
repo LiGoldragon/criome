@@ -32,6 +32,21 @@ explicit `EscalateToPsyche` decision. That is a typed outcome, not a hidden
 side effect: Criome says the policy requires psyche judgment; another layer
 performs that judgment and supplies any later signed verdict.
 
+Client approval mode is the daemon-wide authorization mode — alongside
+Quorum and AutoApprove — in which criome parks every incoming submission
+for human approval rather than auto-authorizing or gathering a quorum.
+criome owns the pending-approval queue: each parked authorization
+evaluation is held in criome's own store keyed by a `ParkedAuthorizationId`,
+an external approver client (mentci) lists and observes the parked
+submissions over the meta socket, and an approval answers by that
+identifier — the vote-on-existing-object adjudication over the
+already-submitted, criome-held object — rather than re-supplying the full
+evaluation by value. criome verifies and holds the parked object; mentci
+casts the approve-or-deny verdict. Per Spirit t00s (Decision): [criome's
+authorization verdict can be supplied by a connected approver ... Client
+approval mode is a daemon-wide AuthorizationMode variant ... criome owns
+the pending-approval queue].
+
 Policy quorum signatures are stamped with crystallized time. The public
 contract carries `StampedSignatureEnvelope` for operation evidence,
 adjudicator agreement facts, routed signature submissions, and authorization
