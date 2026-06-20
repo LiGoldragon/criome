@@ -30,6 +30,16 @@ name = "criome-write-configuration"
 path = "src/bin/criome-write-configuration.rs"
 required-features = ["cluster-witness"]
 
+[[bin]]
+name = "criome-auto-approve-witness-test"
+path = "src/bin/criome-auto-approve-witness-test.rs"
+required-features = ["cluster-witness"]
+
+[[bin]]
+name = "criome-client-approval-witness-test"
+path = "src/bin/criome-client-approval-witness-test.rs"
+required-features = ["cluster-witness"]
+
 [features]
 default = []
 nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text"]
