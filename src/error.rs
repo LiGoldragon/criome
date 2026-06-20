@@ -62,6 +62,10 @@ pub enum Error {
     UnknownPeer(signal_criome::BlsPublicKey),
     #[error("peer signature rejected for sender public key {}", .0.as_str())]
     PeerSignatureRejected(signal_criome::BlsPublicKey),
+    #[error("peer envelope encode failed")]
+    PeerEnvelopeEncode,
+    #[error("peer envelope decode failed")]
+    PeerEnvelopeDecode,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

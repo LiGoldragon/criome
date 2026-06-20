@@ -1,7 +1,8 @@
 use std::io::{BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 use meta_signal_criome::{Frame as CriomeMetaFrame, FrameBody as CriomeMetaFrameBody};
 use signal_criome::{
@@ -336,6 +337,17 @@ impl LengthPrefixed {
     }
 }
 
+/// The default 1 MiB cap on the raw `CriomeFrame` blob (the second, authenticated
+/// blob), matching [`CriomeFrameCodec`].
+const DEFAULT_MAXIMUM_FRAME_BYTES: usize = 1024 * 1024;
+
+/// The default 8 KiB cap on the `PeerEnvelope` blob — the FIRST, still
+/// UNAUTHENTICATED blob read from a peer. The envelope is tiny (two hex strings:
+/// a BLS public key and a signature, a few hundred bytes), so a cap far below
+/// the 1 MiB frame cap bounds the pre-authentication allocation an unknown peer
+/// can demand before it has proved anything. Distinct from the frame-blob cap.
+const DEFAULT_MAXIMUM_ENVELOPE_BYTES: usize = 8 * 1024;
+
 /// The peer transport codec: a frame on the peer wire is two length-prefixed
 /// blobs — `[length-prefixed PeerEnvelope][length-prefixed CriomeFrame bytes]`.
 /// The envelope is a thin authenticated header (sender master public key plus a
@@ -344,28 +356,42 @@ impl LengthPrefixed {
 /// tag, so the receiver authenticates the frame BEFORE decoding it. Provides
 /// authenticity, not confidentiality — the tailnet supplies confidentiality.
 ///
-/// Data-bearing: carries the same 1 MiB frame cap discipline as
-/// [`CriomeFrameCodec`], applied independently to each blob.
+/// Data-bearing: carries TWO caps. The envelope blob — read first, before the
+/// sender is authenticated — has its own much smaller cap
+/// ([`DEFAULT_MAXIMUM_ENVELOPE_BYTES`]) so an unknown peer cannot demand a large
+/// pre-authentication allocation. The frame blob keeps the full 1 MiB cap
+/// ([`DEFAULT_MAXIMUM_FRAME_BYTES`]), matching [`CriomeFrameCodec`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CriomePeerCodec {
     maximum_frame_bytes: usize,
+    maximum_envelope_bytes: usize,
 }
 
 impl Default for CriomePeerCodec {
     fn default() -> Self {
-        Self::new(1024 * 1024)
+        Self::new(DEFAULT_MAXIMUM_FRAME_BYTES)
     }
 }
 
 impl CriomePeerCodec {
+    /// Construct with `maximum_frame_bytes` capping the authenticated frame blob
+    /// and the default 8 KiB envelope cap on the pre-authentication envelope blob.
     pub const fn new(maximum_frame_bytes: usize) -> Self {
         Self {
             maximum_frame_bytes,
+            maximum_envelope_bytes: DEFAULT_MAXIMUM_ENVELOPE_BYTES,
         }
     }
 
-    fn framing(&self) -> LengthPrefixed {
+    /// Framing for the authenticated frame blob (the 1 MiB-class cap).
+    fn frame_framing(&self) -> LengthPrefixed {
         LengthPrefixed::new(self.maximum_frame_bytes)
+    }
+
+    /// Framing for the pre-authentication envelope blob (the tight 8 KiB-class
+    /// cap), distinct from the frame-blob framing.
+    fn envelope_framing(&self) -> LengthPrefixed {
+        LengthPrefixed::new(self.maximum_envelope_bytes)
     }
 
     /// Wrap a `CriomeRequest` into a `CriomeFrame` and write it as an enveloped
@@ -410,13 +436,26 @@ impl CriomePeerCodec {
         sender: &MasterKey,
     ) -> Result<()> {
         let frame_bytes = frame.encode_length_prefixed()?;
+        // Fail fast locally: enforce the frame-blob cap on the write side too,
+        // symmetric with the read path (LengthPrefixed::read_blob_with_header).
+        // The frame blob is written verbatim with write_all below, bypassing the
+        // LengthPrefixed::write_blob cap, so the cap must be checked here.
+        if frame_bytes.len() > self.maximum_frame_bytes {
+            return Err(Error::UnexpectedSignalFrame {
+                got: format!(
+                    "peer frame length {} exceeds {}",
+                    frame_bytes.len(),
+                    self.maximum_frame_bytes
+                ),
+            });
+        }
         let signature = sender.sign_peer_frame(&frame_bytes);
         let envelope = PeerEnvelope::new(sender.public_key(), signature);
         let envelope_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&envelope)
-            .map_err(|_| Error::ConfigurationArchiveEncode)?
+            .map_err(|_| Error::PeerEnvelopeEncode)?
             .to_vec();
-        let framing = self.framing();
-        framing.write_blob(writer, &envelope_bytes)?;
+        // The envelope blob uses the tight pre-authentication cap.
+        self.envelope_framing().write_blob(writer, &envelope_bytes)?;
         // The frame blob is already length-prefixed (encode_length_prefixed),
         // so write it verbatim — that is the exact preimage the signature
         // covers and the reader reconstructs.
@@ -435,13 +474,18 @@ impl CriomePeerCodec {
         reader: &mut impl Read,
         admitted: &[BlsPublicKey],
     ) -> Result<(BlsPublicKey, CriomeFrame)> {
-        let framing = self.framing();
-        let envelope_bytes = framing.read_blob(reader)?;
+        // The envelope is the FIRST, still-unauthenticated read from the peer:
+        // bound its allocation with the tight envelope cap, not the 1 MiB frame
+        // cap. increment 4: the daemon inbound serve listener must additionally
+        // set a read timeout on the accepted stream so a peer that opens a
+        // connection and then stalls cannot pin a serve worker indefinitely.
+        let envelope_bytes = self.envelope_framing().read_blob(reader)?;
         let envelope = rkyv::from_bytes::<PeerEnvelope, rkyv::rancor::Error>(&envelope_bytes)
-            .map_err(|_| Error::ConfigurationArchiveDecode)?;
+            .map_err(|_| Error::PeerEnvelopeDecode)?;
         // The frame blob carries its own 4-byte length header; read it verbatim
-        // so the verified preimage is byte-identical to what the sender signed.
-        let frame_bytes = framing.read_blob_with_header(reader)?;
+        // (under the full frame cap) so the verified preimage is byte-identical
+        // to what the sender signed.
+        let frame_bytes = self.frame_framing().read_blob_with_header(reader)?;
         let sender = envelope.sender_public_key;
         if !admitted.iter().any(|peer| peer == &sender) {
             return Err(Error::UnknownPeer(sender));
@@ -449,20 +493,32 @@ impl CriomePeerCodec {
         if !sender.verify_peer_frame(&envelope.signature, &frame_bytes) {
             return Err(Error::PeerSignatureRejected(sender));
         }
+        // increment 4: authenticity is established here, but freshness is not —
+        // a captured valid frame still verifies. The quorum/solicitation layer
+        // must bind a per-solicitation nonce (or epoch) into the signed frame
+        // and reject a replayed one; this transport deliberately leaves replay
+        // defense to that layer.
         let frame = CriomeFrame::decode_length_prefixed(&frame_bytes)?;
         Ok((sender, frame))
     }
 }
 
+/// The default connect/read/write timeout for [`CriomePeerClient`]: a blocking
+/// peer client with no timeout hangs the caller on a dead or slow remote, so a
+/// finite default protects the caller. Tunable via [`CriomePeerClient::with_timeout`].
+const DEFAULT_PEER_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A synchronous client to a peer criome daemon over TCP. Holds the peer
-/// `host:port` address and the peer codec; signs each request frame with the
-/// local master key and authenticates the enveloped reply against the peer's
-/// admitted public key. Mirrors [`CriomeClient`]'s std/blocking shape — the
-/// peer transport primitive is proven before the daemon serve-loop integration
+/// `host:port` address, the peer codec, and a single `timeout` applied to the
+/// connect, read, and write phases; signs each request frame with the local
+/// master key and authenticates the enveloped reply against the peer's admitted
+/// public key. Mirrors [`CriomeClient`]'s std/blocking shape — the peer
+/// transport primitive is proven before the daemon serve-loop integration
 /// (increment 4) wires it in.
 pub struct CriomePeerClient {
     address: String,
     codec: CriomePeerCodec,
+    timeout: Duration,
 }
 
 impl CriomePeerClient {
@@ -470,23 +526,59 @@ impl CriomePeerClient {
         Self {
             address: address.into(),
             codec: CriomePeerCodec::default(),
+            timeout: DEFAULT_PEER_TIMEOUT,
         }
+    }
+
+    /// Override the connect/read/write timeout (default 5 seconds).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Connect to the peer over TCP, send `request` enveloped and signed by
     /// `local` (the local master key), and read + authenticate the enveloped
     /// reply, admitting only `peer_public_key` as the reply signer. Returns the
     /// reply payload.
+    ///
+    /// The connect uses [`TcpStream::connect_timeout`] (so an unroutable or
+    /// dead peer fails within `timeout` rather than hanging on the OS connect
+    /// backoff), and read + write timeouts are set on the stream before any I/O
+    /// so a peer that connects but then stalls cannot pin the caller.
     pub fn send(
         &self,
         request: CriomeRequest,
         local: &MasterKey,
         peer_public_key: &BlsPublicKey,
     ) -> Result<CriomeReply> {
-        let stream = TcpStream::connect(&self.address).map_err(|source| Error::PeerConnect {
-            address: self.address.clone(),
-            source,
-        })?;
+        // Resolve the host:port to a concrete SocketAddr; connect_timeout needs
+        // a SocketAddr, not a host string. Take the first resolved address.
+        let socket_address = self
+            .address
+            .to_socket_addrs()
+            .map_err(|source| Error::PeerConnect {
+                address: self.address.clone(),
+                source,
+            })?
+            .next()
+            .ok_or_else(|| Error::PeerConnect {
+                address: self.address.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "address resolved to no socket addresses",
+                ),
+            })?;
+        let stream =
+            TcpStream::connect_timeout(&socket_address, self.timeout).map_err(|source| {
+                Error::PeerConnect {
+                    address: self.address.clone(),
+                    source,
+                }
+            })?;
+        // Bound every subsequent read and write so a stalled peer cannot block
+        // the caller past `timeout` on either phase.
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
         let mut stream = BufReader::new(stream);
         self.codec.write_request(stream.get_mut(), request, local)?;
         let admitted = [peer_public_key.clone()];
@@ -608,6 +700,31 @@ mod tests {
             .expect("client send round-trips");
         server.join().expect("server thread");
         assert_eq!(reply, expected_reply, "reply decodes to the same value");
+    }
+
+    #[test]
+    fn connect_to_closed_loopback_port_fails_as_peer_connect() {
+        // Bind a loopback listener to claim a port, capture its address, then
+        // drop the listener so the port is closed. A connect to a closed port on
+        // loopback gets an immediate RST (connection refused), so this returns
+        // PeerConnect quickly and deterministically without depending on the
+        // timeout firing.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let address = listener.local_addr().expect("listener address").to_string();
+        drop(listener);
+
+        let local = MasterKey::generate().expect("generate local key");
+        let peer_public_key = MasterKey::generate()
+            .expect("generate peer key")
+            .public_key();
+        let client = CriomePeerClient::new(address).with_timeout(Duration::from_millis(500));
+        let error = client
+            .send(sample_request(), &local, &peer_public_key)
+            .expect_err("connect to a closed port must fail");
+        match error {
+            Error::PeerConnect { .. } => {}
+            other => panic!("expected PeerConnect, got {other:?}"),
+        }
     }
 
     #[test]

@@ -371,6 +371,40 @@ mod tests {
     }
 
     #[test]
+    fn attestation_and_peer_frame_signatures_never_cross_verify() {
+        // The single most load-bearing security invariant of the peer transport:
+        // a signature minted under ATTESTATION_DST must NEVER verify under
+        // PEER_FRAME_DST, and vice versa, even over the identical message with
+        // the identical key. The distinct domain-separation tags change the BLS
+        // hash-to-curve domain, so the two signatures cannot be substituted.
+        let key = MasterKey::generate().expect("generate master key");
+        let public_key = key.public_key();
+        let message = b"identical preimage signed under two different domains";
+
+        // Attestation signature must fail peer-frame verification...
+        let attestation_signature = key.sign(message);
+        assert!(
+            public_key.verify_bls(&attestation_signature, message),
+            "attestation signature verifies under its own domain (sanity)"
+        );
+        assert!(
+            !public_key.verify_peer_frame(&attestation_signature, message),
+            "attestation signature must NOT verify as a peer frame"
+        );
+
+        // ...and a peer-frame signature must fail attestation verification.
+        let peer_frame_signature = key.sign_peer_frame(message);
+        assert!(
+            public_key.verify_peer_frame(&peer_frame_signature, message),
+            "peer-frame signature verifies under its own domain (sanity)"
+        );
+        assert!(
+            !public_key.verify_bls(&peer_frame_signature, message),
+            "peer-frame signature must NOT verify as an attestation"
+        );
+    }
+
+    #[test]
     fn other_key_fails_verification() {
         let signer = MasterKey::generate().expect("generate signer key");
         let other = MasterKey::generate().expect("generate other key");
