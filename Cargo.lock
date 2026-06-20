@@ -125,6 +125,7 @@ dependencies = [
  "blake3",
  "blst",
  "kameo",
+ "meta-signal-criome",
  "nota-next",
  "rkyv",
  "sema-engine",
@@ -408,6 +409,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
+name = "meta-signal-criome"
+version = "0.1.0"
+source = "git+https://github.com/LiGoldragon/meta-signal-criome.git?branch=main#f14c0324e33468542897450cabb1626240f11a1b"
+dependencies = [
+ "rkyv",
+ "schema-rust-next",
+ "signal-criome",
+ "signal-frame",
+ "thiserror",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -441,7 +454,7 @@ dependencies = [
 [[package]]
 name = "nota-next"
 version = "0.5.0"
-source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#7105c2be36067cb3d5b8f744aaf628ffdac7a112"
+source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#c43d04a159e90314a0094b61ace66053371cc247"
 dependencies = [
  "nota-next-derive",
  "rkyv",
@@ -450,7 +463,7 @@ dependencies = [
 [[package]]
 name = "nota-next-derive"
 version = "0.3.0"
-source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#7105c2be36067cb3d5b8f744aaf628ffdac7a112"
+source = "git+https://github.com/LiGoldragon/nota-next.git?branch=main#c43d04a159e90314a0094b61ace66053371cc247"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -618,7 +631,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "schema-cc"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#b3be7d0f9161cc01353cfecd0cc0a17678b5030a"
+source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#4b7e830a7001708737a617bd8eedac8002cc1fc6"
 dependencies = [
  "nota-next",
  "prettyplease",
@@ -631,7 +644,7 @@ dependencies = [
 [[package]]
 name = "schema-next"
 version = "0.2.0"
-source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#b3be7d0f9161cc01353cfecd0cc0a17678b5030a"
+source = "git+https://github.com/LiGoldragon/schema-next.git?branch=main#4b7e830a7001708737a617bd8eedac8002cc1fc6"
 dependencies = [
  "blake3",
  "nota-next",
@@ -643,7 +656,7 @@ dependencies = [
 [[package]]
 name = "schema-rust-next"
 version = "0.5.3"
-source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#bb4dfe293e03e64e89f899621cc5dfa5bff6958e"
+source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#90d853c33ade57cfafca5942dd0790a3302a605f"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -734,7 +747,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#9194c795a104d7e07cd5220ddb35630e87c15137"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#caa02a98b542e397ee043e225a43450534960a8e"
 dependencies = [
  "blake3",
  "blst",
@@ -748,7 +761,7 @@ dependencies = [
 [[package]]
 name = "signal-frame"
 version = "0.2.1"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#b0c2c65c3da5117caa01819655de9952c4a0710c"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#c75053210b1b1e0d22833f0cfc461363213cf860"
 dependencies = [
  "nota-next",
  "paste",
@@ -760,7 +773,7 @@ dependencies = [
 [[package]]
 name = "signal-frame-macros"
 version = "0.1.1"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#b0c2c65c3da5117caa01819655de9952c4a0710c"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#c75053210b1b1e0d22833f0cfc461363213cf860"
 dependencies = [
  "proc-macro2",
  "quote",

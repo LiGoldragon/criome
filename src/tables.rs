@@ -687,7 +687,7 @@ struct ContractDigestKey {
 impl ContractDigestKey {
     fn new(digest: &ContractDigest) -> Self {
         Self {
-            digest: digest.object_digest().as_ref().to_string(),
+            digest: digest.object_digest().payload().to_string(),
         }
     }
 

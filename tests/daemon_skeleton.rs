@@ -12,7 +12,8 @@ use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
 use criome::language::{AttestedMomentStatement, OperationStatement};
 use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
-use criome::transport::{CriomeClient, CriomeFrameCodec};
+use criome::transport::{CriomeClient, CriomeFrameCodec, CriomeMetaClient};
+use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 #[cfg(feature = "nota-text")]
 use nota_next::NotaEncode;
 use signal_criome::{
@@ -175,6 +176,40 @@ fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
         Identity::cluster(("criome-master").to_string()),
         TimestampNanos::new(1),
         None,
+    )
+}
+
+fn signed_time_evidence(seed: &[u8], timekeeper: &MasterKey, signer: Identity) -> Evidence {
+    let operation = operation_digest(seed);
+    let proposition = AttestedMomentProposition::new(
+        TimeWindow {
+            opens_at: TimestampNanos::new(1),
+            closes_at: TimestampNanos::new(2),
+        },
+        RequiredSignatureThreshold::new(1),
+        vec![signer.clone()],
+    );
+    Evidence::new(
+        ComponentKind::Spirit,
+        operation,
+        AttestedMoment::new(
+            proposition.clone(),
+            vec![TimeSignature {
+                signer,
+                envelope: SignatureEnvelope {
+                    scheme: SignatureScheme::Bls12_381MinPk,
+                    public_key: timekeeper.public_key(),
+                    signature: timekeeper.sign(
+                        AttestedMomentStatement::new(&proposition)
+                            .to_signing_bytes()
+                            .expect("moment statement")
+                            .as_slice(),
+                    ),
+                },
+            }],
+        ),
+        Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -1023,8 +1058,10 @@ fn criome_daemon_signal_frame_registers_identity() {
 fn criome_daemon_meta_socket_is_user_private() {
     let workspace = fixture_path("socket-mode");
     let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
     let store = StoreLocation::new(workspace.join("criome.sema"));
     let daemon = CriomeDaemon::new(&socket, store)
+        .with_meta_socket(&meta_socket)
         .bind()
         .expect("bind daemon");
 
@@ -1034,6 +1071,133 @@ fn criome_daemon_meta_socket_is_user_private() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o600);
+    let meta_mode = std::fs::metadata(daemon.meta_socket())
+        .expect("read meta socket metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(meta_mode, 0o600);
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn meta_socket_approval_records_authorized_head_update() {
+    let workspace = fixture_path("meta-approval");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store)
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+
+    let timekeeper = MasterKey::generate().expect("timekeeper key");
+    let timekeeper_identity = Identity::cluster("timekeeper".to_string());
+    let registration_reply = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve timekeeper registration"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::RegisterIdentity(IdentityRegistration::new(
+                timekeeper_identity.clone(),
+                timekeeper.public_key(),
+                PublicKeyFingerprint::new("timekeeper-fingerprint".to_string()),
+                KeyPurpose::ReleaseAuthorization,
+                None,
+            )))
+            .expect("register timekeeper");
+        assert_eq!(server.join().expect("join registration server"), reply);
+        reply
+    });
+    assert!(matches!(
+        registration_reply,
+        CriomeReply::IdentityReceipt(signal_criome::IdentityReceipt { .. })
+    ));
+
+    let contract_reply = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve contract admission"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::AdmitContract(Contract::new(
+                Rule::EscalateToPsyche,
+            )))
+            .expect("admit contract");
+        assert_eq!(server.join().expect("join contract server"), reply);
+        reply
+    });
+    let CriomeReply::ContractAdmitted(admitted) = contract_reply else {
+        panic!("expected ContractAdmitted, got {contract_reply:?}");
+    };
+    let contract = admitted.into_payload();
+    let evidence = signed_time_evidence(
+        b"mentci-approved-head",
+        &timekeeper,
+        timekeeper_identity.clone(),
+    );
+    let object = signal_criome::AuthorizedObjectReference {
+        component: ComponentKind::Spirit,
+        digest: evidence.operation.object_digest().clone(),
+        kind: AuthorizedObjectKind::Head,
+    };
+    let evaluation = AuthorizationEvaluation {
+        contract: contract.clone(),
+        object: object.clone(),
+        evidence: evidence.clone(),
+    };
+
+    let escalated = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve escalation"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::EvaluateAuthorization(evaluation.clone()))
+            .expect("evaluate authorization");
+        assert_eq!(server.join().expect("join escalation server"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizationEvaluated(escalated) = escalated else {
+        panic!("expected AuthorizationEvaluated, got {escalated:?}");
+    };
+    assert_eq!(escalated.decision, EvaluationDecision::EscalateToPsyche);
+
+    let approved = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve meta approval"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
+                AuthorizationApproval {
+                    evaluation: evaluation.clone(),
+                    decision: AuthorizationApprovalDecision::Approve,
+                },
+            ))
+            .expect("submit meta approval");
+        assert_eq!(server.join().expect("join meta server"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
+        panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
+    };
+    assert_eq!(approved.payload().decision, EvaluationDecision::Authorized);
+
+    let snapshot = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve authorized observation"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::ObserveAuthorizedObjects(
+                AuthorizedObjectObservation {
+                    subscriber: Identity::agent("mentci-status".to_string()),
+                    interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+                },
+            ))
+            .expect("observe authorized objects");
+        assert_eq!(server.join().expect("join observation server"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(snapshot) = snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {snapshot:?}");
+    };
+    let updates = snapshot.into_updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].object, object);
+    assert_eq!(updates[0].contract, contract);
+    assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
+    assert_eq!(updates[0].stamp, evidence.stamp);
 
     daemon.shutdown().expect("shutdown daemon");
 }

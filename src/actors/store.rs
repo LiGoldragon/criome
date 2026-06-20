@@ -458,8 +458,8 @@ impl StoreKernel {
         contracts.sort_by(|left, right| {
             left.digest()
                 .object_digest()
-                .as_ref()
-                .cmp(right.digest().object_digest().as_ref())
+                .payload()
+                .cmp(right.digest().object_digest().payload())
         });
         Ok(contracts)
     }

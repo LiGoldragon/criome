@@ -1,10 +1,12 @@
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 use signal_criome::{
     AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizedObjectUpdate,
     AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
-    ContractFound, ContractMissing, CriomeReply, CriomeRequest, EvaluationDecision, Identity,
-    IdentityRegistration, IdentitySubscriptionToken, KeyPurpose, RejectionReason,
+    ContractFound, ContractMissing, CriomeReply, CriomeRequest, EvaluationDecision,
+    EvaluationRejectionReason, Identity, IdentityRegistration, IdentitySubscriptionToken,
+    KeyPurpose, RejectionReason,
 };
 
 use crate::actors::{
@@ -34,6 +36,10 @@ pub struct SubmitRequest {
     request: CriomeRequest,
 }
 
+pub struct SubmitMetaRequest {
+    request: meta_signal_criome::Input,
+}
+
 pub struct ReadTopology;
 
 #[derive(Debug, Clone, PartialEq, Eq, kameo::Reply)]
@@ -43,6 +49,11 @@ pub struct CriomeTopology {
     verifier: bool,
     authorization: bool,
     subscription: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, kameo::Reply)]
+pub struct CriomeMetaActorReply {
+    reply: meta_signal_criome::Output,
 }
 
 impl Arguments {
@@ -57,6 +68,22 @@ impl Arguments {
 impl SubmitRequest {
     pub fn new(request: CriomeRequest) -> Self {
         Self { request }
+    }
+}
+
+impl SubmitMetaRequest {
+    pub fn new(request: meta_signal_criome::Input) -> Self {
+        Self { request }
+    }
+}
+
+impl CriomeMetaActorReply {
+    pub fn new(reply: meta_signal_criome::Output) -> Self {
+        Self { reply }
+    }
+
+    pub fn into_reply(self) -> meta_signal_criome::Output {
+        self.reply
     }
 }
 
@@ -267,6 +294,56 @@ impl CriomeRoot {
                     .await
             }
         }
+    }
+
+    async fn submit_meta(&mut self, request: meta_signal_criome::Input) -> meta_signal_criome::Output {
+        match request {
+            meta_signal_criome::Input::Configure(_configuration) => {
+                meta_signal_criome::Output::RequestUnimplemented(
+                    meta_signal_criome::RequestUnimplemented {
+                        operation: meta_signal_criome::OperationKind::Configure,
+                        reason: meta_signal_criome::UnimplementedReason::NotBuiltYet,
+                    },
+                )
+            }
+            meta_signal_criome::Input::SubmitAuthorizationApproval(approval) => {
+                self.record_authorization_approval(approval).await
+            }
+        }
+    }
+
+    async fn record_authorization_approval(
+        &self,
+        approval: AuthorizationApproval,
+    ) -> meta_signal_criome::Output {
+        let AuthorizationApproval {
+            evaluation,
+            decision,
+        } = approval;
+        let decision = if decision == AuthorizationApprovalDecision::Approve
+            && &evaluation.object.digest == evaluation.evidence.operation.object_digest()
+        {
+            self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                object: evaluation.object.clone(),
+                contract: evaluation.contract.clone(),
+                decision: EvaluationDecision::Authorized,
+                stamp: evaluation.evidence.stamp.clone(),
+            })
+            .await;
+            EvaluationDecision::Authorized
+        } else {
+            match decision {
+                AuthorizationApprovalDecision::Approve | AuthorizationApprovalDecision::Reject => {
+                    EvaluationDecision::Rejected(EvaluationRejectionReason::AgreementMissing)
+                }
+                AuthorizationApprovalDecision::Defer => EvaluationDecision::EscalateToPsyche,
+            }
+        };
+
+        meta_signal_criome::Output::authorization_approval_recorded(AuthorizationEvaluated {
+            contract: evaluation.contract,
+            decision,
+        })
     }
 
     async fn ask_registry<M>(&self, message: M) -> CriomeReply
@@ -530,6 +607,18 @@ impl Message<SubmitRequest> for CriomeRoot {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         actor_reply(self.submit(message.request).await)
+    }
+}
+
+impl Message<SubmitMetaRequest> for CriomeRoot {
+    type Reply = CriomeMetaActorReply;
+
+    async fn handle(
+        &mut self,
+        message: SubmitMetaRequest,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        CriomeMetaActorReply::new(self.submit_meta(message.request).await)
     }
 }
 
