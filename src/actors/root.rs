@@ -2,7 +2,7 @@ use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 use signal_criome::{
-    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizedObjectUpdate,
+    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizationMode, AuthorizedObjectUpdate,
     AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
     ContractFound, ContractMissing, CriomeReply, CriomeRequest, EvaluationDecision,
     EvaluationRejectionReason, Identity, IdentityRegistration, IdentitySubscriptionToken,
@@ -25,11 +25,14 @@ pub struct CriomeRoot {
     authorization: ActorRef<authorization::AuthorizationCoordinator>,
     subscription: ActorRef<subscription::SubscriptionRegistry>,
     store: ActorRef<store::StoreKernel>,
+    authorization_mode: AuthorizationMode,
+    configuration_generation: u64,
 }
 
 pub struct Arguments {
     pub store: StoreLocation,
     pub cluster_root: Option<BlsPublicKey>,
+    pub authorization_mode: AuthorizationMode,
 }
 
 pub struct SubmitRequest {
@@ -61,6 +64,7 @@ impl Arguments {
         Self {
             store,
             cluster_root: None,
+            authorization_mode: AuthorizationMode::Quorum,
         }
     }
 }
@@ -127,6 +131,7 @@ impl CriomeRoot {
         authorization: ActorRef<authorization::AuthorizationCoordinator>,
         subscription: ActorRef<subscription::SubscriptionRegistry>,
         store: ActorRef<store::StoreKernel>,
+        authorization_mode: AuthorizationMode,
     ) -> Self {
         Self {
             registry,
@@ -135,6 +140,8 @@ impl CriomeRoot {
             authorization,
             subscription,
             store,
+            authorization_mode,
+            configuration_generation: 0,
         }
     }
 
@@ -227,6 +234,28 @@ impl CriomeRoot {
             CriomeRequest::AdmitContract(contract) => self.admit_contract(contract).await,
             CriomeRequest::LookupContract(digest) => self.lookup_contract(digest).await,
             CriomeRequest::EvaluateAuthorization(evaluation) => {
+                // Auto-approve mode (Spirit t00s): the configured acceptance policy
+                // authorizes every well-formed request as it arrives, with no quorum
+                // evidence consulted. The structural object/operation-digest integrity
+                // check still holds; only the quorum is skipped. Publishes the
+                // authorized object so propagation proceeds.
+                if matches!(self.authorization_mode, AuthorizationMode::AutoApprove) {
+                    if &evaluation.object.digest != evaluation.evidence.operation.object_digest() {
+                        return rejection(RejectionReason::MalformedRequest);
+                    }
+                    let decision = EvaluationDecision::Authorized;
+                    self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                        object: evaluation.object,
+                        contract: evaluation.contract.clone(),
+                        decision: decision.clone(),
+                        stamp: evaluation.evidence.stamp.clone(),
+                    })
+                    .await;
+                    return CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
+                        contract: evaluation.contract,
+                        decision,
+                    });
+                }
                 match (self.key_registry().await, self.contract_store().await) {
                     (Some(registry), Some(store)) => {
                         if &evaluation.object.digest
@@ -298,12 +327,16 @@ impl CriomeRoot {
 
     async fn submit_meta(&mut self, request: meta_signal_criome::Input) -> meta_signal_criome::Output {
         match request {
-            meta_signal_criome::Input::Configure(_configuration) => {
-                meta_signal_criome::Output::RequestUnimplemented(
-                    meta_signal_criome::RequestUnimplemented {
-                        operation: meta_signal_criome::OperationKind::Configure,
-                        reason: meta_signal_criome::UnimplementedReason::NotBuiltYet,
-                    },
+            meta_signal_criome::Input::Configure(configuration) => {
+                // Apply the runtime-changeable policy over the meta socket (Spirit
+                // da5i: every component's meta socket configures it). authorization_mode
+                // is the load-bearing one (auto-approve vs quorum); socket/store
+                // rebinding is not runtime-changeable, and cluster_root runtime
+                // application is a follow-on (it would message the identity registry).
+                self.authorization_mode = configuration.authorization_mode().clone();
+                self.configuration_generation += 1;
+                meta_signal_criome::Output::configured(
+                    meta_signal_criome::ConfigurationGeneration::new(self.configuration_generation),
                 )
             }
             meta_signal_criome::Input::SubmitAuthorizationApproval(approval) => {
@@ -594,6 +627,7 @@ impl Actor for CriomeRoot {
             authorization,
             subscription,
             store,
+            arguments.authorization_mode,
         ))
     }
 }
