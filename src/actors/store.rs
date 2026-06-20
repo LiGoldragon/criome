@@ -1,10 +1,11 @@
 use kameo::actor::{Actor, ActorRef};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, Contract, ContractAdmissionRejectionReason,
-    ContractDigest, Identity, IdentityRegistration, IdentityRevocation, ObjectDigest,
-    PrincipalStatus, SignatureSolicitationRoute, SignatureSubmission,
+    Attestation, AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant,
+    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus, Contract,
+    ContractAdmissionRejectionReason, ContractDigest, Identity, IdentityRegistration,
+    IdentityRevocation, ObjectDigest, PrincipalStatus, SignatureSolicitationRoute,
+    SignatureSubmission,
 };
 
 use crate::language::{AdmissionError, ContractStore};
@@ -46,7 +47,8 @@ pub struct CreateAuthorizationState {
     missing_authorities: Vec<Identity>,
     grant: Option<AuthorizationGrant>,
     denial: Option<AuthorizationDenial>,
-    replay_identity: AuthorizationReplayIdentity,
+    parked_evaluation: Option<AuthorizationEvaluation>,
+    replay_identity: Option<AuthorizationReplayIdentity>,
 }
 
 pub struct LookupAuthorizationState {
@@ -190,10 +192,11 @@ impl CreateAuthorizationState {
             missing_authorities: Vec::new(),
             grant: None,
             denial: None,
-            replay_identity: AuthorizationReplayIdentity::new(
+            parked_evaluation: None,
+            replay_identity: Some(AuthorizationReplayIdentity::new(
                 authorization.requester.clone(),
                 authorization.nonce.clone(),
-            ),
+            )),
         }
     }
 
@@ -204,10 +207,23 @@ impl CreateAuthorizationState {
             missing_authorities: Vec::new(),
             grant: None,
             denial: None,
-            replay_identity: AuthorizationReplayIdentity::new(
+            parked_evaluation: None,
+            replay_identity: Some(AuthorizationReplayIdentity::new(
                 authorization.requester.clone(),
                 authorization.nonce.clone(),
-            ),
+            )),
+        }
+    }
+
+    pub fn parked(evaluation: AuthorizationEvaluation) -> Self {
+        Self {
+            request_digest: evaluation.object.digest.clone(),
+            status: AuthorizationStatus::Parked,
+            missing_authorities: Vec::new(),
+            grant: None,
+            denial: None,
+            parked_evaluation: Some(evaluation),
+            replay_identity: None,
         }
     }
 }
@@ -417,6 +433,7 @@ impl StoreKernel {
             state.missing_authorities,
             state.grant,
             state.denial,
+            state.parked_evaluation,
             state.replay_identity,
         )
     }

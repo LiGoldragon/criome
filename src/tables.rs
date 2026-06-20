@@ -12,11 +12,11 @@ use sema_engine::{
     VersionedStoreName, VersioningPolicy,
 };
 use signal_criome::{
-    Attestation, AuthorizationDenial, AuthorizationGrant, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Contract, ContractDigest,
-    Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation, KeyPurpose, ObjectDigest,
-    PrincipalName, PrincipalStatus, PublicKeyFingerprint, ReplayNonce, SignatureSolicitationRoute,
-    SignatureSubmission,
+    Attestation, AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant,
+    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey,
+    Contract, ContractDigest, Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation,
+    KeyPurpose, ObjectDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint, ReplayNonce,
+    SignatureSolicitationRoute, SignatureSubmission,
 };
 
 use crate::Result;
@@ -394,13 +394,16 @@ impl CriomeTables {
         missing_authorities: Vec<Identity>,
         grant: Option<AuthorizationGrant>,
         denial: Option<AuthorizationDenial>,
-        replay_identity: AuthorizationReplayIdentity,
+        parked_evaluation: Option<AuthorizationEvaluation>,
+        replay_identity: Option<AuthorizationReplayIdentity>,
     ) -> Result<StoredAuthorizationState> {
-        if self.authorization_replay_slot(&replay_identity)?.is_some() {
-            return Err(crate::Error::AuthorizationReplayAttempted);
+        if let Some(replay_identity) = replay_identity.as_ref() {
+            if self.authorization_replay_slot(replay_identity)?.is_some() {
+                return Err(crate::Error::AuthorizationReplayAttempted);
+            }
         }
         let slot = self.next_authorization_slot()?;
-        let state = AuthorizationStateRecord::new(
+        let mut state = AuthorizationStateRecord::new(
             slot.request_slot(),
             request_digest,
             status,
@@ -408,15 +411,20 @@ impl CriomeTables {
             grant,
             denial,
         );
+        if let Some(evaluation) = parked_evaluation {
+            state = state.with_parked_evaluation(evaluation);
+        }
         let stored = StoredAuthorizationState::new(state);
         let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
-        let replay_key = AuthorizationReplayKey::new(&replay_identity).into_string();
         self.upsert(self.authorization_states, key, stored.clone())?;
-        self.upsert(
-            self.authorization_replay_nonces,
-            replay_key,
-            stored.state().request_slot.clone(),
-        )?;
+        if let Some(replay_identity) = replay_identity {
+            let replay_key = AuthorizationReplayKey::new(&replay_identity).into_string();
+            self.upsert(
+                self.authorization_replay_nonces,
+                replay_key,
+                stored.state().request_slot.clone(),
+            )?;
+        }
         self.upsert(
             self.authorization_next_slot,
             AUTHORIZATION_NEXT_SLOT_KEY.to_owned(),

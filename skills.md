@@ -48,10 +48,11 @@ today's narrow scope; the eventual encompassment is named in
 - **Kameo, not ractor.** Direct Kameo per
   `~/primary/skills/kameo.md`. `Self IS the actor`; no ZST
   marker types; data lives on the actor.
-- **No private keypair custody other than criome's root.**
-  Personas, agents, developers, hosts custody their own
-  private keys. Criome holds only the *public* halves in its
-  registry.
+- **Criome owns daemon-managed keys and makes authorization
+  decisions.** Do not model requesters as signing the authorization
+  decision. Requesters submit typed objects; criome evaluates,
+  parks for client approval when configured, or signs/records the
+  outcome from its managed custody surface.
 - **Criome permission comes from policy plus signatures.** Lojix
   submits the exact canonical `signal-lojix` request digest and
   requested scope; criome policy names which signatures count; criome
@@ -112,7 +113,8 @@ Criome does **not** own:
 
 - Content record types (those live in `signal-mind`,
   `signal-persona`, `signal-forge`, etc.).
-- Per-persona / per-agent private keys.
+- Effects performed after authorization. Criome decides and records
+  authorization, but does not run the authorized workload.
 - Audit-policy decisions (the audit-policy engine is a
   separate component, to be designed in a follow-up report).
 - Sema-ecosystem records validation (deferred to eventual

@@ -1,13 +1,18 @@
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
-use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
+use meta_signal_criome::{
+    AuthorizationApproval, AuthorizationApprovalDecision, AuthorizationApprovalRecorded,
+};
 use signal_criome::{
-    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizationEvaluation,
-    AuthorizationMode, AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey,
-    ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing,
-    CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision,
-    EvaluationRejectionReason, Identity, IdentityRegistration, IdentitySubscriptionToken,
-    KeyPurpose, RejectionReason,
+    AuthorizationAttestationRequest, AuthorizationDenial, AuthorizationDenialReason,
+    AuthorizationDenialSource, AuthorizationEvaluated, AuthorizationEvaluation, AuthorizationMode,
+    AuthorizationObservationToken, AuthorizationPending, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectUpdate,
+    AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
+    ContractFound, ContractMissing, CriomeDaemonConfiguration, CriomeReply, CriomeRequest,
+    EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken, KeyPurpose,
+    ParkedAuthorization, ParkedAuthorizationObservation, ParkedAuthorizationSnapshot,
+    RejectionReason,
 };
 
 use crate::actors::{
@@ -216,6 +221,9 @@ impl CriomeRoot {
                 self.ask_authorization(authorization::ObserveAuthorization::new(request))
                     .await
             }
+            CriomeRequest::ObserveParkedAuthorizations(request) => {
+                self.parked_authorization_snapshot(request).await
+            }
             CriomeRequest::VerifyAuthorization(request) => {
                 self.ask_authorization(authorization::VerifyAuthorization::new(request))
                     .await
@@ -282,6 +290,11 @@ impl CriomeRoot {
             meta_signal_criome::Input::Configure(configuration) => {
                 self.configure(configuration).await
             }
+            meta_signal_criome::Input::ObserveParkedAuthorizations(request) => {
+                meta_signal_criome::Output::ParkedAuthorizationSnapshot(
+                    self.read_parked_authorization_snapshot(request).await,
+                )
+            }
             meta_signal_criome::Input::SubmitAuthorizationApproval(approval) => {
                 self.record_authorization_approval(approval).await
             }
@@ -315,6 +328,10 @@ impl CriomeRoot {
                 .await;
         }
 
+        if self.authorization_mode == AuthorizationMode::ClientApproval {
+            return self.park_authorization(evaluation).await;
+        }
+
         match (self.key_registry().await, self.contract_store().await) {
             (Some(registry), Some(store)) => {
                 match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry) {
@@ -326,6 +343,33 @@ impl CriomeRoot {
             }
             _ => rejection(RejectionReason::MalformedRequest),
         }
+    }
+
+    async fn park_authorization(&self, evaluation: AuthorizationEvaluation) -> CriomeReply {
+        match self
+            .create_authorization_state(store::CreateAuthorizationState::parked(evaluation))
+            .await
+        {
+            Ok(stored) => {
+                let state = stored.state();
+                CriomeReply::AuthorizationPending(AuthorizationPending::new(
+                    state.request_slot.clone(),
+                    state.request_digest.clone(),
+                    Vec::new(),
+                    AuthorizationObservationToken::new(state.request_slot.clone()),
+                ))
+            }
+            Err(_error) => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
+    async fn parked_authorization_snapshot(
+        &self,
+        request: ParkedAuthorizationObservation,
+    ) -> CriomeReply {
+        CriomeReply::ParkedAuthorizationSnapshot(
+            self.read_parked_authorization_snapshot(request).await,
+        )
     }
 
     async fn record_evaluation_decision(
@@ -353,12 +397,41 @@ impl CriomeRoot {
         approval: AuthorizationApproval,
     ) -> meta_signal_criome::Output {
         let AuthorizationApproval {
-            evaluation,
+            request_slot,
             decision,
         } = approval;
-        let decision = if decision == AuthorizationApprovalDecision::Approve
-            && &evaluation.object.digest == evaluation.evidence.operation.object_digest()
+        let recorded_decision = match self
+            .lookup_authorization_state(request_slot.clone())
+            .await
+            .ok()
+            .flatten()
+            .map(crate::tables::StoredAuthorizationState::into_state)
         {
+            Some(state) => {
+                self.apply_authorization_approval(state, decision).await;
+                decision
+            }
+            None => AuthorizationApprovalDecision::Reject,
+        };
+
+        meta_signal_criome::Output::authorization_approval_recorded(AuthorizationApprovalRecorded {
+            request_slot,
+            decision: recorded_decision,
+        })
+    }
+
+    async fn apply_authorization_approval(
+        &self,
+        state: AuthorizationStateRecord,
+        decision: AuthorizationApprovalDecision,
+    ) {
+        if decision == AuthorizationApprovalDecision::Defer {
+            return;
+        }
+        let Some(evaluation) = state.parked_evaluation().cloned() else {
+            return;
+        };
+        if decision == AuthorizationApprovalDecision::Approve {
             self.publish_authorized_object_update(AuthorizedObjectUpdate {
                 object: evaluation.object.clone(),
                 contract: evaluation.contract.clone(),
@@ -366,20 +439,81 @@ impl CriomeRoot {
                 stamp: evaluation.evidence.stamp.clone(),
             })
             .await;
-            EvaluationDecision::Authorized
-        } else {
-            match decision {
-                AuthorizationApprovalDecision::Approve | AuthorizationApprovalDecision::Reject => {
-                    EvaluationDecision::Rejected(EvaluationRejectionReason::AgreementMissing)
-                }
-                AuthorizationApprovalDecision::Defer => EvaluationDecision::EscalateToPsyche,
-            }
+        }
+        let denial =
+            (decision == AuthorizationApprovalDecision::Reject).then_some(AuthorizationDenial {
+                source: AuthorizationDenialSource::Policy,
+                reason: AuthorizationDenialReason::PolicyRefused,
+            });
+        let status = match decision {
+            AuthorizationApprovalDecision::Approve => AuthorizationStatus::Granted,
+            AuthorizationApprovalDecision::Reject => AuthorizationStatus::Denied,
+            AuthorizationApprovalDecision::Defer => AuthorizationStatus::Parked,
         };
+        let state = AuthorizationStateRecord::new(
+            state.request_slot,
+            state.request_digest,
+            status,
+            Vec::new(),
+            None,
+            denial,
+        )
+        .with_parked_evaluation(evaluation);
+        let _ = self
+            .store
+            .ask(store::StoreAuthorizationState::new(state))
+            .await;
+    }
 
-        meta_signal_criome::Output::authorization_approval_recorded(AuthorizationEvaluated {
-            contract: evaluation.contract,
-            decision,
-        })
+    async fn create_authorization_state(
+        &self,
+        state: store::CreateAuthorizationState,
+    ) -> Result<crate::tables::StoredAuthorizationState> {
+        let reply = self
+            .store
+            .ask(state)
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        reply.into_result()
+    }
+
+    async fn lookup_authorization_state(
+        &self,
+        request_slot: AuthorizationRequestSlot,
+    ) -> Result<Option<crate::tables::StoredAuthorizationState>> {
+        let reply = self
+            .store
+            .ask(store::LookupAuthorizationState::new(request_slot))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_state())
+    }
+
+    async fn read_parked_authorization_snapshot(
+        &self,
+        _request: ParkedAuthorizationObservation,
+    ) -> ParkedAuthorizationSnapshot {
+        let parked = match self.store.ask(store::ReadAuthorizationSnapshot).await {
+            Ok(reply) => reply
+                .into_states()
+                .into_iter()
+                .filter_map(|stored| {
+                    let state = stored.into_state();
+                    if state.status != AuthorizationStatus::Parked {
+                        return None;
+                    }
+                    state
+                        .parked_evaluation()
+                        .cloned()
+                        .map(|evaluation| ParkedAuthorization {
+                            request_slot: state.request_slot,
+                            evaluation,
+                        })
+                })
+                .collect(),
+            Err(_error) => Vec::new(),
+        };
+        ParkedAuthorizationSnapshot::from_parked(parked)
     }
 
     async fn ask_registry<M>(&self, message: M) -> CriomeReply

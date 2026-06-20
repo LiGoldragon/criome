@@ -9,12 +9,11 @@ for the Persona ecosystem.
 ## Repo role
 
 **Authentication and attestation substrate.** A single Kameo daemon
-owning criome's root BLS keypair, an identity registry, and an
-attestation audit log. Signs typed attestations over channel
-grants, archive fingerprints, authorization decisions, and
+owning criome's local key store, identity registry, authorization
+state, and attestation audit log. Signs typed attestations over
+channel grants, archive fingerprints, authorization decisions, and
 privilege elevations. Verifies signatures against the identity
-registry. Does **not** run effects, validate sema records, or
-hold any private keys other than its own root.
+registry. Does **not** run effects or validate sema records.
 
 
 ## Repo state

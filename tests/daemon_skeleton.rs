@@ -179,40 +179,6 @@ fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
     )
 }
 
-fn signed_time_evidence(seed: &[u8], timekeeper: &MasterKey, signer: Identity) -> Evidence {
-    let operation = operation_digest(seed);
-    let proposition = AttestedMomentProposition::new(
-        TimeWindow {
-            opens_at: TimestampNanos::new(1),
-            closes_at: TimestampNanos::new(2),
-        },
-        RequiredSignatureThreshold::new(1),
-        vec![signer.clone()],
-    );
-    Evidence::new(
-        ComponentKind::Spirit,
-        operation,
-        AttestedMoment::new(
-            proposition.clone(),
-            vec![TimeSignature {
-                signer,
-                envelope: SignatureEnvelope {
-                    scheme: SignatureScheme::Bls12_381MinPk,
-                    public_key: timekeeper.public_key(),
-                    signature: timekeeper.sign(
-                        AttestedMomentStatement::new(&proposition)
-                            .to_signing_bytes()
-                            .expect("moment statement")
-                            .as_slice(),
-                    ),
-                },
-            }],
-        ),
-        Vec::new(),
-        Vec::new(),
-    )
-}
-
 fn unproven_evidence(seed: &[u8]) -> Evidence {
     let operation = operation_digest(seed);
     Evidence::new(
@@ -1188,88 +1154,134 @@ fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
 }
 
 #[test]
-fn meta_socket_approval_records_authorized_head_update() {
-    let workspace = fixture_path("meta-approval");
+fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
+    let workspace = fixture_path("meta-approval-by-id");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
     let store = StoreLocation::new(workspace.join("criome.sema"));
-    let daemon = CriomeDaemon::new(&socket, store)
+    let daemon = CriomeDaemon::new(&socket, store.clone())
         .with_meta_socket(&meta_socket)
         .bind()
         .expect("bind daemon");
     wait_for_socket(&socket);
     wait_for_socket(&meta_socket);
 
-    let timekeeper = MasterKey::generate().expect("timekeeper key");
-    let timekeeper_identity = Identity::cluster("timekeeper".to_string());
-    let registration_reply = thread::scope(|scope| {
-        let server = scope.spawn(|| daemon.serve_next().expect("serve timekeeper registration"));
-        let reply = CriomeClient::new(&socket)
-            .send(CriomeRequest::RegisterIdentity(IdentityRegistration::new(
-                timekeeper_identity.clone(),
-                timekeeper.public_key(),
-                PublicKeyFingerprint::new("timekeeper-fingerprint".to_string()),
-                KeyPurpose::ReleaseAuthorization,
-                None,
-            )))
-            .expect("register timekeeper");
-        assert_eq!(server.join().expect("join registration server"), reply);
+    let configured = thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next_meta()
+                .expect("serve client approval mode")
+        });
+        let configuration = CriomeDaemonConfiguration::new(
+            socket.display().to_string(),
+            store.as_path().display().to_string(),
+        )
+        .with_meta_socket_path(meta_socket.display().to_string())
+        .with_authorization_mode(signal_criome::AuthorizationMode::ClientApproval);
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::Configure(configuration))
+            .expect("configure client approval mode");
+        assert_eq!(server.join().expect("join configure server"), reply);
         reply
     });
-    assert!(matches!(
-        registration_reply,
-        CriomeReply::IdentityReceipt(signal_criome::IdentityReceipt { .. })
-    ));
-
-    let contract_reply = thread::scope(|scope| {
-        let server = scope.spawn(|| daemon.serve_next().expect("serve contract admission"));
-        let reply = CriomeClient::new(&socket)
-            .send(CriomeRequest::AdmitContract(Contract::new(
-                Rule::EscalateToPsyche,
-            )))
-            .expect("admit contract");
-        assert_eq!(server.join().expect("join contract server"), reply);
-        reply
-    });
-    let CriomeReply::ContractAdmitted(admitted) = contract_reply else {
-        panic!("expected ContractAdmitted, got {contract_reply:?}");
+    let meta_signal_criome::Output::Configured(configured) = configured else {
+        panic!("expected Configured, got {configured:?}");
     };
-    let contract = admitted.into_payload();
-    let evidence = signed_time_evidence(
-        b"mentci-approved-head",
-        &timekeeper,
-        timekeeper_identity.clone(),
-    );
+    assert_eq!(configured.payload().value(), 1);
+
+    let evidence = unproven_evidence(b"mentci-approved-head");
     let object = signal_criome::AuthorizedObjectReference {
         component: ComponentKind::Spirit,
         digest: evidence.operation.object_digest().clone(),
         kind: AuthorizedObjectKind::Head,
     };
+    let contract = signal_criome::ContractDigest::from_bytes(b"client-approval-contract");
     let evaluation = AuthorizationEvaluation {
         contract: contract.clone(),
         object: object.clone(),
         evidence: evidence.clone(),
     };
 
-    let escalated = thread::scope(|scope| {
-        let server = scope.spawn(|| daemon.serve_next().expect("serve escalation"));
+    let pending = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve client approval park"));
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::EvaluateAuthorization(evaluation.clone()))
             .expect("evaluate authorization");
-        assert_eq!(server.join().expect("join escalation server"), reply);
+        assert_eq!(server.join().expect("join park server"), reply);
         reply
     });
-    let CriomeReply::AuthorizationEvaluated(escalated) = escalated else {
-        panic!("expected AuthorizationEvaluated, got {escalated:?}");
+    let CriomeReply::AuthorizationPending(pending) = pending else {
+        panic!("expected AuthorizationPending, got {pending:?}");
     };
-    assert_eq!(escalated.decision, EvaluationDecision::EscalateToPsyche);
+    assert_eq!(pending.request_digest, object.digest);
+
+    let parked = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve parked list"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::ObserveParkedAuthorizations(
+                signal_criome::ParkedAuthorizationObservation::new(),
+            ))
+            .expect("observe parked authorizations");
+        assert_eq!(server.join().expect("join parked list server"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::ParkedAuthorizationSnapshot(parked) = parked else {
+        panic!("expected ParkedAuthorizationSnapshot, got {parked:?}");
+    };
+    assert_eq!(parked.parked().len(), 1);
+    assert_eq!(parked.parked()[0].request_slot, pending.request_slot);
+    assert_eq!(parked.parked()[0].evaluation, evaluation);
+
+    let deferred = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve meta defer"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
+                AuthorizationApproval {
+                    request_slot: pending.request_slot.clone(),
+                    decision: AuthorizationApprovalDecision::Defer,
+                },
+            ))
+            .expect("submit meta defer");
+        assert_eq!(server.join().expect("join meta defer server"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::AuthorizationApprovalRecorded(deferred) = deferred else {
+        panic!("expected AuthorizationApprovalRecorded, got {deferred:?}");
+    };
+    assert_eq!(deferred.request_slot, pending.request_slot);
+    assert_eq!(deferred.decision, AuthorizationApprovalDecision::Defer);
+
+    let parked_after_defer = thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next_meta()
+                .expect("serve parked list after defer")
+        });
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::ObserveParkedAuthorizations(
+                signal_criome::ParkedAuthorizationObservation::new(),
+            ))
+            .expect("observe parked authorizations after defer");
+        assert_eq!(server.join().expect("join parked defer server"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::ParkedAuthorizationSnapshot(parked_after_defer) =
+        parked_after_defer
+    else {
+        panic!("expected ParkedAuthorizationSnapshot, got {parked_after_defer:?}");
+    };
+    assert_eq!(parked_after_defer.parked().len(), 1);
+    assert_eq!(
+        parked_after_defer.parked()[0].request_slot,
+        pending.request_slot
+    );
 
     let approved = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next_meta().expect("serve meta approval"));
         let reply = CriomeMetaClient::new(&meta_socket)
             .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
                 AuthorizationApproval {
-                    evaluation: evaluation.clone(),
+                    request_slot: pending.request_slot.clone(),
                     decision: AuthorizationApprovalDecision::Approve,
                 },
             ))
@@ -1280,7 +1292,8 @@ fn meta_socket_approval_records_authorized_head_update() {
     let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
         panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
     };
-    assert_eq!(approved.payload().decision, EvaluationDecision::Authorized);
+    assert_eq!(approved.request_slot, pending.request_slot);
+    assert_eq!(approved.decision, AuthorizationApprovalDecision::Approve);
 
     let snapshot = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve authorized observation"));

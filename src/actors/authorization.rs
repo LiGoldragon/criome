@@ -207,7 +207,8 @@ impl AuthorizationCoordinator {
             let state = stored.into_state();
             let missing_authorities = state.missing_authorities().to_vec();
             let grant = state.grant().cloned();
-            let state = AuthorizationStateRecord::new(
+            let parked_evaluation = state.parked_evaluation().cloned();
+            let mut state = AuthorizationStateRecord::new(
                 state.request_slot,
                 state.request_digest,
                 AuthorizationStatus::Denied,
@@ -215,6 +216,9 @@ impl AuthorizationCoordinator {
                 grant,
                 Some(denial.clone()),
             );
+            if let Some(evaluation) = parked_evaluation {
+                state = state.with_parked_evaluation(evaluation);
+            }
             let _ = self.store_authorization_state(state).await;
         }
         CriomeReply::AuthorizationDenied(AuthorizationDenied {

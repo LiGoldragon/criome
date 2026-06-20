@@ -322,6 +322,7 @@ CriomeRequest
   | AttestAuthorization(AuthorizationAttestationRequest)
   | AuthorizeSignalCall(SignalCallAuthorization)
   | ObserveAuthorization(AuthorizationObservation)
+  | ObserveParkedAuthorizations(ParkedAuthorizationObservation)
   | VerifyAuthorization(AuthorizationVerification)
   | RouteSignatureRequest(SignatureSolicitationRoute)
   | SubmitSignature(SignatureSubmission)
@@ -342,6 +343,7 @@ CriomeReply
   | AuthorizationExpired(AuthorizationExpired)
   | AuthorizationUnavailable(AuthorizationUnavailable)
   | AuthorizationObservationSnapshot(AuthorizationObservationSnapshot)
+  | ParkedAuthorizationSnapshot(ParkedAuthorizationSnapshot)
   | SignatureRouteReceipt(SignatureRouteReceipt)
   | SignatureSubmissionReceipt(SignatureSubmissionReceipt)
   | AuthorizationObservationRetracted(AuthorizationObservationRetracted)
@@ -400,10 +402,10 @@ mismatch (per
   `SubscribeIdentityUpdates` (per
   `~/primary/skills/push-not-pull.md`). Verifiers cache
   the current snapshot and apply deltas.
-- Private keypair custody for other identities lives
-  with those identities (personas hold their own;
-  developers use HSMs or gpg-agent; etc.). Criome does
-  not custody private keypairs other than its own master.
+- Private keypair custody is daemon-managed. Requesters submit typed
+  objects and evidence; they do not sign the final authorization
+  decision. Criome owns the key store it uses to sign or record
+  authorization outcomes.
 
 ClaviFaber feeds into criome via a `signal-clavifaber` channel.
 Each per-host `PublicKeyPublication` lands as a
@@ -617,12 +619,20 @@ Current implementation status:
   the identical preimage, so no signed field (notably the
   expiry) can be altered without breaking the signature.
 - `AdmitContract`, `LookupContract`, and `EvaluateAuthorization`
-  route through the component-local sema-engine store. The
-  `criome-contract` family stores content-addressed policy contracts
-  durably by `ContractDigest`; admission validation rejects dangling
-  references against the durable contract set, and evaluation rebuilds
-  a pure in-memory evaluator snapshot from SEMA records. The
-  contract DAG therefore survives daemon restart.
+  route through the component-local sema-engine store when the daemon
+  runs in quorum mode. The `criome-contract` family stores
+  content-addressed policy contracts durably by `ContractDigest`;
+  admission validation rejects dangling references against the durable
+  contract set, and evaluation rebuilds a pure in-memory evaluator
+  snapshot from SEMA records. The contract DAG therefore survives
+  daemon restart.
+- Authorization mode is daemon configuration: `AutoApprove` records
+  an authorized object update directly, `ClientApproval` parks the
+  `AuthorizationEvaluation` behind a store-minted
+  `AuthorizationRequestSlot`, and `Quorum` evaluates admitted policy
+  contracts. The parked surface is list-by-snapshot plus
+  approve/reject/defer-by-slot on the meta signal contract; `Defer`
+  leaves the parked request alive.
 - Policy evaluation consumes stamped operation signatures and stamped
   agreement facts. An operation signature must carry the same
   `AttestedMoment` as the evaluated evidence, and an agreement signature
@@ -637,14 +647,17 @@ Current implementation status:
   the requested digest. **Authorization expiry and replay guard are
   live:** expired requests are recorded as expired state and same
   requester/nonce reuse rejects with `ReplayAttempted` before a
-  second authorization slot is minted. This is still a skeleton:
-  real policy-table lookup, meta-signal approval, master-key
-  signing, pushed observation events, and quorum aggregation are the
+  second authorization slot is minted. Parked client-approval
+  authorization also uses store-minted slots, but it does not consume
+  requester/nonce replay state because it is keyed by the parked
+  evaluation. This is still a skeleton: master-key signing, pushed
+  observation events, and quorum aggregation are the
   next authorization milestones.
-- The `meta-signal-criome` contract is the next contract surface to
-  design: passphrase submission, policy mutation, peer-route
-  mutation, escalation-approval prompts and replies, plus the
-  ECDH-handshake-then-AEAD meta-session envelope. `tui-criome`
+- The `meta-signal-criome` contract currently carries configuration,
+  parked-authorization observation, and approval-by-slot. The remaining
+  meta surfaces still to design are passphrase submission, policy
+  mutation, peer-route mutation, plus the ECDH-handshake-then-AEAD
+  meta-session envelope. `tui-criome`
   becomes a long-running meta client of *this* daemon (not a
   separate daemon, not a separate signing-client component); the
   `criome` CLI is the one-shot meta client.
