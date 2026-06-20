@@ -20,16 +20,16 @@ use signal_criome::{
     AttestedMoment, AttestedMomentProposition, AuditContext, AuthorizationDenialReason,
     AuthorizationDenialSource, AuthorizationEvaluation, AuthorizationExpired, AuthorizationGrant,
     AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
-    AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus, AuthorizedObjectInterest,
-    AuthorizedObjectKind, AuthorizedObjectObservation, AuthorizedObjectUpdateToken, BlsPublicKey,
-    BlsSignature, ComponentKind, ComponentObjectInterest, ContentPurpose, ContentReference,
-    Contract, ContractName, ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody,
-    CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity, IdentityLookup,
-    IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
-    RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
-    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
-    TimeSignature, TimeWindow, TimestampNanos,
+    AuthorizationRejection, AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus,
+    AuthorizedObjectInterest, AuthorizedObjectKind, AuthorizedObjectObservation,
+    AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature, ComponentKind,
+    ComponentObjectInterest, ContentPurpose, ContentReference, Contract, ContractName,
+    ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody, CriomeReply,
+    CriomeRequest, EvaluationDecision, Evidence, Identity, IdentityLookup, IdentityRegistration,
+    KeyPurpose, ObjectDigest, OperationDigest, PrincipalName, PrincipalStatus,
+    PublicKeyFingerprint, RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule,
+    SignRequest, SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope,
+    SignatureScheme, StampedSignatureEnvelope, TimeSignature, TimeWindow, TimestampNanos,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
@@ -833,6 +833,65 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
 }
 
 #[tokio::test]
+async fn parked_authorization_snapshot_sorts_slots_numerically() {
+    let root = CriomeRoot::start(RootArguments {
+        store: store_location("parked-numeric-order"),
+        cluster_root: None,
+        authorization_mode: signal_criome::AuthorizationMode::ClientApproval,
+    })
+    .await
+    .expect("start criome root");
+
+    let mut expected = Vec::new();
+    for index in 0..11 {
+        let evidence = unproven_evidence(format!("parked-{index}").as_bytes());
+        let object = signal_criome::AuthorizedObjectReference {
+            component: ComponentKind::Spirit,
+            digest: evidence.operation.object_digest().clone(),
+            kind: AuthorizedObjectKind::Head,
+        };
+        let reply = root
+            .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+                AuthorizationEvaluation {
+                    contract: signal_criome::ContractDigest::from_bytes(
+                        format!("contract-{index}").as_bytes(),
+                    ),
+                    object,
+                    evidence,
+                },
+            )))
+            .await
+            .expect("park authorization")
+            .into_reply();
+        let CriomeReply::AuthorizationPending(pending) = reply else {
+            panic!("expected AuthorizationPending, got {reply:?}");
+        };
+        expected.push(pending.request_slot);
+    }
+
+    let snapshot = root
+        .ask(SubmitRequest::new(
+            CriomeRequest::ObserveParkedAuthorizations(
+                signal_criome::ParkedAuthorizationObservation::new(),
+            ),
+        ))
+        .await
+        .expect("observe parked")
+        .into_reply();
+    let CriomeReply::ParkedAuthorizationSnapshot(snapshot) = snapshot else {
+        panic!("expected ParkedAuthorizationSnapshot, got {snapshot:?}");
+    };
+    let actual: Vec<_> = snapshot
+        .parked()
+        .iter()
+        .map(|parked| parked.request_slot.clone())
+        .collect();
+    assert_eq!(actual, expected);
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
 async fn expired_attestation_verifies_as_expired() {
     let root = CriomeRoot::start(RootArguments::new(store_location("expired-attestation")))
         .await
@@ -1154,6 +1213,38 @@ fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
 }
 
 #[test]
+fn meta_socket_configure_rejects_malformed_configuration() {
+    let workspace = fixture_path("meta-configure-malformed");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let daemon = CriomeDaemon::new(&socket, StoreLocation::new(workspace.join("criome.sema")))
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&meta_socket);
+
+    let rejected = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve malformed configure"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::Configure(
+                CriomeDaemonConfiguration::new("", ""),
+            ))
+            .expect("submit malformed configure");
+        assert_eq!(server.join().expect("join malformed configure"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::ConfigurationRejected(rejected) = rejected else {
+        panic!("expected ConfigurationRejected, got {rejected:?}");
+    };
+    assert_eq!(
+        *rejected.payload(),
+        meta_signal_criome::ConfigurationRejectionReason::MalformedConfiguration
+    );
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
 fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     let workspace = fixture_path("meta-approval-by-id");
     let socket = workspace.join("criome.sock");
@@ -1232,6 +1323,48 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     assert_eq!(parked.parked()[0].request_slot, pending.request_slot);
     assert_eq!(parked.parked()[0].evaluation, evaluation);
 
+    let working_reject = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve working reject"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::RejectAuthorization(AuthorizationRejection {
+                request_slot: pending.request_slot.clone(),
+                rejector: Identity::developer("working-client".to_string()),
+                reason: AuthorizationDenialReason::PolicyRefused,
+            }))
+            .expect("submit working reject");
+        assert_eq!(server.join().expect("join working reject server"), reply);
+        reply
+    });
+    assert!(matches!(working_reject, CriomeReply::Rejection(_)));
+
+    let parked_after_working_reject = thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next_meta()
+                .expect("serve parked list after working reject")
+        });
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::ObserveParkedAuthorizations(
+                signal_criome::ParkedAuthorizationObservation::new(),
+            ))
+            .expect("observe parked authorizations after working reject");
+        assert_eq!(
+            server.join().expect("join parked working reject server"),
+            reply
+        );
+        reply
+    });
+    let meta_signal_criome::Output::ParkedAuthorizationSnapshot(parked_after_working_reject) =
+        parked_after_working_reject
+    else {
+        panic!("expected ParkedAuthorizationSnapshot, got {parked_after_working_reject:?}");
+    };
+    assert_eq!(parked_after_working_reject.parked().len(), 1);
+    assert_eq!(
+        parked_after_working_reject.parked()[0].request_slot,
+        pending.request_slot
+    );
+
     let deferred = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next_meta().expect("serve meta defer"));
         let reply = CriomeMetaClient::new(&meta_socket)
@@ -1274,6 +1407,27 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     assert_eq!(
         parked_after_defer.parked()[0].request_slot,
         pending.request_slot
+    );
+
+    let missing_slot = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve missing approval"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
+                AuthorizationApproval {
+                    request_slot: AuthorizationRequestSlot::new("999"),
+                    decision: AuthorizationApprovalDecision::Approve,
+                },
+            ))
+            .expect("submit missing approval");
+        assert_eq!(server.join().expect("join missing approval server"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::RequestUnimplemented(missing_slot) = missing_slot else {
+        panic!("expected RequestUnimplemented, got {missing_slot:?}");
+    };
+    assert_eq!(
+        missing_slot.operation,
+        meta_signal_criome::OperationKind::SubmitAuthorizationApproval
     );
 
     let approved = thread::scope(|scope| {

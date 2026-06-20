@@ -4,8 +4,7 @@ use signal_criome::{
     Attestation, AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant,
     AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus, Contract,
     ContractAdmissionRejectionReason, ContractDigest, Identity, IdentityRegistration,
-    IdentityRevocation, ObjectDigest, PrincipalStatus, SignatureSolicitationRoute,
-    SignatureSubmission,
+    IdentityRevocation, ObjectDigest, SignatureSolicitationRoute, SignatureSubmission,
 };
 
 use crate::language::{AdmissionError, ContractStore};
@@ -448,12 +447,18 @@ impl StoreKernel {
     fn authorization_snapshot(&self) -> crate::Result<Vec<StoredAuthorizationState>> {
         let mut states = self.tables.authorization_states()?;
         states.sort_by(|left, right| {
-            left.state()
-                .request_slot
-                .as_str()
-                .cmp(right.state().request_slot.as_str())
+            Self::authorization_slot_sort_key(&left.state().request_slot).cmp(
+                &Self::authorization_slot_sort_key(&right.state().request_slot),
+            )
         });
         Ok(states)
+    }
+
+    fn authorization_slot_sort_key(request_slot: &AuthorizationRequestSlot) -> (u64, String) {
+        match request_slot.as_str().parse::<u64>() {
+            Ok(value) => (value, String::new()),
+            Err(_error) => (u64::MAX, request_slot.as_str().to_owned()),
+        }
     }
 
     fn store_contract(&self, contract: Contract) -> crate::Result<StoredContract> {
@@ -707,8 +712,4 @@ impl Message<StoreSignatureSubmission> for StoreKernel {
         self.store_signature_submission(message.submission)
             .map(|submission| StoredSignatureSubmissionReply { submission })
     }
-}
-
-pub fn active_status(identity: &StoredIdentity) -> bool {
-    identity.status() == PrincipalStatus::Active
 }

@@ -2,6 +2,7 @@ use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use meta_signal_criome::{
     AuthorizationApproval, AuthorizationApprovalDecision, AuthorizationApprovalRecorded,
+    ConfigurationRejectionReason, OperationKind, RequestUnimplemented, UnimplementedReason,
 };
 use signal_criome::{
     AuthorizationAttestationRequest, AuthorizationDenial, AuthorizationDenialReason,
@@ -237,6 +238,9 @@ impl CriomeRoot {
                     .await
             }
             CriomeRequest::RejectAuthorization(request) => {
+                if self.authorization_mode == AuthorizationMode::ClientApproval {
+                    return rejection(RejectionReason::MalformedRequest);
+                }
                 self.ask_authorization(authorization::RejectAuthorization::new(request))
                     .await
             }
@@ -305,6 +309,13 @@ impl CriomeRoot {
         &mut self,
         configuration: CriomeDaemonConfiguration,
     ) -> meta_signal_criome::Output {
+        if configuration.socket_path.payload().is_empty()
+            || configuration.store_path.payload().is_empty()
+        {
+            return meta_signal_criome::Output::configuration_rejected(
+                ConfigurationRejectionReason::MalformedConfiguration,
+            );
+        }
         self.authorization_mode = *configuration.authorization_mode();
         let cluster_root = configuration.cluster_root().cloned().map(ClusterRoot::new);
         let _ = self
@@ -411,7 +422,12 @@ impl CriomeRoot {
                 self.apply_authorization_approval(state, decision).await;
                 decision
             }
-            None => AuthorizationApprovalDecision::Reject,
+            None => {
+                return meta_signal_criome::Output::request_unimplemented(RequestUnimplemented {
+                    operation: OperationKind::SubmitAuthorizationApproval,
+                    reason: UnimplementedReason::DependencyNotReady,
+                });
+            }
         };
 
         meta_signal_criome::Output::authorization_approval_recorded(AuthorizationApprovalRecorded {
