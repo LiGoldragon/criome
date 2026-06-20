@@ -53,6 +53,15 @@ pub enum Error {
     FlagArgument(String),
     #[error("socket does not exist: {}", .path.display())]
     MissingSocket { path: PathBuf },
+    #[error("peer connect failed at {address}: {source}")]
+    PeerConnect {
+        address: String,
+        source: std::io::Error,
+    },
+    #[error("unknown peer: sender public key {} is not an admitted peer", .0.as_str())]
+    UnknownPeer(signal_criome::BlsPublicKey),
+    #[error("peer signature rejected for sender public key {}", .0.as_str())]
+    PeerSignatureRejected(signal_criome::BlsPublicKey),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -32,6 +32,14 @@ use crate::{Error, Result};
 /// tag; a signature minted under this tag cannot be replayed under another.
 const ATTESTATION_DST: &[u8] = b"CRIOME-ATTESTATION-BLS12381G2-XMD:SHA-256_SSWU_RO_V1";
 
+/// Domain-separation tag binding a peer-frame envelope signature: the sender
+/// signs the exact length-prefixed `CriomeFrame` bytes under this tag so a peer
+/// daemon can authenticate a frame before decoding it. It MUST be distinct from
+/// [`ATTESTATION_DST`] — a signature minted over an attestation preimage can
+/// never be replayed as a peer-frame envelope (and vice versa), because the
+/// distinct tag changes the BLS hash-to-curve domain.
+const PEER_FRAME_DST: &[u8] = b"CRIOME-PEER-FRAME-BLS12381G2-XMD:SHA-256_SSWU_RO_V1";
+
 /// criome's master signing keypair. Holds the BLS12-381 secret key; the
 /// secret is readable only as raw bytes for persistence and never crosses a
 /// wire boundary.
@@ -118,16 +126,52 @@ impl MasterKey {
         let signature = self.secret.sign(message, ATTESTATION_DST, &[]);
         BlsSignature::new(Hexadecimal::from_bytes(&signature.to_bytes()).to_string())
     }
+
+    /// Sign the exact length-prefixed peer-frame `bytes` under
+    /// [`PEER_FRAME_DST`], hex-encoding the signature into the wire
+    /// `BlsSignature`. The peer-frame domain tag keeps these envelope
+    /// signatures unforgeable as attestations and vice versa.
+    pub fn sign_peer_frame(&self, bytes: &[u8]) -> BlsSignature {
+        let signature = self.secret.sign(bytes, PEER_FRAME_DST, &[]);
+        BlsSignature::new(Hexadecimal::from_bytes(&signature.to_bytes()).to_string())
+    }
 }
 
 /// Verify a BLS signature over a message under this public key. Implemented on
 /// the wire `BlsPublicKey` because the public key is the noun that verifies.
+/// The domain-tagged verification body lives once in `verify_bls_with_domain`;
+/// the two public methods select the matching domain tag so an attestation
+/// signature and a peer-frame envelope signature can never cross-verify.
 pub trait VerifyBls {
-    fn verify_bls(&self, signature: &BlsSignature, message: &[u8]) -> bool;
+    /// Verify `signature` over `message` under criome's attestation domain
+    /// ([`ATTESTATION_DST`]).
+    fn verify_bls(&self, signature: &BlsSignature, message: &[u8]) -> bool {
+        self.verify_bls_with_domain(signature, message, ATTESTATION_DST)
+    }
+
+    /// Verify `signature` over the exact length-prefixed peer-frame `bytes`
+    /// under the peer-frame domain ([`PEER_FRAME_DST`]).
+    fn verify_peer_frame(&self, signature: &BlsSignature, bytes: &[u8]) -> bool {
+        self.verify_bls_with_domain(signature, bytes, PEER_FRAME_DST)
+    }
+
+    /// Verify `signature` over `message` under an explicit domain-separation
+    /// tag. Returns `false` on any malformed key or signature material.
+    fn verify_bls_with_domain(
+        &self,
+        signature: &BlsSignature,
+        message: &[u8],
+        domain: &[u8],
+    ) -> bool;
 }
 
 impl VerifyBls for BlsPublicKey {
-    fn verify_bls(&self, signature: &BlsSignature, message: &[u8]) -> bool {
+    fn verify_bls_with_domain(
+        &self,
+        signature: &BlsSignature,
+        message: &[u8],
+        domain: &[u8],
+    ) -> bool {
         let Ok(public_bytes) = Hexadecimal::from_str(self.as_str()) else {
             return false;
         };
@@ -140,7 +184,7 @@ impl VerifyBls for BlsPublicKey {
         let Ok(parsed_signature) = Signature::from_bytes(signature_bytes.as_slice()) else {
             return false;
         };
-        parsed_signature.verify(true, message, ATTESTATION_DST, &[], &public_key, true)
+        parsed_signature.verify(true, message, domain, &[], &public_key, true)
             == BLST_ERROR::BLST_SUCCESS
     }
 }

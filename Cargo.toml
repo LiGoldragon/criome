@@ -72,3 +72,14 @@ dead_code   = "warn"
 
 [patch.crates-io]
 kameo = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main" }
+
+# E1 PROTOTYPE SCAFFOLD — remove once operator lands signal-criome-peers on
+# signal-criome main. This redirects the signal-criome git source to the local
+# peers worktree so criome can consume the not-yet-merged PeerEnvelope / PeerNode
+# / Peers contract (designer branch signal-criome-peers, tip f4b64fc5). The
+# redirect MUST cover the whole version graph: meta-signal-criome also depends on
+# signal-criome (branch main), so patching the git URL here unifies both to the
+# single path source and avoids a two-versions type mismatch. Verified with
+# `cargo tree -i signal-criome` resolving exactly one (the path) source.
+[patch."https://github.com/LiGoldragon/signal-criome.git"]
+signal-criome = { path = "/home/li/wt/github.com/LiGoldragon/signal-criome/signal-criome-peers" }
