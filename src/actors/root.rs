@@ -2,9 +2,10 @@ use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 use signal_criome::{
-    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizedObjectUpdate,
-    AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
-    ContractFound, ContractMissing, CriomeReply, CriomeRequest, EvaluationDecision,
+    AuthorizationAttestationRequest, AuthorizationEvaluated, AuthorizationEvaluation,
+    AuthorizationMode, AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey,
+    ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing,
+    CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision,
     EvaluationRejectionReason, Identity, IdentityRegistration, IdentitySubscriptionToken,
     KeyPurpose, RejectionReason,
 };
@@ -25,11 +26,14 @@ pub struct CriomeRoot {
     authorization: ActorRef<authorization::AuthorizationCoordinator>,
     subscription: ActorRef<subscription::SubscriptionRegistry>,
     store: ActorRef<store::StoreKernel>,
+    authorization_mode: AuthorizationMode,
+    configuration_generation: u64,
 }
 
 pub struct Arguments {
     pub store: StoreLocation,
     pub cluster_root: Option<BlsPublicKey>,
+    pub authorization_mode: AuthorizationMode,
 }
 
 pub struct SubmitRequest {
@@ -61,6 +65,7 @@ impl Arguments {
         Self {
             store,
             cluster_root: None,
+            authorization_mode: AuthorizationMode::Quorum,
         }
     }
 }
@@ -127,6 +132,7 @@ impl CriomeRoot {
         authorization: ActorRef<authorization::AuthorizationCoordinator>,
         subscription: ActorRef<subscription::SubscriptionRegistry>,
         store: ActorRef<store::StoreKernel>,
+        authorization_mode: AuthorizationMode,
     ) -> Self {
         Self {
             registry,
@@ -135,6 +141,8 @@ impl CriomeRoot {
             authorization,
             subscription,
             store,
+            authorization_mode,
+            configuration_generation: 0,
         }
     }
 
@@ -227,37 +235,7 @@ impl CriomeRoot {
             CriomeRequest::AdmitContract(contract) => self.admit_contract(contract).await,
             CriomeRequest::LookupContract(digest) => self.lookup_contract(digest).await,
             CriomeRequest::EvaluateAuthorization(evaluation) => {
-                match (self.key_registry().await, self.contract_store().await) {
-                    (Some(registry), Some(store)) => {
-                        if &evaluation.object.digest
-                            != evaluation.evidence.operation.object_digest()
-                        {
-                            return rejection(RejectionReason::MalformedRequest);
-                        }
-                        match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry)
-                        {
-                            Ok(decision) => {
-                                if decision == EvaluationDecision::Authorized {
-                                    self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                                        object: evaluation.object,
-                                        contract: evaluation.contract.clone(),
-                                        decision: decision.clone(),
-                                        stamp: evaluation.evidence.stamp.clone(),
-                                    })
-                                    .await;
-                                }
-                                CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
-                                    contract: evaluation.contract,
-                                    decision,
-                                })
-                            }
-                            Err(EvaluationError::MissingContract(digest)) => {
-                                CriomeReply::ContractMissing(ContractMissing::new(digest))
-                            }
-                        }
-                    }
-                    _ => rejection(RejectionReason::MalformedRequest),
-                }
+                self.evaluate_authorization(evaluation).await
             }
             CriomeRequest::ObserveAuthorizedObjects(request) => {
                 self.ask_subscription(subscription::OpenAuthorizedObjectSubscription {
@@ -296,20 +274,78 @@ impl CriomeRoot {
         }
     }
 
-    async fn submit_meta(&mut self, request: meta_signal_criome::Input) -> meta_signal_criome::Output {
+    async fn submit_meta(
+        &mut self,
+        request: meta_signal_criome::Input,
+    ) -> meta_signal_criome::Output {
         match request {
-            meta_signal_criome::Input::Configure(_configuration) => {
-                meta_signal_criome::Output::RequestUnimplemented(
-                    meta_signal_criome::RequestUnimplemented {
-                        operation: meta_signal_criome::OperationKind::Configure,
-                        reason: meta_signal_criome::UnimplementedReason::NotBuiltYet,
-                    },
-                )
+            meta_signal_criome::Input::Configure(configuration) => {
+                self.configure(configuration).await
             }
             meta_signal_criome::Input::SubmitAuthorizationApproval(approval) => {
                 self.record_authorization_approval(approval).await
             }
         }
+    }
+
+    async fn configure(
+        &mut self,
+        configuration: CriomeDaemonConfiguration,
+    ) -> meta_signal_criome::Output {
+        self.authorization_mode = *configuration.authorization_mode();
+        let cluster_root = configuration.cluster_root().cloned().map(ClusterRoot::new);
+        let _ = self
+            .registry
+            .ask(registry::ConfigureClusterRoot::new(cluster_root))
+            .await;
+        self.configuration_generation += 1;
+        meta_signal_criome::Output::configured(meta_signal_criome::ConfigurationGeneration::new(
+            self.configuration_generation,
+        ))
+    }
+
+    async fn evaluate_authorization(&self, evaluation: AuthorizationEvaluation) -> CriomeReply {
+        if &evaluation.object.digest != evaluation.evidence.operation.object_digest() {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+
+        if self.authorization_mode == AuthorizationMode::AutoApprove {
+            return self
+                .record_evaluation_decision(evaluation, EvaluationDecision::Authorized)
+                .await;
+        }
+
+        match (self.key_registry().await, self.contract_store().await) {
+            (Some(registry), Some(store)) => {
+                match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry) {
+                    Ok(decision) => self.record_evaluation_decision(evaluation, decision).await,
+                    Err(EvaluationError::MissingContract(digest)) => {
+                        CriomeReply::ContractMissing(ContractMissing::new(digest))
+                    }
+                }
+            }
+            _ => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
+    async fn record_evaluation_decision(
+        &self,
+        evaluation: AuthorizationEvaluation,
+        decision: EvaluationDecision,
+    ) -> CriomeReply {
+        if decision == EvaluationDecision::Authorized {
+            self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                object: evaluation.object,
+                contract: evaluation.contract.clone(),
+                decision: decision.clone(),
+                stamp: evaluation.evidence.stamp.clone(),
+            })
+            .await;
+        }
+        CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
+            contract: evaluation.contract,
+            decision,
+        })
     }
 
     async fn record_authorization_approval(
@@ -594,6 +630,7 @@ impl Actor for CriomeRoot {
             authorization,
             subscription,
             store,
+            arguments.authorization_mode,
         ))
     }
 }

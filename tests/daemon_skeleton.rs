@@ -213,6 +213,27 @@ fn signed_time_evidence(seed: &[u8], timekeeper: &MasterKey, signer: Identity) -
     )
 }
 
+fn unproven_evidence(seed: &[u8]) -> Evidence {
+    let operation = operation_digest(seed);
+    Evidence::new(
+        ComponentKind::Spirit,
+        operation,
+        AttestedMoment::new(
+            AttestedMomentProposition::new(
+                TimeWindow {
+                    opens_at: TimestampNanos::new(1),
+                    closes_at: TimestampNanos::new(2),
+                },
+                RequiredSignatureThreshold::new(1),
+                Vec::new(),
+            ),
+            Vec::new(),
+        ),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
 fn pending_authorization(reply: CriomeReply) -> signal_criome::AuthorizationPending {
     let CriomeReply::AuthorizationPending(pending) = reply else {
         panic!("expected AuthorizationPending, got {reply:?}");
@@ -984,6 +1005,7 @@ async fn cluster_root_gates_registration() {
     let root = CriomeRoot::start(RootArguments {
         store: StoreLocation::new(workspace.join("criome.sema")),
         cluster_root: Some(cluster_root.public_key()),
+        authorization_mode: signal_criome::AuthorizationMode::Quorum,
     })
     .await
     .expect("start criome root");
@@ -1077,6 +1099,90 @@ fn criome_daemon_meta_socket_is_user_private() {
         .mode()
         & 0o777;
     assert_eq!(meta_mode, 0o600);
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
+    let workspace = fixture_path("meta-configure-auto-approve");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store.clone())
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+
+    let configured = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve meta configure"));
+        let configuration = CriomeDaemonConfiguration::new(
+            socket.display().to_string(),
+            store.as_path().display().to_string(),
+        )
+        .with_meta_socket_path(meta_socket.display().to_string())
+        .with_authorization_mode(signal_criome::AuthorizationMode::AutoApprove);
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::Configure(configuration))
+            .expect("submit meta configure");
+        assert_eq!(server.join().expect("join meta configure server"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::Configured(configured) = configured else {
+        panic!("expected Configured, got {configured:?}");
+    };
+    assert_eq!(configured.payload().value(), 1);
+
+    let evidence = unproven_evidence(b"auto-approved-head");
+    let object = signal_criome::AuthorizedObjectReference {
+        component: ComponentKind::Spirit,
+        digest: evidence.operation.object_digest().clone(),
+        kind: AuthorizedObjectKind::Head,
+    };
+    let contract = signal_criome::ContractDigest::from_bytes(b"unadmitted-auto-contract");
+    let evaluation = AuthorizationEvaluation {
+        contract: contract.clone(),
+        object: object.clone(),
+        evidence: evidence.clone(),
+    };
+
+    let approved = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve auto approve"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::EvaluateAuthorization(evaluation))
+            .expect("evaluate auto approve");
+        assert_eq!(server.join().expect("join auto approve server"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizationEvaluated(approved) = approved else {
+        panic!("expected AuthorizationEvaluated, got {approved:?}");
+    };
+    assert_eq!(approved.decision, EvaluationDecision::Authorized);
+
+    let snapshot = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve authorized observation"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::ObserveAuthorizedObjects(
+                AuthorizedObjectObservation {
+                    subscriber: Identity::agent("auto-approve-observer".to_string()),
+                    interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+                },
+            ))
+            .expect("observe authorized objects");
+        assert_eq!(server.join().expect("join observation server"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(snapshot) = snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {snapshot:?}");
+    };
+    let updates = snapshot.into_updates();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].object, object);
+    assert_eq!(updates[0].contract, contract);
+    assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
+    assert_eq!(updates[0].stamp, evidence.stamp);
 
     daemon.shutdown().expect("shutdown daemon");
 }

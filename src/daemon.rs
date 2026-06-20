@@ -6,10 +6,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
-use signal_criome::BlsPublicKey;
+use signal_criome::{AuthorizationMode, BlsPublicKey};
 use triad_runtime::SignalFile;
 
-use crate::actors::root::{Arguments as RootArguments, CriomeRoot, SubmitMetaRequest, SubmitRequest};
+use crate::actors::root::{
+    Arguments as RootArguments, CriomeRoot, SubmitMetaRequest, SubmitRequest,
+};
 use crate::tables::StoreLocation;
 use crate::transport::{CriomeFrameCodec, CriomeMetaFrameCodec};
 use crate::{Error, Result};
@@ -20,6 +22,7 @@ pub struct CriomeDaemon {
     meta_socket: PathBuf,
     store: StoreLocation,
     cluster_root: Option<BlsPublicKey>,
+    authorization_mode: AuthorizationMode,
 }
 
 pub use signal_criome::CriomeDaemonConfiguration;
@@ -38,6 +41,7 @@ impl CriomeDaemon {
             meta_socket,
             store,
             cluster_root: None,
+            authorization_mode: AuthorizationMode::Quorum,
         }
     }
 
@@ -52,6 +56,7 @@ impl CriomeDaemon {
             meta_socket,
             store: StoreLocation::new(configuration.store_path.as_str()),
             cluster_root: configuration.cluster_root().cloned(),
+            authorization_mode: *configuration.authorization_mode(),
         }
     }
 
@@ -79,6 +84,11 @@ impl CriomeDaemon {
         self
     }
 
+    pub fn with_authorization_mode(mut self, authorization_mode: AuthorizationMode) -> Self {
+        self.authorization_mode = authorization_mode;
+        self
+    }
+
     pub fn run(self) -> Result<()> {
         let bound = self.bind()?;
         eprintln!("criome socket={}", bound.socket().display());
@@ -97,6 +107,7 @@ impl CriomeDaemon {
         let root = runtime.block_on(CriomeRoot::start(RootArguments {
             store: self.store,
             cluster_root: self.cluster_root,
+            authorization_mode: self.authorization_mode,
         }))?;
         Ok(BoundCriomeDaemon {
             socket: self.socket,

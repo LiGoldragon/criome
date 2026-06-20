@@ -33,6 +33,10 @@ pub struct ResolveIdentity {
     identity: Identity,
 }
 
+pub struct ConfigureClusterRoot {
+    cluster_root: Option<ClusterRoot>,
+}
+
 #[derive(Clone)]
 pub struct Arguments {
     pub store: ActorRef<store::StoreKernel>,
@@ -70,6 +74,12 @@ impl LookupIdentity {
 impl ResolveIdentity {
     pub fn new(identity: Identity) -> Self {
         Self { identity }
+    }
+}
+
+impl ConfigureClusterRoot {
+    pub fn new(cluster_root: Option<ClusterRoot>) -> Self {
+        Self { cluster_root }
     }
 }
 
@@ -185,6 +195,10 @@ impl IdentityRegistry {
             Ok(None)
         }
     }
+
+    fn configure_cluster_root(&mut self, cluster_root: Option<ClusterRoot>) {
+        self.cluster_root = cluster_root;
+    }
 }
 
 impl Actor for IdentityRegistry {
@@ -258,5 +272,17 @@ impl Message<ResolveIdentity> for IdentityRegistry {
         self.lookup_stored(message.identity)
             .await
             .map(|identity| RegistryLookup { identity })
+    }
+}
+
+impl Message<ConfigureClusterRoot> for IdentityRegistry {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        message: ConfigureClusterRoot,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.configure_cluster_root(message.cluster_root);
     }
 }
