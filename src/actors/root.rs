@@ -13,7 +13,7 @@ use signal_criome::{
     ContractFound, ContractMissing, CriomeDaemonConfiguration, CriomeReply, CriomeRequest,
     EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken, KeyPurpose,
     ParkedAuthorization, ParkedAuthorizationObservation, ParkedAuthorizationSnapshot,
-    RejectionReason,
+    RejectionReason, SignalCallAuthorization,
 };
 
 use crate::actors::{
@@ -215,8 +215,12 @@ impl CriomeRoot {
                 .await
             }
             CriomeRequest::AuthorizeSignalCall(request) => {
-                self.ask_authorization(authorization::AuthorizeSignalCall::new(request))
-                    .await
+                if self.authorization_mode == AuthorizationMode::AutoApprove {
+                    self.auto_approve_signal_call(request).await
+                } else {
+                    self.ask_authorization(authorization::AuthorizeSignalCall::new(request))
+                        .await
+                }
             }
             CriomeRequest::ObserveAuthorization(request) => {
                 self.ask_authorization(authorization::ObserveAuthorization::new(request))
@@ -479,6 +483,51 @@ impl CriomeRoot {
             .store
             .ask(store::StoreAuthorizationState::new(state))
             .await;
+    }
+
+    async fn auto_approve_signal_call(
+        &self,
+        authorization: SignalCallAuthorization,
+    ) -> CriomeReply {
+        let stored = match self
+            .create_authorization_state(store::CreateAuthorizationState::signing(&authorization))
+            .await
+        {
+            Ok(stored) => stored,
+            Err(Error::AuthorizationReplayAttempted) => {
+                return rejection(RejectionReason::ReplayAttempted);
+            }
+            Err(_error) => return rejection(RejectionReason::MalformedRequest),
+        };
+        let state = stored.into_state();
+        let request_slot = state.request_slot.clone();
+        let request_digest = state.request_digest.clone();
+        let reply = self
+            .ask_signer(signer::SignAuthorizationGrant::new(
+                request_slot.clone(),
+                authorization,
+            ))
+            .await;
+        let CriomeReply::AuthorizationGranted(grant) = reply else {
+            return reply;
+        };
+        let granted_state = AuthorizationStateRecord::new(
+            request_slot,
+            request_digest,
+            AuthorizationStatus::Granted,
+            Vec::new(),
+            Some(grant.clone()),
+            None,
+        );
+        if self
+            .store
+            .ask(store::StoreAuthorizationState::new(granted_state))
+            .await
+            .is_err()
+        {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+        CriomeReply::AuthorizationGranted(grant)
     }
 
     async fn create_authorization_state(

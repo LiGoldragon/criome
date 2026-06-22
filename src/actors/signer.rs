@@ -2,9 +2,13 @@ use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use signal_criome::{
-    ArchiveAttestationRequest, Attestation, AttestationReceipt, AuditContext, BlsSignature,
+    ArchiveAttestationRequest, Attestation, AttestationReceipt, AttestedMoment,
+    AttestedMomentProposition, AuditContext, AuthorizationGrant, AuthorizationPolicyClass,
+    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, BlsSignature,
     ChannelGrantAttestationRequest, ContentPurpose, ContentReference, CriomeReply, Identity,
-    RejectionReason, SignReceipt, SignRequest, SignatureEnvelope, SignatureScheme,
+    RejectionReason, RequiredSignatureThreshold, SignReceipt, SignRequest, SignalCallAuthorization,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
+    TimeWindow, TimestampNanos,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, store};
@@ -45,6 +49,16 @@ pub struct AttestAuthorization {
     audit_context: AuditContext,
 }
 
+pub struct SignAuthorizationGrant {
+    request_slot: AuthorizationRequestSlot,
+    authorization: SignalCallAuthorization,
+}
+
+struct AuthorizationGrantStatement<'a> {
+    grant: &'a AuthorizationGrant,
+    expires_at: Option<TimestampNanos>,
+}
+
 impl SignContent {
     pub fn new(request: SignRequest) -> Self {
         Self { request }
@@ -70,6 +84,98 @@ impl AttestAuthorization {
             source,
             audit_context,
         }
+    }
+}
+
+impl SignAuthorizationGrant {
+    pub fn new(
+        request_slot: AuthorizationRequestSlot,
+        authorization: SignalCallAuthorization,
+    ) -> Self {
+        Self {
+            request_slot,
+            authorization,
+        }
+    }
+}
+
+impl<'a> AuthorizationGrantStatement<'a> {
+    fn new(grant: &'a AuthorizationGrant, expires_at: Option<TimestampNanos>) -> Self {
+        Self { grant, expires_at }
+    }
+
+    fn to_signing_bytes(&self) -> Vec<u8> {
+        let mut bytes = b"CRIOME-AUTHORIZATION-GRANT-V1".to_vec();
+        self.push_text(&mut bytes, self.grant.request_slot.as_str());
+        self.push_text(&mut bytes, self.grant.authorized_object_digest.as_str());
+        self.push_text(&mut bytes, self.grant.authorized_contract.as_str());
+        self.push_text(&mut bytes, self.grant.authorized_operation.as_str());
+        self.push_text(&mut bytes, self.grant.authorization_scope.as_str());
+        self.push_policy_satisfaction(&mut bytes);
+        self.push_signature_result(&mut bytes);
+        self.push_identity(&mut bytes, &self.grant.issued_by);
+        self.push_timestamp(&mut bytes, self.grant.issued_at);
+        match self.expires_at {
+            Some(expires_at) => {
+                bytes.extend_from_slice(b"some");
+                self.push_timestamp(&mut bytes, expires_at);
+            }
+            None => bytes.extend_from_slice(b"none"),
+        }
+        bytes
+    }
+
+    fn push_policy_satisfaction(&self, bytes: &mut Vec<u8>) {
+        match self.grant.policy_satisfaction.policy_class {
+            AuthorizationPolicyClass::SimpleSelfSigned => bytes.push(0),
+            AuthorizationPolicyClass::ComplexQuorum => bytes.push(1),
+        }
+        bytes.extend_from_slice(
+            &self
+                .grant
+                .policy_satisfaction
+                .required_signature_threshold
+                .into_u16()
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(
+            &(self.grant.policy_satisfaction.satisfied_signers().len() as u32).to_le_bytes(),
+        );
+        for signer in self.grant.policy_satisfaction.satisfied_signers() {
+            self.push_identity(bytes, signer);
+        }
+    }
+
+    fn push_signature_result(&self, bytes: &mut Vec<u8>) {
+        let tag = match self.grant.signature_result {
+            SignatureAuthorizationResult::SingleSignature => 0,
+            SignatureAuthorizationResult::RequiredSignaturesSatisfied => 1,
+            SignatureAuthorizationResult::PendingSignatures => 2,
+            SignatureAuthorizationResult::Rejected => 3,
+            SignatureAuthorizationResult::Expired => 4,
+        };
+        bytes.push(tag);
+    }
+
+    fn push_identity(&self, bytes: &mut Vec<u8>, identity: &Identity) {
+        let (tag, name) = match identity {
+            Identity::Persona(name) => (0u8, name.as_str()),
+            Identity::Agent(name) => (1u8, name.as_str()),
+            Identity::Host(name) => (2u8, name.as_str()),
+            Identity::Developer(name) => (3u8, name.as_str()),
+            Identity::Cluster(name) => (4u8, name.as_str()),
+        };
+        bytes.push(tag);
+        self.push_text(bytes, name);
+    }
+
+    fn push_timestamp(&self, bytes: &mut Vec<u8>, timestamp: TimestampNanos) {
+        bytes.extend_from_slice(&timestamp.into_u64().to_le_bytes());
+    }
+
+    fn push_text(&self, bytes: &mut Vec<u8>, text: &str) {
+        bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(text.as_bytes());
     }
 }
 
@@ -154,6 +260,66 @@ impl AttestationSigner {
     async fn attest_authorization(&self, request: AttestAuthorization) -> CriomeReply {
         let sign = SignRequest::new(request.content, request.source, request.audit_context, None);
         self.sign_as_receipt(sign).await
+    }
+
+    async fn sign_authorization_grant(&self, request: SignAuthorizationGrant) -> CriomeReply {
+        let issued_at = self.clock.timestamp();
+        let expires_at = request.authorization.expires_at();
+        let mut grant = AuthorizationGrant::new(
+            request.request_slot,
+            request.authorization.request_digest,
+            request.authorization.contract,
+            request.authorization.operation,
+            request.authorization.scope,
+            AuthorizationPolicySatisfaction::new(
+                AuthorizationPolicyClass::SimpleSelfSigned,
+                RequiredSignatureThreshold::new(1),
+                vec![self.criome_identity.clone()],
+            ),
+            SignatureAuthorizationResult::SingleSignature,
+            Vec::new(),
+            self.criome_identity.clone(),
+            issued_at,
+            expires_at,
+        );
+        let signing_bytes = AuthorizationGrantStatement::new(&grant, expires_at).to_signing_bytes();
+        let stamp = self.grant_stamp(issued_at);
+        let signature = StampedSignatureEnvelope {
+            stamp,
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: self.master_key.public_key(),
+                signature: self.master_key.sign(&signing_bytes),
+            },
+        };
+        grant = AuthorizationGrant::new(
+            grant.request_slot,
+            grant.authorized_object_digest,
+            grant.authorized_contract,
+            grant.authorized_operation,
+            grant.authorization_scope,
+            grant.policy_satisfaction,
+            grant.signature_result,
+            vec![signature],
+            grant.issued_by,
+            grant.issued_at,
+            expires_at,
+        );
+        CriomeReply::AuthorizationGranted(grant)
+    }
+
+    fn grant_stamp(&self, issued_at: TimestampNanos) -> AttestedMoment {
+        AttestedMoment::new(
+            AttestedMomentProposition::new(
+                TimeWindow {
+                    opens_at: issued_at,
+                    closes_at: TimestampNanos::new(issued_at.into_u64().saturating_add(1)),
+                },
+                RequiredSignatureThreshold::new(0),
+                Vec::new(),
+            ),
+            Vec::new(),
+        )
     }
 
     async fn sign_as_receipt(&self, request: SignRequest) -> CriomeReply {
@@ -251,6 +417,18 @@ impl Message<AttestAuthorization> for AttestationSigner {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         actor_reply(self.attest_authorization(message).await)
+    }
+}
+
+impl Message<SignAuthorizationGrant> for AttestationSigner {
+    type Reply = CriomeActorReply;
+
+    async fn handle(
+        &mut self,
+        message: SignAuthorizationGrant,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        actor_reply(self.sign_authorization_grant(message).await)
     }
 }
 
