@@ -1296,6 +1296,141 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
 }
 
 #[test]
+fn client_approval_signal_call_approval_records_signed_authorization_grant() {
+    let workspace = fixture_path("client-approval-signal-call-grant");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store.clone())
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next_meta()
+                .expect("serve client approval configure")
+        });
+        let configuration = CriomeDaemonConfiguration::new(
+            socket.display().to_string(),
+            store.as_path().display().to_string(),
+        )
+        .with_meta_socket_path(meta_socket.display().to_string())
+        .with_authorization_mode(signal_criome::AuthorizationMode::ClientApproval);
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::Configure(configuration))
+            .expect("submit client approval configure");
+        assert_eq!(
+            server.join().expect("join client approval configure"),
+            reply
+        );
+    });
+
+    let authorization =
+        signal_call_authorization_with_nonce(b"client-approved-signal-call", "slot-grant-nonce");
+    let request_digest = authorization.request_digest.clone();
+    let pending = thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next()
+                .expect("serve signal authorization park")
+        });
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::AuthorizeSignalCall(authorization.clone()))
+            .expect("authorize signal call");
+        assert_eq!(
+            server.join().expect("join signal authorization park"),
+            reply
+        );
+        reply
+    });
+    let CriomeReply::AuthorizationPending(pending) = pending else {
+        panic!("expected AuthorizationPending, got {pending:?}");
+    };
+    assert_eq!(pending.request_digest, request_digest);
+
+    let parked = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve signal parked list"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::ObserveParkedAuthorizations(
+                signal_criome::ParkedAuthorizationObservation::new(),
+            ))
+            .expect("observe parked signal authorization");
+        assert_eq!(server.join().expect("join signal parked list"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::ParkedAuthorizationSnapshot(parked) = parked else {
+        panic!("expected ParkedAuthorizationSnapshot, got {parked:?}");
+    };
+    assert_eq!(parked.parked().len(), 1);
+    assert_eq!(parked.parked()[0].request_slot, pending.request_slot);
+    assert_eq!(
+        parked.parked()[0].signal_authorization(),
+        Some(&authorization)
+    );
+    assert_eq!(parked.parked()[0].evaluation(), None);
+
+    let approved = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve signal approval"));
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
+                AuthorizationApproval {
+                    request_slot: pending.request_slot.clone(),
+                    decision: AuthorizationApprovalDecision::Approve,
+                },
+            ))
+            .expect("approve signal authorization");
+        assert_eq!(server.join().expect("join signal approval"), reply);
+        reply
+    });
+    let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
+        panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
+    };
+    assert_eq!(approved.request_slot, pending.request_slot);
+    assert_eq!(approved.decision, AuthorizationApprovalDecision::Approve);
+
+    let snapshot = thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next()
+                .expect("serve signal authorization observation")
+        });
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::ObserveAuthorization(
+                signal_criome::AuthorizationObservation::new(pending.request_slot.clone()),
+            ))
+            .expect("observe signal authorization");
+        assert_eq!(
+            server
+                .join()
+                .expect("join signal authorization observation"),
+            reply
+        );
+        reply
+    });
+    let CriomeReply::AuthorizationObservationSnapshot(snapshot) = snapshot else {
+        panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
+    };
+    let states = snapshot.into_states();
+    assert_eq!(states.len(), 1);
+    let state = &states[0];
+    assert_eq!(state.status, AuthorizationStatus::Granted);
+    assert_eq!(state.signal_authorization(), Some(&authorization));
+    let grant = state.grant().expect("approved signal call stores grant");
+    assert_eq!(grant.authorized_object_digest, request_digest);
+    assert_eq!(grant.signatures().len(), 1);
+    assert!(
+        !grant.signatures()[0].envelope.signature.as_str().is_empty(),
+        "client approval signs the grant through criome"
+    );
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
 fn meta_socket_configure_rejects_malformed_configuration() {
     let workspace = fixture_path("meta-configure-malformed");
     let socket = workspace.join("criome.sock");
@@ -1404,7 +1539,7 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     };
     assert_eq!(parked.parked().len(), 1);
     assert_eq!(parked.parked()[0].request_slot, pending.request_slot);
-    assert_eq!(parked.parked()[0].evaluation, evaluation);
+    assert_eq!(parked.parked()[0].evaluation(), Some(&evaluation));
 
     let working_reject = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve working reject"));

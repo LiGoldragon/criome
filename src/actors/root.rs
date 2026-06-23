@@ -217,6 +217,8 @@ impl CriomeRoot {
             CriomeRequest::AuthorizeSignalCall(request) => {
                 if self.authorization_mode == AuthorizationMode::AutoApprove {
                     self.auto_approve_signal_call(request).await
+                } else if self.authorization_mode == AuthorizationMode::ClientApproval {
+                    self.park_signal_authorization(request).await
                 } else {
                     self.ask_authorization(authorization::AuthorizeSignalCall::new(request))
                         .await
@@ -378,6 +380,30 @@ impl CriomeRoot {
         }
     }
 
+    async fn park_signal_authorization(
+        &self,
+        authorization: SignalCallAuthorization,
+    ) -> CriomeReply {
+        match self
+            .create_authorization_state(
+                store::CreateAuthorizationState::parked_signal_authorization(authorization),
+            )
+            .await
+        {
+            Ok(stored) => {
+                let state = stored.state();
+                CriomeReply::AuthorizationPending(AuthorizationPending::new(
+                    state.request_slot.clone(),
+                    state.request_digest.clone(),
+                    Vec::new(),
+                    AuthorizationObservationToken::new(state.request_slot.clone()),
+                ))
+            }
+            Err(Error::AuthorizationReplayAttempted) => rejection(RejectionReason::ReplayAttempted),
+            Err(_error) => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
     async fn parked_authorization_snapshot(
         &self,
         request: ParkedAuthorizationObservation,
@@ -448,6 +474,11 @@ impl CriomeRoot {
         if decision == AuthorizationApprovalDecision::Defer {
             return;
         }
+        if let Some(authorization) = state.signal_authorization().cloned() {
+            self.apply_signal_authorization_approval(state, decision, authorization)
+                .await;
+            return;
+        }
         let Some(evaluation) = state.parked_evaluation().cloned() else {
             return;
         };
@@ -479,6 +510,60 @@ impl CriomeRoot {
             denial,
         )
         .with_parked_evaluation(evaluation);
+        let _ = self
+            .store
+            .ask(store::StoreAuthorizationState::new(state))
+            .await;
+    }
+
+    async fn apply_signal_authorization_approval(
+        &self,
+        state: AuthorizationStateRecord,
+        decision: AuthorizationApprovalDecision,
+        authorization: SignalCallAuthorization,
+    ) {
+        let denial =
+            (decision == AuthorizationApprovalDecision::Reject).then_some(AuthorizationDenial {
+                source: AuthorizationDenialSource::Policy,
+                reason: AuthorizationDenialReason::PolicyRefused,
+            });
+        if decision == AuthorizationApprovalDecision::Reject {
+            let state = AuthorizationStateRecord::new(
+                state.request_slot,
+                state.request_digest,
+                AuthorizationStatus::Denied,
+                Vec::new(),
+                None,
+                denial,
+            )
+            .with_signal_authorization(authorization);
+            let _ = self
+                .store
+                .ask(store::StoreAuthorizationState::new(state))
+                .await;
+            return;
+        }
+
+        let request_slot = state.request_slot.clone();
+        let request_digest = state.request_digest.clone();
+        let reply = self
+            .ask_signer(signer::SignAuthorizationGrant::new(
+                request_slot.clone(),
+                authorization.clone(),
+            ))
+            .await;
+        let CriomeReply::AuthorizationGranted(grant) = reply else {
+            return;
+        };
+        let state = AuthorizationStateRecord::new(
+            request_slot,
+            request_digest,
+            AuthorizationStatus::Granted,
+            Vec::new(),
+            Some(grant),
+            None,
+        )
+        .with_signal_authorization(authorization);
         let _ = self
             .store
             .ask(store::StoreAuthorizationState::new(state))
@@ -567,13 +652,18 @@ impl CriomeRoot {
                     if state.status != AuthorizationStatus::Parked {
                         return None;
                     }
-                    state
-                        .parked_evaluation()
-                        .cloned()
-                        .map(|evaluation| ParkedAuthorization {
-                            request_slot: state.request_slot,
+                    if let Some(evaluation) = state.parked_evaluation().cloned() {
+                        return Some(ParkedAuthorization::from_evaluation(
+                            state.request_slot,
                             evaluation,
-                        })
+                        ));
+                    }
+                    state.signal_authorization().cloned().map(|authorization| {
+                        ParkedAuthorization::from_signal_authorization(
+                            state.request_slot,
+                            authorization,
+                        )
+                    })
                 })
                 .collect(),
             Err(_error) => Vec::new(),

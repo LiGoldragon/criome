@@ -42,7 +42,11 @@ submissions over the meta socket, and an approval answers by that
 identifier — the vote-on-existing-object adjudication over the
 already-submitted, criome-held object — rather than re-supplying the full
 evaluation by value. criome verifies and holds the parked object; mentci
-casts the approve-or-deny verdict. Per Spirit t00s (Decision): [criome's
+casts the approve-or-deny verdict. `AuthorizeSignalCall` submissions follow
+the same queue discipline in ClientApproval mode: criome parks the original
+signal-call request under the minted slot, exposes it in the parked snapshot,
+and on approval signs and stores the resulting `AuthorizationGrant` itself.
+Per Spirit t00s (Decision): [criome's
 authorization verdict can be supplied by a connected approver ... Client
 approval mode is a daemon-wide AuthorizationMode variant ... criome owns
 the pending-approval queue].

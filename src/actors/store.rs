@@ -47,6 +47,7 @@ pub struct CreateAuthorizationState {
     grant: Option<AuthorizationGrant>,
     denial: Option<AuthorizationDenial>,
     parked_evaluation: Option<AuthorizationEvaluation>,
+    signal_authorization: Option<signal_criome::SignalCallAuthorization>,
     replay_identity: Option<AuthorizationReplayIdentity>,
 }
 
@@ -192,6 +193,7 @@ impl CreateAuthorizationState {
             grant: None,
             denial: None,
             parked_evaluation: None,
+            signal_authorization: Some(authorization.clone()),
             replay_identity: Some(AuthorizationReplayIdentity::new(
                 authorization.requester.clone(),
                 authorization.nonce.clone(),
@@ -207,9 +209,28 @@ impl CreateAuthorizationState {
             grant: None,
             denial: None,
             parked_evaluation: None,
+            signal_authorization: Some(authorization.clone()),
             replay_identity: Some(AuthorizationReplayIdentity::new(
                 authorization.requester.clone(),
                 authorization.nonce.clone(),
+            )),
+        }
+    }
+
+    pub fn parked_signal_authorization(
+        authorization: signal_criome::SignalCallAuthorization,
+    ) -> Self {
+        Self {
+            request_digest: authorization.request_digest.clone(),
+            status: AuthorizationStatus::Parked,
+            missing_authorities: Vec::new(),
+            grant: None,
+            denial: None,
+            parked_evaluation: None,
+            signal_authorization: Some(authorization.clone()),
+            replay_identity: Some(AuthorizationReplayIdentity::new(
+                authorization.requester,
+                authorization.nonce,
             )),
         }
     }
@@ -222,6 +243,7 @@ impl CreateAuthorizationState {
             grant: None,
             denial: None,
             parked_evaluation: Some(evaluation),
+            signal_authorization: None,
             replay_identity: None,
         }
     }
@@ -433,6 +455,7 @@ impl StoreKernel {
             state.grant,
             state.denial,
             state.parked_evaluation,
+            state.signal_authorization,
             state.replay_identity,
         )
     }

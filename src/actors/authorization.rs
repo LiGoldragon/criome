@@ -208,6 +208,7 @@ impl AuthorizationCoordinator {
             let missing_authorities = state.missing_authorities().to_vec();
             let grant = state.grant().cloned();
             let parked_evaluation = state.parked_evaluation().cloned();
+            let signal_authorization = state.signal_authorization().cloned();
             let mut state = AuthorizationStateRecord::new(
                 state.request_slot,
                 state.request_digest,
@@ -218,6 +219,9 @@ impl AuthorizationCoordinator {
             );
             if let Some(evaluation) = parked_evaluation {
                 state = state.with_parked_evaluation(evaluation);
+            }
+            if let Some(authorization) = signal_authorization {
+                state = state.with_signal_authorization(authorization);
             }
             let _ = self.store_authorization_state(state).await;
         }

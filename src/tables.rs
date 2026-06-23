@@ -395,6 +395,7 @@ impl CriomeTables {
         grant: Option<AuthorizationGrant>,
         denial: Option<AuthorizationDenial>,
         parked_evaluation: Option<AuthorizationEvaluation>,
+        signal_authorization: Option<signal_criome::SignalCallAuthorization>,
         replay_identity: Option<AuthorizationReplayIdentity>,
     ) -> Result<StoredAuthorizationState> {
         if let Some(replay_identity) = replay_identity.as_ref() {
@@ -413,6 +414,9 @@ impl CriomeTables {
         );
         if let Some(evaluation) = parked_evaluation {
             state = state.with_parked_evaluation(evaluation);
+        }
+        if let Some(authorization) = signal_authorization {
+            state = state.with_signal_authorization(authorization);
         }
         let stored = StoredAuthorizationState::new(state);
         let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
