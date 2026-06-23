@@ -9,8 +9,8 @@ use signal_criome::{
 
 use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
-    AuthorizationReplayIdentity, CriomeTables, StoreLocation, StoredAttestation,
-    StoredAuthorizationState, StoredContract, StoredIdentity, StoredRevocation,
+    AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, StoreLocation,
+    StoredAttestation, StoredAuthorizationState, StoredContract, StoredIdentity, StoredRevocation,
     StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
@@ -247,6 +247,19 @@ impl CreateAuthorizationState {
             replay_identity: None,
         }
     }
+
+    fn into_draft(self) -> AuthorizationStateDraft {
+        AuthorizationStateDraft {
+            request_digest: self.request_digest,
+            status: self.status,
+            missing_authorities: self.missing_authorities,
+            grant: self.grant,
+            denial: self.denial,
+            parked_evaluation: self.parked_evaluation,
+            signal_authorization: self.signal_authorization,
+            replay_identity: self.replay_identity,
+        }
+    }
 }
 
 impl LookupAuthorizationState {
@@ -448,16 +461,7 @@ impl StoreKernel {
         &self,
         state: CreateAuthorizationState,
     ) -> crate::Result<StoredAuthorizationState> {
-        self.tables.put_new_authorization_state(
-            state.request_digest,
-            state.status,
-            state.missing_authorities,
-            state.grant,
-            state.denial,
-            state.parked_evaluation,
-            state.signal_authorization,
-            state.replay_identity,
-        )
+        self.tables.put_new_authorization_state(state.into_draft())
     }
 
     fn authorization_state(

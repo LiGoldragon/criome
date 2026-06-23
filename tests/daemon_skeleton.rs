@@ -25,11 +25,13 @@ use signal_criome::{
     AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature, ComponentKind,
     ComponentObjectInterest, ContentPurpose, ContentReference, Contract, ContractName,
     ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody, CriomeReply,
-    CriomeRequest, EvaluationDecision, Evidence, Identity, IdentityLookup, IdentityRegistration,
-    KeyPurpose, ObjectDigest, OperationDigest, PrincipalName, PrincipalStatus,
-    PublicKeyFingerprint, RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule,
-    SignRequest, SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope,
-    SignatureScheme, StampedSignatureEnvelope, TimeSignature, TimeWindow, TimestampNanos,
+    CriomeRequest, EscalationTarget, EvaluationDecision, Evidence, Identity, IdentityLookup,
+    IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
+    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
+    RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
+    TimeSignature, TimeWindow, TimestampNanos, WorkflowDigest, WorkflowGuard,
+    WorkflowProvenanceDigest, WorkflowReceipt,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
@@ -157,6 +159,14 @@ fn stamped_signature_envelope() -> StampedSignatureEnvelope {
 
 fn operation_digest(seed: &[u8]) -> OperationDigest {
     OperationDigest::from_bytes(seed)
+}
+
+fn workflow_digest(seed: &[u8]) -> WorkflowDigest {
+    WorkflowDigest::new(ObjectDigest::from_bytes(seed))
+}
+
+fn workflow_provenance_digest(seed: &[u8]) -> WorkflowProvenanceDigest {
+    WorkflowProvenanceDigest::new(ObjectDigest::from_bytes(seed))
 }
 
 fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
@@ -830,6 +840,123 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     CriomeRoot::stop(restarted)
         .await
         .expect("stop restarted criome root");
+}
+
+#[tokio::test]
+async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
+    let root = CriomeRoot::start(RootArguments::new(store_location("workflow-receipts")))
+        .await
+        .expect("start criome root");
+    let timekeeper = MasterKey::generate().expect("timekeeper key");
+    let timekeeper_identity = Identity::cluster(("timekeeper").to_string());
+
+    root.ask(SubmitRequest::new(CriomeRequest::RegisterIdentity(
+        IdentityRegistration::new(
+            timekeeper_identity.clone(),
+            timekeeper.public_key(),
+            PublicKeyFingerprint::new(("timekeeper-fingerprint").to_string()),
+            KeyPurpose::ReleaseAuthorization,
+            None,
+        ),
+    )))
+    .await
+    .expect("register timekeeper")
+    .into_reply();
+
+    let workflow = workflow_digest(b"spirit guardian workflow");
+    let contract = Contract::new(Rule::Workflow(WorkflowGuard {
+        workflow: workflow.clone(),
+        executor: Identity::host(("orchestrate").to_string()),
+    }));
+    let admitted = root
+        .ask(SubmitRequest::new(CriomeRequest::AdmitContract(contract)))
+        .await
+        .expect("admit workflow contract")
+        .into_reply();
+    let CriomeReply::ContractAdmitted(admitted) = admitted else {
+        panic!("expected ContractAdmitted, got {admitted:?}");
+    };
+    let contract_digest = admitted.into_payload();
+    let operation = operation_digest(b"spirit-head-that-would-be-guarded");
+    let proposition = AttestedMomentProposition::new(
+        TimeWindow {
+            opens_at: TimestampNanos::new(10),
+            closes_at: TimestampNanos::new(20),
+        },
+        RequiredSignatureThreshold::new(1),
+        vec![timekeeper_identity.clone()],
+    );
+    let stamp = AttestedMoment::new(
+        proposition.clone(),
+        vec![TimeSignature {
+            signer: timekeeper_identity,
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: timekeeper.public_key(),
+                signature: timekeeper.sign(
+                    AttestedMomentStatement::new(&proposition)
+                        .to_signing_bytes()
+                        .expect("moment statement")
+                        .as_slice(),
+                ),
+            },
+        }],
+    );
+    let evidence = Evidence::new(
+        ComponentKind::Spirit,
+        operation.clone(),
+        stamp,
+        Vec::new(),
+        Vec::new(),
+    );
+    let object = signal_criome::AuthorizedObjectReference {
+        component: ComponentKind::Spirit,
+        digest: operation.object_digest().clone(),
+        kind: AuthorizedObjectKind::Head,
+    };
+
+    let absent_receipt = root
+        .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+            AuthorizationEvaluation {
+                contract: contract_digest.clone(),
+                object: object.clone(),
+                evidence: evidence.clone(),
+            },
+        )))
+        .await
+        .expect("evaluate workflow without receipt")
+        .into_reply();
+    let CriomeReply::AuthorizationEvaluated(absent_receipt) = absent_receipt else {
+        panic!("expected AuthorizationEvaluated, got {absent_receipt:?}");
+    };
+    assert_eq!(
+        absent_receipt.decision,
+        EvaluationDecision::Escalate(EscalationTarget::Workflow(workflow.clone()))
+    );
+
+    let receipt = WorkflowReceipt {
+        workflow,
+        operation,
+        outcome: EvaluationDecision::Authorized,
+        provenance: workflow_provenance_digest(b"fixture-workflow-run-log"),
+    };
+    let accepted_receipt = root
+        .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+            AuthorizationEvaluation {
+                contract: contract_digest,
+                object,
+                evidence: evidence.with_workflow_receipts(vec![receipt]),
+            },
+        )))
+        .await
+        .expect("evaluate workflow with receipt")
+        .into_reply();
+    let CriomeReply::AuthorizationEvaluated(accepted_receipt) = accepted_receipt else {
+        panic!("expected AuthorizationEvaluated, got {accepted_receipt:?}");
+    };
+    assert_eq!(accepted_receipt.decision, EvaluationDecision::Authorized);
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
 }
 
 #[tokio::test]

@@ -5,10 +5,12 @@ use criome::language::{
 use criome::master_key::MasterKey;
 use signal_criome::{
     AgreementFact, AgreementRule, AttestedMoment, AttestedMomentProposition, BlsPublicKey,
-    ComponentKind, Contract, ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
-    EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
-    RequiredSignatureThreshold, Rule, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
-    Threshold, TimeSignature, TimeSwitch, TimeWindow, TimedRule, TimestampNanos,
+    ComponentKind, Contract, ContractAdmissionRejectionReason, ContractDigest, EscalationTarget,
+    EvaluationDecision, EvaluationRejectionReason, Evidence, Identity, ObjectDigest,
+    OperationDigest, PolicyMember, RequiredSignatureThreshold, Rule, SignatureEnvelope,
+    SignatureScheme, StampedSignatureEnvelope, Threshold, TimeSignature, TimeSwitch, TimeWindow,
+    TimedRule, TimestampNanos, WorkflowDigest, WorkflowGuard, WorkflowProvenanceDigest,
+    WorkflowReceipt,
 };
 
 struct Signer {
@@ -212,6 +214,14 @@ fn digest(value: &[u8]) -> ObjectDigest {
 
 fn operation(value: &[u8]) -> OperationDigest {
     OperationDigest::from_bytes(value)
+}
+
+fn workflow_digest(value: &[u8]) -> WorkflowDigest {
+    WorkflowDigest::new(digest(value))
+}
+
+fn workflow_provenance(value: &[u8]) -> WorkflowProvenanceDigest {
+    WorkflowProvenanceDigest::new(digest(value))
 }
 
 fn contract_digest(value: &[u8]) -> ContractDigest {
@@ -775,7 +785,100 @@ fn explicit_policy_can_escalate_to_psyche() {
             &evidence(operation, clock.moment(1, 10)),
             &registry
         ),
-        Ok(EvaluationDecision::EscalateToPsyche)
+        Ok(EvaluationDecision::Escalate(EscalationTarget::Psyche))
+    );
+}
+
+#[test]
+fn workflow_rule_escalates_when_matching_receipt_is_absent() {
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[]);
+    let operation = operation(b"workflow absent receipt");
+    let workflow = workflow_digest(b"guardian workflow");
+    let mut store = ContractStore::new();
+    let digest = admitted(
+        &mut store,
+        Contract::new(Rule::Workflow(WorkflowGuard {
+            workflow: workflow.clone(),
+            executor: Identity::host("orchestrate".to_owned()),
+        })),
+    );
+
+    assert_eq!(
+        store.evaluate(
+            &digest,
+            &evidence(operation, clock.moment(1, 10)),
+            &registry
+        ),
+        Ok(EvaluationDecision::Escalate(EscalationTarget::Workflow(
+            workflow
+        )))
+    );
+}
+
+#[test]
+fn workflow_rule_adopts_matching_receipt_outcome() {
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[]);
+    let operation = operation(b"workflow accepted operation");
+    let workflow = workflow_digest(b"accepting guardian workflow");
+    let mut store = ContractStore::new();
+    let digest = admitted(
+        &mut store,
+        Contract::new(Rule::Workflow(WorkflowGuard {
+            workflow: workflow.clone(),
+            executor: Identity::host("orchestrate".to_owned()),
+        })),
+    );
+    let receipt = WorkflowReceipt {
+        workflow,
+        operation: operation.clone(),
+        outcome: EvaluationDecision::Authorized,
+        provenance: workflow_provenance(b"run log for accepted operation"),
+    };
+
+    assert_eq!(
+        store.evaluate(
+            &digest,
+            &evidence(operation, clock.moment(1, 10)).with_workflow_receipts(vec![receipt]),
+            &registry
+        ),
+        Ok(EvaluationDecision::Authorized)
+    );
+}
+
+#[test]
+fn workflow_rule_ignores_receipt_for_other_operation() {
+    let clock = AttestedClock::new();
+    let registry = registry_with_clock(&clock, &[]);
+    let requested_operation = operation(b"workflow requested operation");
+    let other_operation = operation(b"workflow other operation");
+    let workflow = workflow_digest(b"operation-bound workflow");
+    let mut store = ContractStore::new();
+    let digest = admitted(
+        &mut store,
+        Contract::new(Rule::Workflow(WorkflowGuard {
+            workflow: workflow.clone(),
+            executor: Identity::host("orchestrate".to_owned()),
+        })),
+    );
+    let receipt = WorkflowReceipt {
+        workflow: workflow.clone(),
+        operation: other_operation,
+        outcome: EvaluationDecision::Authorized,
+        provenance: workflow_provenance(b"run log for other operation"),
+    };
+
+    assert_eq!(
+        store.evaluate(
+            &digest,
+            &evidence(requested_operation, clock.moment(1, 10))
+                .with_workflow_receipts(vec![receipt]),
+            &registry
+        ),
+        Ok(EvaluationDecision::Escalate(EscalationTarget::Workflow(
+            workflow
+        )))
     );
 }
 
@@ -812,7 +915,7 @@ fn all_composes_content_addressed_children_and_preserves_escalation() {
             &signed_evidence(operation, clock.moment(1, 10), &[&operator]),
             &registry,
         ),
-        Ok(EvaluationDecision::EscalateToPsyche)
+        Ok(EvaluationDecision::Escalate(EscalationTarget::Psyche))
     );
 }
 
@@ -839,7 +942,7 @@ fn any_prefers_authorization_before_escalation() {
             &evidence(operation.clone(), clock.moment(1, 10)),
             &registry
         ),
-        Ok(EvaluationDecision::EscalateToPsyche)
+        Ok(EvaluationDecision::Escalate(EscalationTarget::Psyche))
     );
     assert_eq!(
         store.evaluate(

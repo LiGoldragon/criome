@@ -7,10 +7,11 @@
 //! generated nouns.
 
 use signal_criome::{
-    AttestedMoment, AttestedMomentDigestError, AttestedMomentProposition, BlsPublicKey, Contract,
-    ContractAdmissionRejectionReason, ContractDigest, EvaluationDecision,
-    EvaluationRejectionReason, Evidence, Identity, ObjectDigest, OperationDigest, PolicyMember,
-    QuorumShortfall, RequiredSignatureThreshold, Rule, SignatureScheme, Threshold, TimestampNanos,
+    AttestedMoment, AttestedMomentDigestError, AttestedMomentProposition, BlsPublicKey,
+    Composition, Contract, ContractAdmissionRejectionReason, ContractDigest, EscalationTarget,
+    EvaluationDecision, EvaluationRejectionReason, Evidence, Identity, ObjectDigest,
+    OperationDigest, PolicyMember, QuorumShortfall, RequiredSignatureThreshold, Rule,
+    SignatureScheme, Threshold, TimestampNanos, WorkflowGuard,
 };
 
 use crate::master_key::VerifyBls;
@@ -315,7 +316,11 @@ impl RuleEvaluation for Rule {
                 .active_threshold(evidence)
                 .decide(evidence, store, registry),
             Self::Agreement(agreement) => Ok(evidence.decision_for_agreement(agreement, registry)),
-            Self::EscalateToPsyche => Ok(EvaluationDecision::EscalateToPsyche),
+            Self::Workflow(workflow) => Ok(workflow.decision_from_receipt(evidence)),
+            Self::Composition(composition) => Ok(composition
+                .decide_leaf(evidence, registry)
+                .unwrap_or(EvaluationDecision::Escalate(EscalationTarget::Psyche))),
+            Self::EscalateToPsyche => Ok(EvaluationDecision::Escalate(EscalationTarget::Psyche)),
         }
     }
 
@@ -329,6 +334,8 @@ impl RuleEvaluation for Rule {
                 references
             }
             Self::SignedBy(_)
+            | Self::Workflow(_)
+            | Self::Composition(_)
             | Self::ActiveAfter(_)
             | Self::ActiveUntil(_)
             | Self::Agreement(_)
@@ -350,6 +357,47 @@ impl RuleEvaluation for Rule {
                 time_switch.after.validate_shape()
             }
             _ => Ok(()),
+        }
+    }
+}
+
+trait WorkflowGuardEvaluation {
+    fn decision_from_receipt(&self, evidence: &Evidence) -> EvaluationDecision;
+}
+
+impl WorkflowGuardEvaluation for WorkflowGuard {
+    fn decision_from_receipt(&self, evidence: &Evidence) -> EvaluationDecision {
+        evidence
+            .workflow_receipts()
+            .iter()
+            .find(|receipt| {
+                receipt.workflow == self.workflow && receipt.operation == evidence.operation
+            })
+            .map(|receipt| receipt.outcome.clone())
+            .unwrap_or_else(|| {
+                EvaluationDecision::Escalate(EscalationTarget::Workflow(self.workflow.clone()))
+            })
+    }
+}
+
+trait CompositionEvaluation {
+    fn decide_leaf(
+        &self,
+        evidence: &Evidence,
+        registry: &KeyRegistry,
+    ) -> Option<EvaluationDecision>;
+}
+
+impl CompositionEvaluation for Composition {
+    fn decide_leaf(
+        &self,
+        evidence: &Evidence,
+        registry: &KeyRegistry,
+    ) -> Option<EvaluationDecision> {
+        match self {
+            Self::Escalate(target) => Some(EvaluationDecision::Escalate(target.clone())),
+            Self::Signature(identity) => Some(evidence.decision_for_signature(identity, registry)),
+            Self::AllOf(_) | Self::AnyOf(_) | Self::Threshold(_) | Self::WorkflowStep(_) => None,
         }
     }
 }
@@ -661,33 +709,57 @@ impl EvaluationDecisionLogic for EvaluationDecision {
     }
 
     fn all(decisions: Vec<EvaluationDecision>) -> Result<EvaluationDecision, EvaluationError> {
-        let mut saw_escalation = false;
+        let mut escalation = None;
+        let mut saw_deferred = false;
+        let mut saw_non_judgement = false;
         for decision in decisions {
             match decision {
                 Self::Authorized => {}
                 Self::Rejected(reason) => return Ok(Self::Rejected(reason)),
-                Self::EscalateToPsyche => saw_escalation = true,
+                Self::Deferred => saw_deferred = true,
+                Self::NonJudgement => saw_non_judgement = true,
+                Self::Escalate(target) => {
+                    if escalation.is_none() {
+                        escalation = Some(target);
+                    }
+                }
             }
         }
-        if saw_escalation {
-            Ok(Self::EscalateToPsyche)
+        if let Some(target) = escalation {
+            Ok(Self::Escalate(target))
+        } else if saw_deferred {
+            Ok(Self::Deferred)
+        } else if saw_non_judgement {
+            Ok(Self::NonJudgement)
         } else {
             Ok(Self::Authorized)
         }
     }
 
     fn any(decisions: Vec<EvaluationDecision>) -> Result<EvaluationDecision, EvaluationError> {
-        let mut saw_escalation = false;
+        let mut escalation = None;
+        let mut saw_deferred = false;
+        let mut saw_non_judgement = false;
         let mut last_rejection = None;
         for decision in decisions {
             match decision {
                 Self::Authorized => return Ok(Self::Authorized),
                 Self::Rejected(reason) => last_rejection = Some(reason),
-                Self::EscalateToPsyche => saw_escalation = true,
+                Self::Deferred => saw_deferred = true,
+                Self::NonJudgement => saw_non_judgement = true,
+                Self::Escalate(target) => {
+                    if escalation.is_none() {
+                        escalation = Some(target);
+                    }
+                }
             }
         }
-        if saw_escalation {
-            Ok(Self::EscalateToPsyche)
+        if let Some(target) = escalation {
+            Ok(Self::Escalate(target))
+        } else if saw_deferred {
+            Ok(Self::Deferred)
+        } else if saw_non_judgement {
+            Ok(Self::NonJudgement)
         } else {
             Ok(Self::Rejected(last_rejection.unwrap_or(
                 EvaluationRejectionReason::QuorumShort(QuorumShortfall {

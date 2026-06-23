@@ -177,6 +177,18 @@ pub struct StoredAuthorizationState {
     state: AuthorizationStateRecord,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationStateDraft {
+    pub(crate) request_digest: ObjectDigest,
+    pub(crate) status: AuthorizationStatus,
+    pub(crate) missing_authorities: Vec<Identity>,
+    pub(crate) grant: Option<AuthorizationGrant>,
+    pub(crate) denial: Option<AuthorizationDenial>,
+    pub(crate) parked_evaluation: Option<AuthorizationEvaluation>,
+    pub(crate) signal_authorization: Option<signal_criome::SignalCallAuthorization>,
+    pub(crate) replay_identity: Option<AuthorizationReplayIdentity>,
+}
+
 impl StoredAuthorizationState {
     pub fn new(state: AuthorizationStateRecord) -> Self {
         Self { state }
@@ -389,19 +401,22 @@ impl CriomeTables {
 
     pub fn put_new_authorization_state(
         &self,
-        request_digest: ObjectDigest,
-        status: AuthorizationStatus,
-        missing_authorities: Vec<Identity>,
-        grant: Option<AuthorizationGrant>,
-        denial: Option<AuthorizationDenial>,
-        parked_evaluation: Option<AuthorizationEvaluation>,
-        signal_authorization: Option<signal_criome::SignalCallAuthorization>,
-        replay_identity: Option<AuthorizationReplayIdentity>,
+        draft: AuthorizationStateDraft,
     ) -> Result<StoredAuthorizationState> {
-        if let Some(replay_identity) = replay_identity.as_ref() {
-            if self.authorization_replay_slot(replay_identity)?.is_some() {
-                return Err(crate::Error::AuthorizationReplayAttempted);
-            }
+        let AuthorizationStateDraft {
+            request_digest,
+            status,
+            missing_authorities,
+            grant,
+            denial,
+            parked_evaluation,
+            signal_authorization,
+            replay_identity,
+        } = draft;
+        if let Some(replay_identity) = replay_identity.as_ref()
+            && self.authorization_replay_slot(replay_identity)?.is_some()
+        {
+            return Err(crate::Error::AuthorizationReplayAttempted);
         }
         let slot = self.next_authorization_slot()?;
         let mut state = AuthorizationStateRecord::new(
