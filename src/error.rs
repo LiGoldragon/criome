@@ -41,6 +41,10 @@ pub enum Error {
     UnexpectedSignalFrame { got: String },
     #[error("authorization replay attempted")]
     AuthorizationReplayAttempted,
+    #[error("intercept policy overlaps an active same-priority policy")]
+    InterceptPolicyOverlapRejected,
+    #[error("parked Spirit request missing")]
+    ParkedSpiritRequestMissing,
     #[error("contract admission rejected: {0:?}")]
     ContractAdmissionRejected(signal_criome::ContractAdmissionRejectionReason),
     #[error("missing request record")]

@@ -1,16 +1,19 @@
 use kameo::actor::{Actor, ActorRef};
 use kameo::message::{Context, Message};
 use signal_criome::{
-    Attestation, AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant,
-    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus, Contract,
-    ContractAdmissionRejectionReason, ContractDigest, Identity, IdentityRegistration,
-    IdentityRevocation, ObjectDigest, SignatureSolicitationRoute, SignatureSubmission,
+    ActiveInterceptPolicies, Attestation, AuthorizationDenial, AuthorizationEvaluation,
+    AuthorizationGrant, AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus,
+    Contract, ContractAdmissionRejectionReason, ContractDigest, Identity, IdentityRegistration,
+    IdentityRevocation, InterceptPolicyCancellation, InterceptPolicyProposal, ObjectDigest,
+    ParkedRequestAnswer, ParkedRequestQuery, ParkedRequestResolution, ParkedRequestSnapshot,
+    SignatureSolicitationRoute, SignatureSubmission, SpiritAuthorizationContext, TimestampNanos,
 };
 
 use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
-    AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, StoreLocation,
-    StoredAttestation, StoredAuthorizationState, StoredContract, StoredIdentity, StoredRevocation,
+    AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, InterceptPolicyDraft,
+    StoreLocation, StoredAttestation, StoredAuthorizationState, StoredContract, StoredIdentity,
+    StoredInterceptPolicy, StoredParkedSpiritRequest, StoredRevocation,
     StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
@@ -74,6 +77,35 @@ pub struct StoreSignatureSolicitation {
 pub struct StoreSignatureSubmission {
     submission: SignatureSubmission,
 }
+
+pub struct StoreInterceptPolicy {
+    draft: InterceptPolicyDraft,
+}
+
+pub struct CancelInterceptPolicy {
+    cancellation: InterceptPolicyCancellation,
+}
+
+pub struct ReadInterceptPolicies {
+    now: TimestampNanos,
+}
+
+pub struct InterceptSpiritAuthorization {
+    context: SpiritAuthorizationContext,
+    now: TimestampNanos,
+}
+
+pub struct FetchParkedSpiritRequests {
+    query: ParkedRequestQuery,
+    now: TimestampNanos,
+}
+
+pub struct AnswerParkedSpiritRequest {
+    answer: ParkedRequestAnswer,
+    now: TimestampNanos,
+}
+
+pub struct ReadParkedSpiritRequestHistory;
 
 #[derive(kameo::Reply)]
 pub struct StoredIdentityReply {
@@ -152,6 +184,36 @@ pub struct StoredSignatureSolicitationReply {
 #[derive(kameo::Reply)]
 pub struct StoredSignatureSubmissionReply {
     submission: StoredSignatureSubmission,
+}
+
+#[derive(kameo::Reply)]
+pub struct StoredInterceptPolicyReply {
+    policy: StoredInterceptPolicy,
+}
+
+#[derive(kameo::Reply)]
+pub struct InterceptPoliciesReply {
+    policies: ActiveInterceptPolicies,
+}
+
+#[derive(kameo::Reply)]
+pub struct InterceptedSpiritAuthorizationReply {
+    request: Option<StoredParkedSpiritRequest>,
+}
+
+#[derive(kameo::Reply)]
+pub struct ParkedSpiritRequestSnapshotReply {
+    snapshot: ParkedRequestSnapshot,
+}
+
+#[derive(kameo::Reply)]
+pub struct ParkedSpiritRequestResolutionReply {
+    resolution: ParkedRequestResolution,
+}
+
+#[derive(kameo::Reply)]
+pub struct ParkedSpiritRequestHistoryReply {
+    requests: Vec<StoredParkedSpiritRequest>,
 }
 
 impl StoreIdentity {
@@ -292,6 +354,50 @@ impl StoreSignatureSubmission {
     }
 }
 
+impl StoreInterceptPolicy {
+    pub fn create(proposal: InterceptPolicyProposal, now: TimestampNanos) -> Self {
+        Self {
+            draft: InterceptPolicyDraft::create(proposal, now),
+        }
+    }
+
+    pub fn replace(proposal: InterceptPolicyProposal, now: TimestampNanos) -> Self {
+        Self {
+            draft: InterceptPolicyDraft::replace(proposal, now),
+        }
+    }
+}
+
+impl CancelInterceptPolicy {
+    pub fn new(cancellation: InterceptPolicyCancellation) -> Self {
+        Self { cancellation }
+    }
+}
+
+impl ReadInterceptPolicies {
+    pub fn new(now: TimestampNanos) -> Self {
+        Self { now }
+    }
+}
+
+impl InterceptSpiritAuthorization {
+    pub fn new(context: SpiritAuthorizationContext, now: TimestampNanos) -> Self {
+        Self { context, now }
+    }
+}
+
+impl FetchParkedSpiritRequests {
+    pub fn new(query: ParkedRequestQuery, now: TimestampNanos) -> Self {
+        Self { query, now }
+    }
+}
+
+impl AnswerParkedSpiritRequest {
+    pub fn new(answer: ParkedRequestAnswer, now: TimestampNanos) -> Self {
+        Self { answer, now }
+    }
+}
+
 impl StoredIdentityReply {
     pub fn into_identity(self) -> StoredIdentity {
         self.identity
@@ -403,6 +509,42 @@ impl StoredSignatureSolicitationReply {
 impl StoredSignatureSubmissionReply {
     pub fn into_submission(self) -> StoredSignatureSubmission {
         self.submission
+    }
+}
+
+impl StoredInterceptPolicyReply {
+    pub fn into_policy(self) -> StoredInterceptPolicy {
+        self.policy
+    }
+}
+
+impl InterceptPoliciesReply {
+    pub fn into_policies(self) -> ActiveInterceptPolicies {
+        self.policies
+    }
+}
+
+impl InterceptedSpiritAuthorizationReply {
+    pub fn into_request(self) -> Option<StoredParkedSpiritRequest> {
+        self.request
+    }
+}
+
+impl ParkedSpiritRequestSnapshotReply {
+    pub fn into_snapshot(self) -> ParkedRequestSnapshot {
+        self.snapshot
+    }
+}
+
+impl ParkedSpiritRequestResolutionReply {
+    pub fn into_resolution(self) -> ParkedRequestResolution {
+        self.resolution
+    }
+}
+
+impl ParkedSpiritRequestHistoryReply {
+    pub fn into_requests(self) -> Vec<StoredParkedSpiritRequest> {
+        self.requests
     }
 }
 
@@ -546,6 +688,55 @@ impl StoreKernel {
         let stored = StoredSignatureSubmission::new(submission);
         self.tables.put_signature_submission(&stored)?;
         Ok(stored)
+    }
+
+    fn store_intercept_policy(
+        &self,
+        draft: InterceptPolicyDraft,
+    ) -> crate::Result<StoredInterceptPolicy> {
+        self.tables.put_intercept_policy(draft)
+    }
+
+    fn cancel_intercept_policy(
+        &self,
+        cancellation: InterceptPolicyCancellation,
+    ) -> crate::Result<()> {
+        self.tables.retract_intercept_policy(cancellation.payload())
+    }
+
+    fn active_intercept_policies(
+        &self,
+        now: TimestampNanos,
+    ) -> crate::Result<ActiveInterceptPolicies> {
+        self.tables.active_intercept_policies(now)
+    }
+
+    fn intercept_spirit_authorization(
+        &self,
+        context: SpiritAuthorizationContext,
+        now: TimestampNanos,
+    ) -> crate::Result<Option<StoredParkedSpiritRequest>> {
+        self.tables.put_parked_spirit_request(context, now)
+    }
+
+    fn parked_spirit_request_snapshot(
+        &self,
+        query: ParkedRequestQuery,
+        now: TimestampNanos,
+    ) -> crate::Result<ParkedRequestSnapshot> {
+        self.tables.parked_spirit_request_snapshot(&query, now)
+    }
+
+    fn answer_parked_spirit_request(
+        &self,
+        answer: ParkedRequestAnswer,
+        now: TimestampNanos,
+    ) -> crate::Result<ParkedRequestResolution> {
+        self.tables.answer_parked_spirit_request(answer, now)
+    }
+
+    fn parked_spirit_request_history(&self) -> crate::Result<Vec<StoredParkedSpiritRequest>> {
+        self.tables.parked_spirit_requests()
     }
 }
 
@@ -738,5 +929,95 @@ impl Message<StoreSignatureSubmission> for StoreKernel {
     ) -> Self::Reply {
         self.store_signature_submission(message.submission)
             .map(|submission| StoredSignatureSubmissionReply { submission })
+    }
+}
+
+impl Message<StoreInterceptPolicy> for StoreKernel {
+    type Reply = crate::Result<StoredInterceptPolicyReply>;
+
+    async fn handle(
+        &mut self,
+        message: StoreInterceptPolicy,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_intercept_policy(message.draft)
+            .map(|policy| StoredInterceptPolicyReply { policy })
+    }
+}
+
+impl Message<CancelInterceptPolicy> for StoreKernel {
+    type Reply = crate::Result<()>;
+
+    async fn handle(
+        &mut self,
+        message: CancelInterceptPolicy,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.cancel_intercept_policy(message.cancellation)
+    }
+}
+
+impl Message<ReadInterceptPolicies> for StoreKernel {
+    type Reply = crate::Result<InterceptPoliciesReply>;
+
+    async fn handle(
+        &mut self,
+        message: ReadInterceptPolicies,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.active_intercept_policies(message.now)
+            .map(|policies| InterceptPoliciesReply { policies })
+    }
+}
+
+impl Message<InterceptSpiritAuthorization> for StoreKernel {
+    type Reply = crate::Result<InterceptedSpiritAuthorizationReply>;
+
+    async fn handle(
+        &mut self,
+        message: InterceptSpiritAuthorization,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.intercept_spirit_authorization(message.context, message.now)
+            .map(|request| InterceptedSpiritAuthorizationReply { request })
+    }
+}
+
+impl Message<FetchParkedSpiritRequests> for StoreKernel {
+    type Reply = crate::Result<ParkedSpiritRequestSnapshotReply>;
+
+    async fn handle(
+        &mut self,
+        message: FetchParkedSpiritRequests,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.parked_spirit_request_snapshot(message.query, message.now)
+            .map(|snapshot| ParkedSpiritRequestSnapshotReply { snapshot })
+    }
+}
+
+impl Message<AnswerParkedSpiritRequest> for StoreKernel {
+    type Reply = crate::Result<ParkedSpiritRequestResolutionReply>;
+
+    async fn handle(
+        &mut self,
+        message: AnswerParkedSpiritRequest,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.answer_parked_spirit_request(message.answer, message.now)
+            .map(|resolution| ParkedSpiritRequestResolutionReply { resolution })
+    }
+}
+
+impl Message<ReadParkedSpiritRequestHistory> for StoreKernel {
+    type Reply = crate::Result<ParkedSpiritRequestHistoryReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadParkedSpiritRequestHistory,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.parked_spirit_request_history()
+            .map(|requests| ParkedSpiritRequestHistoryReply { requests })
     }
 }

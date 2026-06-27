@@ -11,9 +11,11 @@ use signal_criome::{
     AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectUpdate,
     AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
     ContractFound, ContractMissing, CriomeDaemonConfiguration, CriomeReply, CriomeRequest,
-    EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken, KeyPurpose,
-    ParkedAuthorization, ParkedAuthorizationObservation, ParkedAuthorizationSnapshot,
-    RejectionReason, SignalCallAuthorization,
+    EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken,
+    InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose, ParkedAuthorization,
+    ParkedAuthorizationObservation, ParkedAuthorizationSnapshot, ParkedRequestAnswer,
+    ParkedRequestQuery, RejectionReason, SignalCallAuthorization, SpiritAuthorizationContext,
+    TimestampNanos,
 };
 
 use crate::actors::{
@@ -300,6 +302,30 @@ impl CriomeRoot {
             meta_signal_criome::Input::Configure(configuration) => {
                 self.configure(configuration).await
             }
+            meta_signal_criome::Input::CreateInterceptPolicy(_request) => {
+                Self::unimplemented_meta_request(OperationKind::CreateInterceptPolicy)
+            }
+            meta_signal_criome::Input::ReplaceInterceptPolicy(_request) => {
+                Self::unimplemented_meta_request(OperationKind::ReplaceInterceptPolicy)
+            }
+            meta_signal_criome::Input::CancelInterceptPolicy(_request) => {
+                Self::unimplemented_meta_request(OperationKind::CancelInterceptPolicy)
+            }
+            meta_signal_criome::Input::ListInterceptPolicies(_request) => {
+                Self::unimplemented_meta_request(OperationKind::ListInterceptPolicies)
+            }
+            meta_signal_criome::Input::ObserveInterceptPolicies(_request) => {
+                Self::unimplemented_meta_request(OperationKind::ObserveInterceptPolicies)
+            }
+            meta_signal_criome::Input::RetractInterceptPolicyObservation(_request) => {
+                Self::unimplemented_meta_request(OperationKind::RetractInterceptPolicyObservation)
+            }
+            meta_signal_criome::Input::FetchParkedRequests(_request) => {
+                Self::unimplemented_meta_request(OperationKind::FetchParkedRequests)
+            }
+            meta_signal_criome::Input::AnswerParkedRequest(_request) => {
+                Self::unimplemented_meta_request(OperationKind::AnswerParkedRequest)
+            }
             meta_signal_criome::Input::ObserveParkedAuthorizations(request) => {
                 meta_signal_criome::Output::ParkedAuthorizationSnapshot(
                     self.read_parked_authorization_snapshot(request).await,
@@ -309,6 +335,13 @@ impl CriomeRoot {
                 self.record_authorization_approval(approval).await
             }
         }
+    }
+
+    fn unimplemented_meta_request(operation: OperationKind) -> meta_signal_criome::Output {
+        meta_signal_criome::Output::request_unimplemented(RequestUnimplemented {
+            operation,
+            reason: UnimplementedReason::DependencyNotReady,
+        })
     }
 
     async fn configure(
@@ -332,6 +365,101 @@ impl CriomeRoot {
         meta_signal_criome::Output::configured(meta_signal_criome::ConfigurationGeneration::new(
             self.configuration_generation,
         ))
+    }
+
+    #[allow(dead_code)]
+    async fn create_intercept_policy(
+        &self,
+        proposal: InterceptPolicyProposal,
+        now: TimestampNanos,
+    ) -> Result<crate::tables::StoredInterceptPolicy> {
+        let reply = self
+            .store
+            .ask(store::StoreInterceptPolicy::create(proposal, now))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_policy())
+    }
+
+    #[allow(dead_code)]
+    async fn replace_intercept_policy(
+        &self,
+        proposal: InterceptPolicyProposal,
+        now: TimestampNanos,
+    ) -> Result<crate::tables::StoredInterceptPolicy> {
+        let reply = self
+            .store
+            .ask(store::StoreInterceptPolicy::replace(proposal, now))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_policy())
+    }
+
+    #[allow(dead_code)]
+    async fn cancel_intercept_policy(
+        &self,
+        cancellation: InterceptPolicyCancellation,
+    ) -> Result<()> {
+        self.store
+            .ask(store::CancelInterceptPolicy::new(cancellation))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    async fn active_intercept_policies(
+        &self,
+        now: TimestampNanos,
+    ) -> Result<signal_criome::ActiveInterceptPolicies> {
+        let reply = self
+            .store
+            .ask(store::ReadInterceptPolicies::new(now))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_policies())
+    }
+
+    #[allow(dead_code)]
+    async fn intercept_spirit_authorization(
+        &self,
+        context: SpiritAuthorizationContext,
+        now: TimestampNanos,
+    ) -> Result<Option<crate::tables::StoredParkedSpiritRequest>> {
+        let reply = self
+            .store
+            .ask(store::InterceptSpiritAuthorization::new(context, now))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_request())
+    }
+
+    #[allow(dead_code)]
+    async fn parked_spirit_requests(
+        &self,
+        query: ParkedRequestQuery,
+        now: TimestampNanos,
+    ) -> Result<signal_criome::ParkedRequestSnapshot> {
+        let reply = self
+            .store
+            .ask(store::FetchParkedSpiritRequests::new(query, now))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_snapshot())
+    }
+
+    #[allow(dead_code)]
+    async fn answer_parked_spirit_request(
+        &self,
+        answer: ParkedRequestAnswer,
+        now: TimestampNanos,
+    ) -> Result<signal_criome::ParkedRequestResolution> {
+        let reply = self
+            .store
+            .ask(store::AnswerParkedSpiritRequest::new(answer, now))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_resolution())
     }
 
     async fn evaluate_authorization(&self, evaluation: AuthorizationEvaluation) -> CriomeReply {

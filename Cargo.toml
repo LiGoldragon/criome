@@ -1,6 +1,6 @@
 [package]
 name         = "criome"
-version      = "0.2.0"
+version      = "0.3.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -52,7 +52,7 @@ cluster-witness = []
 blake3       = "1"
 blst         = "0.3"
 kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
-nota-next    = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
+nota-next    = { package = "nota", git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
 meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "main" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }

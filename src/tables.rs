@@ -8,20 +8,25 @@ use rkyv::validation::archive::ArchiveValidator;
 use rkyv::validation::shared::SharedValidator;
 use sema_engine::{
     Engine, EngineOpen, EngineStoredValue, FamilyName, KeyedAssertion, KeyedMutation, QueryPlan,
-    RecordKey, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
+    RecordKey, Retraction, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
     VersionedStoreName, VersioningPolicy,
 };
 use signal_criome::{
-    Attestation, AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant,
-    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey,
-    Contract, ContractDigest, Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation,
-    KeyPurpose, ObjectDigest, PrincipalName, PrincipalStatus, PublicKeyFingerprint, ReplayNonce,
-    SignatureSolicitationRoute, SignatureSubmission,
+    ActiveInterceptPolicies, ApprovalAuditSource, Attestation, AuthorizationDenial,
+    AuthorizationEvaluation, AuthorizationGrant, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Contract, ContractDigest,
+    ExpiryAction, Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation,
+    InterceptPolicies, InterceptPolicy, InterceptPolicyIdentifier, InterceptPolicyProposal,
+    InterceptPolicyWindow, KeyPurpose, ObjectDigest, ParkedRequestAnswer, ParkedRequestDecision,
+    ParkedRequestIdentifier, ParkedRequestOutcome, ParkedRequestQuery, ParkedRequestResolution,
+    ParkedRequestSnapshot, ParkedSpiritRequest, ParkedSpiritRequests, PolicyOverlapMode,
+    PrincipalName, PrincipalStatus, PublicKeyFingerprint, ReplayNonce, SignatureSolicitationRoute,
+    SignatureSubmission, SpiritAuthorizationContext, TimestampNanos,
 };
 
 use crate::Result;
 
-const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(3);
+const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(4);
 const IDENTITIES: TableName = TableName::new("identities");
 const REVOCATIONS: TableName = TableName::new("revocations");
 const ATTESTATIONS: TableName = TableName::new("attestations");
@@ -30,10 +35,17 @@ const AUTHORIZATION_REPLAY_NONCES: TableName = TableName::new("authorization_rep
 const CONTRACTS: TableName = TableName::new("contracts");
 const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitations");
 const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
+const INTERCEPT_POLICIES: TableName = TableName::new("intercept_policies");
+const PARKED_SPIRIT_REQUESTS: TableName = TableName::new("parked_spirit_requests");
 const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot");
 const ATTESTATION_NEXT_SLOT_KEY: &str = "next";
 const AUTHORIZATION_NEXT_SLOT: TableName = TableName::new("authorization_next_slot");
 const AUTHORIZATION_NEXT_SLOT_KEY: &str = "next";
+const INTERCEPT_POLICY_NEXT_SLOT: TableName = TableName::new("intercept_policy_next_slot");
+const INTERCEPT_POLICY_NEXT_SLOT_KEY: &str = "next";
+const PARKED_SPIRIT_REQUEST_NEXT_SLOT: TableName =
+    TableName::new("parked_spirit_request_next_slot");
+const PARKED_SPIRIT_REQUEST_NEXT_SLOT_KEY: &str = "next";
 const IDENTITIES_FAMILY: &str = "criome-identity";
 const REVOCATIONS_FAMILY: &str = "criome-revocation";
 const ATTESTATIONS_FAMILY: &str = "criome-attestation";
@@ -42,8 +54,12 @@ const AUTHORIZATION_REPLAY_NONCES_FAMILY: &str = "criome-authorization-replay-no
 const CONTRACTS_FAMILY: &str = "criome-contract";
 const SIGNATURE_SOLICITATIONS_FAMILY: &str = "criome-signature-solicitation";
 const SUBMITTED_SIGNATURES_FAMILY: &str = "criome-submitted-signature";
+const INTERCEPT_POLICIES_FAMILY: &str = "criome-intercept-policy";
+const PARKED_SPIRIT_REQUESTS_FAMILY: &str = "criome-parked-spirit-request";
 const ATTESTATION_NEXT_SLOT_FAMILY: &str = "criome-attestation-slot";
 const AUTHORIZATION_NEXT_SLOT_FAMILY: &str = "criome-authorization-slot";
+const INTERCEPT_POLICY_NEXT_SLOT_FAMILY: &str = "criome-intercept-policy-slot";
+const PARKED_SPIRIT_REQUEST_NEXT_SLOT_FAMILY: &str = "criome-parked-spirit-request-slot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreLocation {
@@ -229,6 +245,42 @@ pub struct StoredContract {
     contract: Contract,
 }
 
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredInterceptPolicy {
+    policy: InterceptPolicy,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkedSpiritRequestStatus {
+    Parked,
+    Resolved,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredParkedSpiritRequest {
+    request: ParkedSpiritRequest,
+    status: ParkedSpiritRequestStatus,
+    resolution: Option<ParkedRequestResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InterceptPolicyStorageMode {
+    Create,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterceptPolicyDraft {
+    proposal: InterceptPolicyProposal,
+    stored_at: TimestampNanos,
+    mode: InterceptPolicyStorageMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterceptMatch {
+    policy: InterceptPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationReplayIdentity {
     requester: Identity,
@@ -269,6 +321,215 @@ impl StoredContract {
     }
 }
 
+impl StoredInterceptPolicy {
+    pub fn new(policy: InterceptPolicy) -> Self {
+        Self { policy }
+    }
+
+    pub fn from_draft(identifier: InterceptPolicyIdentifier, draft: InterceptPolicyDraft) -> Self {
+        let expires_at = TimestampNanos::new(
+            draft
+                .stored_at
+                .into_u64()
+                .saturating_add(draft.proposal.duration.into_u64()),
+        );
+        Self {
+            policy: InterceptPolicy {
+                identifier,
+                session_slot: draft.proposal.session_slot,
+                target: draft.proposal.target,
+                spirit_operation_names: draft.proposal.spirit_operation_names,
+                window: InterceptPolicyWindow {
+                    starts_at: draft.stored_at,
+                    expires_at,
+                },
+                expiry_action: draft.proposal.expiry_action,
+                priority: draft.proposal.priority,
+            },
+        }
+    }
+
+    pub fn policy(&self) -> &InterceptPolicy {
+        &self.policy
+    }
+
+    pub fn into_policy(self) -> InterceptPolicy {
+        self.policy
+    }
+
+    pub fn identifier(&self) -> &InterceptPolicyIdentifier {
+        &self.policy.identifier
+    }
+
+    pub fn active_at(&self, now: TimestampNanos) -> bool {
+        self.policy.window.starts_at.into_u64() <= now.into_u64()
+            && now.into_u64() < self.policy.window.expires_at.into_u64()
+    }
+
+    pub fn matches_context(
+        &self,
+        context: &SpiritAuthorizationContext,
+        now: TimestampNanos,
+    ) -> bool {
+        self.active_at(now)
+            && self.policy.target.payload() == &context.target_key
+            && self
+                .policy
+                .spirit_operation_names
+                .names()
+                .iter()
+                .any(|name| name == &context.operation_name)
+    }
+
+    pub fn same_priority_overlap(&self, other: &Self) -> bool {
+        self.policy.priority == other.policy.priority
+            && self.policy.target == other.policy.target
+            && self.windows_overlap(other)
+            && self.operation_names_overlap(other)
+    }
+
+    fn windows_overlap(&self, other: &Self) -> bool {
+        self.policy.window.starts_at.into_u64() < other.policy.window.expires_at.into_u64()
+            && other.policy.window.starts_at.into_u64() < self.policy.window.expires_at.into_u64()
+    }
+
+    fn operation_names_overlap(&self, other: &Self) -> bool {
+        self.policy
+            .spirit_operation_names
+            .names()
+            .iter()
+            .any(|left| {
+                other
+                    .policy
+                    .spirit_operation_names
+                    .names()
+                    .iter()
+                    .any(|right| left == right)
+            })
+    }
+}
+
+impl StoredParkedSpiritRequest {
+    pub fn parked(request: ParkedSpiritRequest) -> Self {
+        Self {
+            request,
+            status: ParkedSpiritRequestStatus::Parked,
+            resolution: None,
+        }
+    }
+
+    pub fn request(&self) -> &ParkedSpiritRequest {
+        &self.request
+    }
+
+    pub const fn status(&self) -> ParkedSpiritRequestStatus {
+        self.status
+    }
+
+    pub fn resolution(&self) -> Option<&ParkedRequestResolution> {
+        self.resolution.as_ref()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.status == ParkedSpiritRequestStatus::Parked
+    }
+
+    pub fn matches_query(&self, query: &ParkedRequestQuery) -> bool {
+        self.is_active()
+            && query
+                .session_slot
+                .as_ref()
+                .is_none_or(|slot| slot == &self.request.session_slot)
+            && query
+                .target
+                .as_ref()
+                .is_none_or(|target| target.payload() == &self.request.context.target_key)
+    }
+
+    pub fn resolve_manual(
+        self,
+        decision: ParkedRequestDecision,
+        resolved_at: TimestampNanos,
+    ) -> Self {
+        let outcome = match decision {
+            ParkedRequestDecision::Approve => ParkedRequestOutcome::Approved,
+            ParkedRequestDecision::Reject => ParkedRequestOutcome::Rejected,
+        };
+        self.resolve(outcome, ApprovalAuditSource::Manual, resolved_at)
+    }
+
+    pub fn apply_expiry(self, now: TimestampNanos) -> Self {
+        if !self.is_active() || now.into_u64() < self.request.expires_at.into_u64() {
+            return self;
+        }
+        match self.request.expiry_action {
+            ExpiryAction::AutoApprove => self.resolve(
+                ParkedRequestOutcome::Approved,
+                ApprovalAuditSource::Automatic,
+                now,
+            ),
+            ExpiryAction::AutoReject => self.resolve(
+                ParkedRequestOutcome::Rejected,
+                ApprovalAuditSource::Automatic,
+                now,
+            ),
+            ExpiryAction::LeaveParked => self,
+        }
+    }
+
+    fn resolve(
+        mut self,
+        outcome: ParkedRequestOutcome,
+        audit_source: ApprovalAuditSource,
+        resolved_at: TimestampNanos,
+    ) -> Self {
+        self.status = ParkedSpiritRequestStatus::Resolved;
+        self.resolution = Some(ParkedRequestResolution {
+            identifier: self.request.identifier.clone(),
+            matched_policy: self.request.matched_policy.clone(),
+            outcome,
+            audit_source,
+            resolved_at,
+        });
+        self
+    }
+}
+
+impl InterceptPolicyDraft {
+    pub fn create(proposal: InterceptPolicyProposal, stored_at: TimestampNanos) -> Self {
+        Self {
+            proposal,
+            stored_at,
+            mode: InterceptPolicyStorageMode::Create,
+        }
+    }
+
+    pub fn replace(proposal: InterceptPolicyProposal, stored_at: TimestampNanos) -> Self {
+        Self {
+            proposal,
+            stored_at,
+            mode: InterceptPolicyStorageMode::Replace,
+        }
+    }
+
+    pub fn overlap_mode(&self) -> PolicyOverlapMode {
+        match self.mode {
+            InterceptPolicyStorageMode::Create => self.proposal.overlap_mode,
+            InterceptPolicyStorageMode::Replace => PolicyOverlapMode::ReplaceSamePriorityOverlap,
+        }
+    }
+}
+
+impl InterceptMatch {
+    pub fn new(policy: InterceptPolicy) -> Self {
+        Self { policy }
+    }
+
+    pub fn into_policy(self) -> InterceptPolicy {
+        self.policy
+    }
+}
+
 pub struct CriomeTables {
     engine: Engine,
     identities: TableReference<StoredIdentity>,
@@ -279,8 +540,12 @@ pub struct CriomeTables {
     contracts: TableReference<StoredContract>,
     signature_solicitations: TableReference<StoredSignatureSolicitation>,
     submitted_signatures: TableReference<StoredSignatureSubmission>,
+    intercept_policies: TableReference<StoredInterceptPolicy>,
+    parked_spirit_requests: TableReference<StoredParkedSpiritRequest>,
     attestation_next_slot: TableReference<u64>,
     authorization_next_slot: TableReference<u64>,
+    intercept_policy_next_slot: TableReference<u64>,
+    parked_spirit_request_next_slot: TableReference<u64>,
 }
 
 impl CriomeTables {
@@ -310,6 +575,14 @@ impl CriomeTables {
             SUBMITTED_SIGNATURES,
             SUBMITTED_SIGNATURES_FAMILY,
         ))?;
+        let intercept_policies = engine.register_table(Self::family_descriptor(
+            INTERCEPT_POLICIES,
+            INTERCEPT_POLICIES_FAMILY,
+        ))?;
+        let parked_spirit_requests = engine.register_table(Self::family_descriptor(
+            PARKED_SPIRIT_REQUESTS,
+            PARKED_SPIRIT_REQUESTS_FAMILY,
+        ))?;
         let attestation_next_slot = engine.register_table(Self::family_descriptor(
             ATTESTATION_NEXT_SLOT,
             ATTESTATION_NEXT_SLOT_FAMILY,
@@ -317,6 +590,14 @@ impl CriomeTables {
         let authorization_next_slot = engine.register_table(Self::family_descriptor(
             AUTHORIZATION_NEXT_SLOT,
             AUTHORIZATION_NEXT_SLOT_FAMILY,
+        ))?;
+        let intercept_policy_next_slot = engine.register_table(Self::family_descriptor(
+            INTERCEPT_POLICY_NEXT_SLOT,
+            INTERCEPT_POLICY_NEXT_SLOT_FAMILY,
+        ))?;
+        let parked_spirit_request_next_slot = engine.register_table(Self::family_descriptor(
+            PARKED_SPIRIT_REQUEST_NEXT_SLOT,
+            PARKED_SPIRIT_REQUEST_NEXT_SLOT_FAMILY,
         ))?;
         Ok(Self {
             engine,
@@ -328,8 +609,12 @@ impl CriomeTables {
             contracts,
             signature_solicitations,
             submitted_signatures,
+            intercept_policies,
+            parked_spirit_requests,
             attestation_next_slot,
             authorization_next_slot,
+            intercept_policy_next_slot,
+            parked_spirit_request_next_slot,
         })
     }
 
@@ -502,6 +787,192 @@ impl CriomeTables {
         Ok(())
     }
 
+    pub fn put_intercept_policy(
+        &self,
+        draft: InterceptPolicyDraft,
+    ) -> Result<StoredInterceptPolicy> {
+        let policy_slot = self.next_intercept_policy_slot()?;
+        let stored =
+            StoredInterceptPolicy::from_draft(policy_slot.policy_identifier(), draft.clone());
+        let overlapping = self.same_priority_overlaps(&stored)?;
+        match draft.overlap_mode() {
+            PolicyOverlapMode::RejectSamePriorityOverlap if !overlapping.is_empty() => {
+                return Err(crate::Error::InterceptPolicyOverlapRejected);
+            }
+            PolicyOverlapMode::ReplaceSamePriorityOverlap => {
+                for policy in overlapping {
+                    self.retract_intercept_policy(policy.identifier())?;
+                }
+            }
+            PolicyOverlapMode::RejectSamePriorityOverlap => {}
+        }
+        let key = InterceptPolicyKey::new(stored.identifier()).into_string();
+        self.upsert(self.intercept_policies, key, stored.clone())?;
+        self.upsert(
+            self.intercept_policy_next_slot,
+            INTERCEPT_POLICY_NEXT_SLOT_KEY.to_owned(),
+            policy_slot.next_value(),
+        )?;
+        Ok(stored)
+    }
+
+    pub fn retract_intercept_policy(&self, identifier: &InterceptPolicyIdentifier) -> Result<()> {
+        self.retract(
+            self.intercept_policies,
+            InterceptPolicyKey::new(identifier).into_string(),
+        )
+    }
+
+    pub fn intercept_policies(&self) -> Result<Vec<StoredInterceptPolicy>> {
+        self.read_all(self.intercept_policies)
+    }
+
+    pub fn active_intercept_policies(
+        &self,
+        now: TimestampNanos,
+    ) -> Result<ActiveInterceptPolicies> {
+        let mut policies: Vec<InterceptPolicy> = self
+            .intercept_policies()?
+            .into_iter()
+            .filter(|policy| policy.active_at(now))
+            .map(StoredInterceptPolicy::into_policy)
+            .collect();
+        policies.sort_by(|left, right| {
+            InterceptPolicyKey::new(&left.identifier)
+                .into_string()
+                .cmp(&InterceptPolicyKey::new(&right.identifier).into_string())
+        });
+        Ok(ActiveInterceptPolicies::new(InterceptPolicies::new(
+            policies,
+        )))
+    }
+
+    pub fn matching_intercept_policy(
+        &self,
+        context: &SpiritAuthorizationContext,
+        now: TimestampNanos,
+    ) -> Result<Option<InterceptMatch>> {
+        let mut policies: Vec<StoredInterceptPolicy> = self
+            .intercept_policies()?
+            .into_iter()
+            .filter(|policy| policy.matches_context(context, now))
+            .collect();
+        policies.sort_by(|left, right| {
+            right
+                .policy()
+                .priority
+                .into_u64()
+                .cmp(&left.policy().priority.into_u64())
+                .then_with(|| {
+                    InterceptPolicyKey::new(left.identifier())
+                        .into_string()
+                        .cmp(&InterceptPolicyKey::new(right.identifier()).into_string())
+                })
+        });
+        Ok(policies
+            .into_iter()
+            .next()
+            .map(StoredInterceptPolicy::into_policy)
+            .map(InterceptMatch::new))
+    }
+
+    pub fn put_parked_spirit_request(
+        &self,
+        context: SpiritAuthorizationContext,
+        now: TimestampNanos,
+    ) -> Result<Option<StoredParkedSpiritRequest>> {
+        let Some(policy) = self
+            .matching_intercept_policy(&context, now)?
+            .map(InterceptMatch::into_policy)
+        else {
+            return Ok(None);
+        };
+        let slot = self.next_parked_spirit_request_slot()?;
+        let stored = StoredParkedSpiritRequest::parked(ParkedSpiritRequest {
+            identifier: slot.request_identifier(),
+            matched_policy: policy.identifier,
+            session_slot: policy.session_slot,
+            context,
+            parked_at: now,
+            expires_at: policy.window.expires_at,
+            expiry_action: policy.expiry_action,
+        });
+        self.upsert(
+            self.parked_spirit_requests,
+            ParkedSpiritRequestKey::new(stored.request()).into_string(),
+            stored.clone(),
+        )?;
+        self.upsert(
+            self.parked_spirit_request_next_slot,
+            PARKED_SPIRIT_REQUEST_NEXT_SLOT_KEY.to_owned(),
+            slot.next_value(),
+        )?;
+        Ok(Some(stored))
+    }
+
+    pub fn parked_spirit_request(
+        &self,
+        identifier: &ParkedRequestIdentifier,
+    ) -> Result<Option<StoredParkedSpiritRequest>> {
+        self.read_key(
+            self.parked_spirit_requests,
+            ParkedSpiritRequestKey::from_identifier(identifier).into_string(),
+        )
+    }
+
+    pub fn parked_spirit_requests(&self) -> Result<Vec<StoredParkedSpiritRequest>> {
+        self.read_all(self.parked_spirit_requests)
+    }
+
+    pub fn parked_spirit_request_snapshot(
+        &self,
+        query: &ParkedRequestQuery,
+        now: TimestampNanos,
+    ) -> Result<ParkedRequestSnapshot> {
+        self.apply_parked_spirit_expiry(now)?;
+        let mut requests: Vec<ParkedSpiritRequest> = self
+            .parked_spirit_requests()?
+            .into_iter()
+            .filter(|request| request.matches_query(query))
+            .map(|stored| stored.request().clone())
+            .collect();
+        requests.sort_by(|left, right| {
+            ParkedRequestSlot::sort_key(&left.identifier)
+                .cmp(&ParkedRequestSlot::sort_key(&right.identifier))
+        });
+        Ok(ParkedRequestSnapshot::new(ParkedSpiritRequests::new(
+            requests,
+        )))
+    }
+
+    pub fn answer_parked_spirit_request(
+        &self,
+        answer: ParkedRequestAnswer,
+        now: TimestampNanos,
+    ) -> Result<ParkedRequestResolution> {
+        self.apply_parked_spirit_expiry(now)?;
+        let Some(stored) = self.parked_spirit_request(&answer.identifier)? else {
+            return Err(crate::Error::ParkedSpiritRequestMissing);
+        };
+        if !stored.is_active() {
+            return stored
+                .resolution()
+                .cloned()
+                .ok_or(crate::Error::ParkedSpiritRequestMissing);
+        }
+        let resolved = stored.resolve_manual(answer.decision, now);
+        let resolution = resolved
+            .resolution()
+            .cloned()
+            .ok_or(crate::Error::ParkedSpiritRequestMissing)?;
+        self.upsert(
+            self.parked_spirit_requests,
+            ParkedSpiritRequestKey::new(resolved.request()).into_string(),
+            resolved,
+        )?;
+        Ok(resolution)
+    }
+
     fn next_attestation_slot(&self) -> Result<AttestationSlot> {
         let stored = self.read_key(
             self.attestation_next_slot,
@@ -524,6 +995,57 @@ impl CriomeTables {
                 &self.authorization_states()?,
             )),
         }
+    }
+
+    fn next_intercept_policy_slot(&self) -> Result<InterceptPolicySlot> {
+        let stored = self.read_key(
+            self.intercept_policy_next_slot,
+            INTERCEPT_POLICY_NEXT_SLOT_KEY.to_owned(),
+        )?;
+        match stored {
+            Some(next_slot) => Ok(InterceptPolicySlot::new(next_slot)),
+            None => Ok(InterceptPolicySlot::after_records(
+                &self.intercept_policies()?,
+            )),
+        }
+    }
+
+    fn next_parked_spirit_request_slot(&self) -> Result<ParkedRequestSlot> {
+        let stored = self.read_key(
+            self.parked_spirit_request_next_slot,
+            PARKED_SPIRIT_REQUEST_NEXT_SLOT_KEY.to_owned(),
+        )?;
+        match stored {
+            Some(next_slot) => Ok(ParkedRequestSlot::new(next_slot)),
+            None => Ok(ParkedRequestSlot::after_records(
+                &self.parked_spirit_requests()?,
+            )),
+        }
+    }
+
+    fn same_priority_overlaps(
+        &self,
+        policy: &StoredInterceptPolicy,
+    ) -> Result<Vec<StoredInterceptPolicy>> {
+        Ok(self
+            .intercept_policies()?
+            .into_iter()
+            .filter(|stored| stored.same_priority_overlap(policy))
+            .collect())
+    }
+
+    fn apply_parked_spirit_expiry(&self, now: TimestampNanos) -> Result<()> {
+        for request in self.parked_spirit_requests()? {
+            let applied = request.clone().apply_expiry(now);
+            if applied != request {
+                self.upsert(
+                    self.parked_spirit_requests,
+                    ParkedSpiritRequestKey::new(applied.request()).into_string(),
+                    applied,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn upsert<RecordValue>(
@@ -589,6 +1111,19 @@ impl CriomeTables {
             .records()
             .to_vec())
     }
+
+    fn retract<RecordValue>(&self, table: TableReference<RecordValue>, key: String) -> Result<()>
+    where
+        RecordValue: EngineStoredValue + Send + Sync + 'static,
+        <RecordValue as rkyv::Archive>::Archived: rkyv::Deserialize<RecordValue, HighDeserializer<rancor::Error>>
+            + for<'validation> CheckBytes<
+                Strategy<Validator<ArchiveValidator<'validation>, SharedValidator>, rancor::Error>,
+            >,
+    {
+        self.engine
+            .retract(Retraction::new(table, RecordKey::new(key)))?;
+        Ok(())
+    }
 }
 
 struct AttestationSlot {
@@ -622,6 +1157,14 @@ struct AuthorizationSlot {
     value: u64,
 }
 
+struct InterceptPolicySlot {
+    value: u64,
+}
+
+struct ParkedRequestSlot {
+    value: u64,
+}
+
 impl AuthorizationSlot {
     fn new(value: u64) -> Self {
         Self { value }
@@ -642,6 +1185,59 @@ impl AuthorizationSlot {
 
     const fn next_value(&self) -> u64 {
         self.value + 1
+    }
+}
+
+impl InterceptPolicySlot {
+    fn new(value: u64) -> Self {
+        Self { value }
+    }
+
+    fn after_records(records: &[StoredInterceptPolicy]) -> Self {
+        let value = records
+            .iter()
+            .filter_map(|record| record.identifier().as_str().parse::<u64>().ok())
+            .max()
+            .map_or(0, |slot| slot + 1);
+        Self { value }
+    }
+
+    fn policy_identifier(&self) -> InterceptPolicyIdentifier {
+        InterceptPolicyIdentifier::new(self.value.to_string())
+    }
+
+    const fn next_value(&self) -> u64 {
+        self.value + 1
+    }
+}
+
+impl ParkedRequestSlot {
+    fn new(value: u64) -> Self {
+        Self { value }
+    }
+
+    fn after_records(records: &[StoredParkedSpiritRequest]) -> Self {
+        let value = records
+            .iter()
+            .filter_map(|record| record.request().identifier.as_str().parse::<u64>().ok())
+            .max()
+            .map_or(0, |slot| slot + 1);
+        Self { value }
+    }
+
+    fn request_identifier(&self) -> ParkedRequestIdentifier {
+        ParkedRequestIdentifier::new(self.value.to_string())
+    }
+
+    const fn next_value(&self) -> u64 {
+        self.value + 1
+    }
+
+    fn sort_key(identifier: &ParkedRequestIdentifier) -> (u64, String) {
+        match identifier.as_str().parse::<u64>() {
+            Ok(value) => (value, String::new()),
+            Err(_error) => (u64::MAX, identifier.as_str().to_owned()),
+        }
     }
 }
 
@@ -695,6 +1291,14 @@ struct AuthorizationSlotKey {
     slot: String,
 }
 
+struct InterceptPolicyKey {
+    identifier: String,
+}
+
+struct ParkedSpiritRequestKey {
+    identifier: String,
+}
+
 impl AuthorizationSlotKey {
     fn new(slot: &AuthorizationRequestSlot) -> Self {
         Self {
@@ -704,6 +1308,34 @@ impl AuthorizationSlotKey {
 
     fn into_string(self) -> String {
         self.slot
+    }
+}
+
+impl InterceptPolicyKey {
+    fn new(identifier: &InterceptPolicyIdentifier) -> Self {
+        Self {
+            identifier: identifier.as_str().to_owned(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.identifier
+    }
+}
+
+impl ParkedSpiritRequestKey {
+    fn new(request: &ParkedSpiritRequest) -> Self {
+        Self::from_identifier(&request.identifier)
+    }
+
+    fn from_identifier(identifier: &ParkedRequestIdentifier) -> Self {
+        Self {
+            identifier: identifier.as_str().to_owned(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.identifier
     }
 }
 
