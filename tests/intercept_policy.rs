@@ -194,6 +194,136 @@ async fn intercept_policy_matching_uses_highest_priority_and_rejects_same_priori
 }
 
 #[tokio::test]
+async fn one_spirit_process_can_hold_many_operation_policies_with_set_time_expiry() {
+    let store = StoreKernel::spawn(store_location("many-policies-per-process"));
+
+    let record_policy = store
+        .ask(StoreInterceptPolicy::create(
+            proposal(
+                "mentci-alpha-record",
+                "spirit-alpha",
+                "Record",
+                4,
+                ExpiryAction::LeaveParked,
+                PolicyOverlapMode::RejectSamePriorityOverlap,
+            ),
+            timestamp(20),
+        ))
+        .await
+        .expect("store record policy")
+        .into_policy()
+        .into_policy();
+    let observe_policy = store
+        .ask(StoreInterceptPolicy::create(
+            proposal(
+                "mentci-alpha-observe",
+                "spirit-alpha",
+                "Observe",
+                4,
+                ExpiryAction::LeaveParked,
+                PolicyOverlapMode::RejectSamePriorityOverlap,
+            ),
+            timestamp(21),
+        ))
+        .await
+        .expect("store observe policy")
+        .into_policy()
+        .into_policy();
+    let beta_policy = store
+        .ask(StoreInterceptPolicy::create(
+            proposal(
+                "mentci-beta-record",
+                "spirit-beta",
+                "Record",
+                4,
+                ExpiryAction::LeaveParked,
+                PolicyOverlapMode::RejectSamePriorityOverlap,
+            ),
+            timestamp(22),
+        ))
+        .await
+        .expect("store beta policy")
+        .into_policy()
+        .into_policy();
+
+    assert_eq!(record_policy.window.starts_at, timestamp(20));
+    assert_eq!(record_policy.window.expires_at, timestamp(120));
+    assert_eq!(observe_policy.window.starts_at, timestamp(21));
+    assert_eq!(observe_policy.window.expires_at, timestamp(121));
+    assert_eq!(beta_policy.window.starts_at, timestamp(22));
+    assert_eq!(beta_policy.window.expires_at, timestamp(122));
+
+    let record_request = store
+        .ask(InterceptSpiritAuthorization::new(
+            context("spirit-alpha", "Record", "(Record alpha)"),
+            timestamp(23),
+        ))
+        .await
+        .expect("intercept alpha record")
+        .into_request()
+        .expect("alpha record parked")
+        .request()
+        .clone();
+    let observe_request = store
+        .ask(InterceptSpiritAuthorization::new(
+            context("spirit-alpha", "Observe", "(Observe alpha)"),
+            timestamp(24),
+        ))
+        .await
+        .expect("intercept alpha observe")
+        .into_request()
+        .expect("alpha observe parked")
+        .request()
+        .clone();
+    let beta_request = store
+        .ask(InterceptSpiritAuthorization::new(
+            context("spirit-beta", "Record", "(Record beta)"),
+            timestamp(25),
+        ))
+        .await
+        .expect("intercept beta record")
+        .into_request()
+        .expect("beta record parked")
+        .request()
+        .clone();
+
+    assert_eq!(record_request.matched_policy, record_policy.identifier);
+    assert_eq!(observe_request.matched_policy, observe_policy.identifier);
+    assert_eq!(beta_request.matched_policy, beta_policy.identifier);
+
+    let alpha_snapshot = store
+        .ask(FetchParkedSpiritRequests::new(
+            ParkedRequestQuery {
+                session_slot: None,
+                target: Some(InterceptTargetSelector::new(SpiritProcessKey::new(
+                    "spirit-alpha",
+                ))),
+            },
+            timestamp(26),
+        ))
+        .await
+        .expect("fetch alpha parked requests")
+        .into_snapshot();
+    assert_eq!(
+        alpha_snapshot.requests(),
+        &[record_request.clone(), observe_request.clone()]
+    );
+
+    let observe_session_snapshot = store
+        .ask(FetchParkedSpiritRequests::new(
+            ParkedRequestQuery {
+                session_slot: Some(MentciSessionSlot::new("mentci-alpha-observe")),
+                target: None,
+            },
+            timestamp(27),
+        ))
+        .await
+        .expect("fetch observe-session parked request")
+        .into_snapshot();
+    assert_eq!(observe_session_snapshot.requests(), &[observe_request]);
+}
+
+#[tokio::test]
 async fn expiry_actions_resolve_or_keep_parked_requests_with_audit_source() {
     let store = StoreKernel::spawn(store_location("expiry-actions"));
 
