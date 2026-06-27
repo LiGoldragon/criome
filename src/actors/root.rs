@@ -14,8 +14,8 @@ use signal_criome::{
     EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken,
     InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose, ParkedAuthorization,
     ParkedAuthorizationObservation, ParkedAuthorizationSnapshot, ParkedRequestAnswer,
-    ParkedRequestQuery, RejectionReason, SignalCallAuthorization, SpiritAuthorizationContext,
-    TimestampNanos,
+    ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest,
+    RejectionReason, SignalCallAuthorization, SpiritAuthorizationContext, TimestampNanos,
 };
 
 use crate::actors::{
@@ -218,7 +218,7 @@ impl CriomeRoot {
                 .await
             }
             CriomeRequest::AuthorizeSignalCall(request) => {
-                if let Some(pending) = self.intercept_signal_authorization(&request).await {
+                if let Some(pending) = self.intercept_signal_authorization(request.clone()).await {
                     return pending;
                 }
                 if self.authorization_mode == AuthorizationMode::AutoApprove {
@@ -343,24 +343,37 @@ impl CriomeRoot {
 
     async fn intercept_signal_authorization(
         &self,
-        authorization: &SignalCallAuthorization,
+        authorization: SignalCallAuthorization,
     ) -> Option<CriomeReply> {
         let context = authorization.spirit_context()?.clone();
         match self
             .intercept_spirit_authorization(context, self.timestamp())
             .await
         {
-            Ok(Some(parked)) => {
-                let request_slot =
-                    AuthorizationRequestSlot::new(parked.request().identifier.as_str());
-                Some(CriomeReply::AuthorizationPending(
-                    AuthorizationPending::new(
-                        request_slot.clone(),
-                        authorization.request_digest.clone(),
-                        Vec::new(),
-                        AuthorizationObservationToken::new(request_slot),
-                    ),
-                ))
+            Ok(Some(_parked)) => {
+                match self
+                    .create_authorization_state(
+                        store::CreateAuthorizationState::parked_signal_authorization(authorization),
+                    )
+                    .await
+                {
+                    Ok(stored) => {
+                        let state = stored.state();
+                        let request_slot = state.request_slot.clone();
+                        Some(CriomeReply::AuthorizationPending(
+                            AuthorizationPending::new(
+                                request_slot.clone(),
+                                state.request_digest.clone(),
+                                Vec::new(),
+                                AuthorizationObservationToken::new(request_slot),
+                            ),
+                        ))
+                    }
+                    Err(Error::AuthorizationReplayAttempted) => {
+                        Some(rejection(RejectionReason::ReplayAttempted))
+                    }
+                    Err(_error) => Some(rejection(RejectionReason::MalformedRequest)),
+                }
             }
             Ok(None) => None,
             Err(_error) => Some(rejection(RejectionReason::MalformedRequest)),
@@ -569,13 +582,89 @@ impl CriomeRoot {
         &self,
         answer: ParkedRequestAnswer,
     ) -> meta_signal_criome::Output {
+        let parked_request = self
+            .parked_spirit_request(&answer.identifier)
+            .await
+            .ok()
+            .flatten()
+            .map(|stored| stored.request().clone());
+        let decision = answer.decision;
         match self
             .answer_parked_spirit_request(answer, self.timestamp())
             .await
         {
-            Ok(resolution) => meta_signal_criome::Output::parked_request_answered(resolution),
+            Ok(resolution) => {
+                if let Some(request) = parked_request.as_ref() {
+                    self.apply_parked_spirit_request_authorization_resolution(request, decision)
+                        .await;
+                }
+                meta_signal_criome::Output::parked_request_answered(resolution)
+            }
             Err(_error) => Self::unimplemented_meta_request(OperationKind::AnswerParkedRequest),
         }
+    }
+
+    async fn parked_spirit_request(
+        &self,
+        identifier: &ParkedRequestIdentifier,
+    ) -> Result<Option<crate::tables::StoredParkedSpiritRequest>> {
+        let reply = self
+            .store
+            .ask(store::ReadParkedSpiritRequestHistory)
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply
+            .into_requests()
+            .into_iter()
+            .find(|request| &request.request().identifier == identifier))
+    }
+
+    async fn apply_parked_spirit_request_authorization_resolution(
+        &self,
+        request: &ParkedSpiritRequest,
+        decision: ParkedRequestDecision,
+    ) {
+        let Some(state) = self
+            .parked_spirit_request_authorization_state(request)
+            .await
+        else {
+            return;
+        };
+        let Some(authorization) = state.signal_authorization().cloned() else {
+            return;
+        };
+        let decision = match decision {
+            ParkedRequestDecision::Approve => AuthorizationApprovalDecision::Approve,
+            ParkedRequestDecision::Reject => AuthorizationApprovalDecision::Reject,
+        };
+        self.apply_signal_authorization_approval(state, decision, authorization)
+            .await;
+    }
+
+    async fn parked_spirit_request_authorization_state(
+        &self,
+        request: &ParkedSpiritRequest,
+    ) -> Option<AuthorizationStateRecord> {
+        let request_digest = signal_criome::ObjectDigest::from_bytes(
+            request.context.raw_payload.as_str().as_bytes(),
+        );
+        let reply = self
+            .store
+            .ask(store::ReadAuthorizationSnapshot)
+            .await
+            .ok()?;
+        reply
+            .into_states()
+            .into_iter()
+            .map(crate::tables::StoredAuthorizationState::into_state)
+            .find(|state| {
+                state.status == AuthorizationStatus::Parked
+                    && state.request_digest == request_digest
+                    && state
+                        .signal_authorization()
+                        .and_then(SignalCallAuthorization::spirit_context)
+                        == Some(&request.context)
+            })
     }
 
     async fn evaluate_authorization(&self, evaluation: AuthorizationEvaluation) -> CriomeReply {

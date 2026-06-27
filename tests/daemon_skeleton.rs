@@ -1811,12 +1811,10 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
         panic!("expected InterceptPolicyCreated, got {policy:?}");
     };
 
-    let authorization = signal_call_authorization(b"intercepted-spirit-operation")
-        .with_spirit_context(spirit_authorization_context(
-            "spirit-process-main",
-            "Record",
-            "(Record ([intercepted Spirit operation]))",
-        ));
+    let raw_payload = "(Record ([intercepted Spirit operation]))";
+    let authorization = signal_call_authorization(raw_payload.as_bytes()).with_spirit_context(
+        spirit_authorization_context("spirit-process-main", "Record", raw_payload),
+    );
     let pending = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve intercepted signal call"));
         let reply = CriomeClient::new(&socket)
@@ -1825,10 +1823,9 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
         assert_eq!(server.join().expect("join intercepted signal call"), reply);
         reply
     });
-    assert!(
-        matches!(pending, CriomeReply::AuthorizationPending(_)),
-        "intercepted Spirit authorization should park before AutoApprove, got {pending:?}"
-    );
+    let CriomeReply::AuthorizationPending(pending) = pending else {
+        panic!("intercepted Spirit authorization should park before AutoApprove, got {pending:?}");
+    };
 
     let fetched = send_meta_request(
         &daemon,
@@ -1848,6 +1845,141 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
     assert_eq!(
         parked.context.raw_payload.as_str(),
         "(Record ([intercepted Spirit operation]))"
+    );
+
+    let answered = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
+            identifier: parked.identifier.clone(),
+            decision: ParkedRequestDecision::Approve,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestAnswered(answered) = answered else {
+        panic!("expected ParkedRequestAnswered, got {answered:?}");
+    };
+    assert_eq!(answered.identifier, parked.identifier);
+    assert_eq!(answered.outcome, ParkedRequestOutcome::Approved);
+
+    let observed = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve approved observation"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::ObserveAuthorization(
+                signal_criome::AuthorizationObservation::new(pending.request_slot.clone()),
+            ))
+            .expect("observe approved authorization");
+        assert_eq!(server.join().expect("join approved observation"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizationObservationSnapshot(observed) = observed else {
+        panic!("expected AuthorizationObservationSnapshot, got {observed:?}");
+    };
+    let states = observed.into_states();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].status, AuthorizationStatus::Granted);
+    assert_eq!(states[0].signal_authorization(), Some(&authorization));
+    assert!(
+        states[0].grant().is_some(),
+        "approved intercepted Spirit authorization stores criome grant"
+    );
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn meta_socket_rejects_intercepted_spirit_request_into_authorization_denial() {
+    let workspace = fixture_path("working-intercept-policy-reject");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store)
+        .with_meta_socket(&meta_socket)
+        .with_authorization_mode(signal_criome::AuthorizationMode::AutoApprove)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+
+    let _policy = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::create_intercept_policy(intercept_policy_proposal(
+            "mentci-main",
+            "spirit-process-main",
+            "Record",
+            50,
+        )),
+    );
+
+    let raw_payload = "(Record ([rejected intercepted Spirit operation]))";
+    let authorization = signal_call_authorization_with_nonce(
+        raw_payload.as_bytes(),
+        "rejected-intercepted-spirit-operation",
+    )
+    .with_spirit_context(spirit_authorization_context(
+        "spirit-process-main",
+        "Record",
+        raw_payload,
+    ));
+    let pending = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve intercepted signal call"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::AuthorizeSignalCall(authorization.clone()))
+            .expect("send Spirit authorization");
+        assert_eq!(server.join().expect("join intercepted signal call"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizationPending(pending) = pending else {
+        panic!("expected AuthorizationPending, got {pending:?}");
+    };
+
+    let fetched = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
+            session_slot: None,
+            target: None,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestsFetched(fetched) = fetched else {
+        panic!("expected ParkedRequestsFetched, got {fetched:?}");
+    };
+    let parked = &fetched.requests()[0];
+
+    let answered = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
+            identifier: parked.identifier.clone(),
+            decision: ParkedRequestDecision::Reject,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestAnswered(answered) = answered else {
+        panic!("expected ParkedRequestAnswered, got {answered:?}");
+    };
+    assert_eq!(answered.identifier, parked.identifier);
+    assert_eq!(answered.outcome, ParkedRequestOutcome::Rejected);
+
+    let observed = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve rejected observation"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::ObserveAuthorization(
+                signal_criome::AuthorizationObservation::new(pending.request_slot.clone()),
+            ))
+            .expect("observe rejected authorization");
+        assert_eq!(server.join().expect("join rejected observation"), reply);
+        reply
+    });
+    let CriomeReply::AuthorizationObservationSnapshot(observed) = observed else {
+        panic!("expected AuthorizationObservationSnapshot, got {observed:?}");
+    };
+    let states = observed.into_states();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].status, AuthorizationStatus::Denied);
+    assert_eq!(states[0].signal_authorization(), Some(&authorization));
+    assert!(
+        states[0].denial().is_some(),
+        "rejected intercepted Spirit authorization stores denial"
     );
 
     daemon.shutdown().expect("shutdown daemon");
