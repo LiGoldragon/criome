@@ -1784,6 +1784,76 @@ fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
 }
 
 #[test]
+fn working_socket_spirit_authorization_uses_intercept_policy_before_authorization_mode() {
+    let workspace = fixture_path("working-intercept-policy");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store)
+        .with_meta_socket(&meta_socket)
+        .with_authorization_mode(signal_criome::AuthorizationMode::AutoApprove)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+
+    let policy = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::create_intercept_policy(intercept_policy_proposal(
+            "mentci-main",
+            "spirit-process-main",
+            "Record",
+            50,
+        )),
+    );
+    let meta_signal_criome::Output::InterceptPolicyCreated(policy) = policy else {
+        panic!("expected InterceptPolicyCreated, got {policy:?}");
+    };
+
+    let authorization = signal_call_authorization(b"intercepted-spirit-operation")
+        .with_spirit_context(spirit_authorization_context(
+            "spirit-process-main",
+            "Record",
+            "(Record ([intercepted Spirit operation]))",
+        ));
+    let pending = thread::scope(|scope| {
+        let server = scope.spawn(|| daemon.serve_next().expect("serve intercepted signal call"));
+        let reply = CriomeClient::new(&socket)
+            .send(CriomeRequest::AuthorizeSignalCall(authorization.clone()))
+            .expect("send Spirit authorization");
+        assert_eq!(server.join().expect("join intercepted signal call"), reply);
+        reply
+    });
+    assert!(
+        matches!(pending, CriomeReply::AuthorizationPending(_)),
+        "intercepted Spirit authorization should park before AutoApprove, got {pending:?}"
+    );
+
+    let fetched = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
+            session_slot: None,
+            target: None,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestsFetched(fetched) = fetched else {
+        panic!("expected ParkedRequestsFetched, got {fetched:?}");
+    };
+    assert_eq!(fetched.requests().len(), 1);
+    let parked = &fetched.requests()[0];
+    assert_eq!(parked.matched_policy, policy.identifier);
+    assert_eq!(parked.session_slot, policy.session_slot);
+    assert_eq!(
+        parked.context.raw_payload.as_str(),
+        "(Record ([intercepted Spirit operation]))"
+    );
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
 fn meta_socket_fetches_and_answers_parked_spirit_requests() {
     let workspace = fixture_path("meta-parked-spirit-requests");
     let socket = workspace.join("criome.sock");

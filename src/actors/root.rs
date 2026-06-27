@@ -218,6 +218,9 @@ impl CriomeRoot {
                 .await
             }
             CriomeRequest::AuthorizeSignalCall(request) => {
+                if let Some(pending) = self.intercept_signal_authorization(&request).await {
+                    return pending;
+                }
                 if self.authorization_mode == AuthorizationMode::AutoApprove {
                     self.auto_approve_signal_call(request).await
                 } else if self.authorization_mode == AuthorizationMode::ClientApproval {
@@ -335,6 +338,32 @@ impl CriomeRoot {
             meta_signal_criome::Input::SubmitAuthorizationApproval(approval) => {
                 self.record_authorization_approval(approval).await
             }
+        }
+    }
+
+    async fn intercept_signal_authorization(
+        &self,
+        authorization: &SignalCallAuthorization,
+    ) -> Option<CriomeReply> {
+        let context = authorization.spirit_context()?.clone();
+        match self
+            .intercept_spirit_authorization(context, self.timestamp())
+            .await
+        {
+            Ok(Some(parked)) => {
+                let request_slot =
+                    AuthorizationRequestSlot::new(parked.request().identifier.as_str());
+                Some(CriomeReply::AuthorizationPending(
+                    AuthorizationPending::new(
+                        request_slot.clone(),
+                        authorization.request_digest.clone(),
+                        Vec::new(),
+                        AuthorizationObservationToken::new(request_slot),
+                    ),
+                ))
+            }
+            Ok(None) => None,
+            Err(_error) => Some(rejection(RejectionReason::MalformedRequest)),
         }
     }
 
