@@ -25,6 +25,7 @@ use crate::actors::{
 use crate::admission::ClusterRoot;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
+use crate::master_key::SystemClock;
 use crate::{Error, Result, StoreLocation};
 
 pub struct CriomeRoot {
@@ -302,29 +303,29 @@ impl CriomeRoot {
             meta_signal_criome::Input::Configure(configuration) => {
                 self.configure(configuration).await
             }
-            meta_signal_criome::Input::CreateInterceptPolicy(_request) => {
-                Self::unimplemented_meta_request(OperationKind::CreateInterceptPolicy)
+            meta_signal_criome::Input::CreateInterceptPolicy(request) => {
+                self.create_intercept_policy_meta(request).await
             }
-            meta_signal_criome::Input::ReplaceInterceptPolicy(_request) => {
-                Self::unimplemented_meta_request(OperationKind::ReplaceInterceptPolicy)
+            meta_signal_criome::Input::ReplaceInterceptPolicy(request) => {
+                self.replace_intercept_policy_meta(request).await
             }
-            meta_signal_criome::Input::CancelInterceptPolicy(_request) => {
-                Self::unimplemented_meta_request(OperationKind::CancelInterceptPolicy)
+            meta_signal_criome::Input::CancelInterceptPolicy(request) => {
+                self.cancel_intercept_policy_meta(request).await
             }
-            meta_signal_criome::Input::ListInterceptPolicies(_request) => {
-                Self::unimplemented_meta_request(OperationKind::ListInterceptPolicies)
+            meta_signal_criome::Input::ListInterceptPolicies(request) => {
+                self.list_intercept_policies_meta(request).await
             }
-            meta_signal_criome::Input::ObserveInterceptPolicies(_request) => {
-                Self::unimplemented_meta_request(OperationKind::ObserveInterceptPolicies)
+            meta_signal_criome::Input::ObserveInterceptPolicies(request) => {
+                self.observe_intercept_policies_meta(request).await
             }
-            meta_signal_criome::Input::RetractInterceptPolicyObservation(_request) => {
-                Self::unimplemented_meta_request(OperationKind::RetractInterceptPolicyObservation)
+            meta_signal_criome::Input::RetractInterceptPolicyObservation(token) => {
+                meta_signal_criome::Output::InterceptPolicyObservationRetracted(token)
             }
-            meta_signal_criome::Input::FetchParkedRequests(_request) => {
-                Self::unimplemented_meta_request(OperationKind::FetchParkedRequests)
+            meta_signal_criome::Input::FetchParkedRequests(request) => {
+                self.fetch_parked_requests_meta(request).await
             }
-            meta_signal_criome::Input::AnswerParkedRequest(_request) => {
-                Self::unimplemented_meta_request(OperationKind::AnswerParkedRequest)
+            meta_signal_criome::Input::AnswerParkedRequest(request) => {
+                self.answer_parked_request_meta(request).await
             }
             meta_signal_criome::Input::ObserveParkedAuthorizations(request) => {
                 meta_signal_criome::Output::ParkedAuthorizationSnapshot(
@@ -342,6 +343,10 @@ impl CriomeRoot {
             operation,
             reason: UnimplementedReason::DependencyNotReady,
         })
+    }
+
+    fn timestamp(&self) -> TimestampNanos {
+        SystemClock::system().timestamp()
     }
 
     async fn configure(
@@ -367,7 +372,6 @@ impl CriomeRoot {
         ))
     }
 
-    #[allow(dead_code)]
     async fn create_intercept_policy(
         &self,
         proposal: InterceptPolicyProposal,
@@ -381,7 +385,6 @@ impl CriomeRoot {
         Ok(reply.into_policy())
     }
 
-    #[allow(dead_code)]
     async fn replace_intercept_policy(
         &self,
         proposal: InterceptPolicyProposal,
@@ -395,7 +398,6 @@ impl CriomeRoot {
         Ok(reply.into_policy())
     }
 
-    #[allow(dead_code)]
     async fn cancel_intercept_policy(
         &self,
         cancellation: InterceptPolicyCancellation,
@@ -407,7 +409,6 @@ impl CriomeRoot {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn active_intercept_policies(
         &self,
         now: TimestampNanos,
@@ -434,7 +435,6 @@ impl CriomeRoot {
         Ok(reply.into_request())
     }
 
-    #[allow(dead_code)]
     async fn parked_spirit_requests(
         &self,
         query: ParkedRequestQuery,
@@ -448,7 +448,6 @@ impl CriomeRoot {
         Ok(reply.into_snapshot())
     }
 
-    #[allow(dead_code)]
     async fn answer_parked_spirit_request(
         &self,
         answer: ParkedRequestAnswer,
@@ -460,6 +459,94 @@ impl CriomeRoot {
             .await
             .map_err(|error| Error::ActorCall(error.to_string()))?;
         Ok(reply.into_resolution())
+    }
+
+    async fn create_intercept_policy_meta(
+        &self,
+        proposal: InterceptPolicyProposal,
+    ) -> meta_signal_criome::Output {
+        match self
+            .create_intercept_policy(proposal, self.timestamp())
+            .await
+        {
+            Ok(policy) => {
+                meta_signal_criome::Output::intercept_policy_created(policy.into_policy())
+            }
+            Err(_error) => Self::unimplemented_meta_request(OperationKind::CreateInterceptPolicy),
+        }
+    }
+
+    async fn replace_intercept_policy_meta(
+        &self,
+        proposal: InterceptPolicyProposal,
+    ) -> meta_signal_criome::Output {
+        match self
+            .replace_intercept_policy(proposal, self.timestamp())
+            .await
+        {
+            Ok(policy) => {
+                meta_signal_criome::Output::intercept_policy_replaced(policy.into_policy())
+            }
+            Err(_error) => Self::unimplemented_meta_request(OperationKind::ReplaceInterceptPolicy),
+        }
+    }
+
+    async fn cancel_intercept_policy_meta(
+        &self,
+        cancellation: InterceptPolicyCancellation,
+    ) -> meta_signal_criome::Output {
+        let identifier = cancellation.payload().clone();
+        match self.cancel_intercept_policy(cancellation).await {
+            Ok(()) => meta_signal_criome::Output::intercept_policy_cancelled(identifier),
+            Err(_error) => Self::unimplemented_meta_request(OperationKind::CancelInterceptPolicy),
+        }
+    }
+
+    async fn list_intercept_policies_meta(
+        &self,
+        _request: meta_signal_criome::InterceptPolicyObservation,
+    ) -> meta_signal_criome::Output {
+        match self.active_intercept_policies(self.timestamp()).await {
+            Ok(policies) => meta_signal_criome::Output::intercept_policies_listed(policies),
+            Err(_error) => Self::unimplemented_meta_request(OperationKind::ListInterceptPolicies),
+        }
+    }
+
+    async fn observe_intercept_policies_meta(
+        &self,
+        _request: meta_signal_criome::InterceptPolicyObservation,
+    ) -> meta_signal_criome::Output {
+        match self.active_intercept_policies(self.timestamp()).await {
+            Ok(policies) => {
+                meta_signal_criome::Output::intercept_policy_observation_opened(policies)
+            }
+            Err(_error) => {
+                Self::unimplemented_meta_request(OperationKind::ObserveInterceptPolicies)
+            }
+        }
+    }
+
+    async fn fetch_parked_requests_meta(
+        &self,
+        query: ParkedRequestQuery,
+    ) -> meta_signal_criome::Output {
+        match self.parked_spirit_requests(query, self.timestamp()).await {
+            Ok(snapshot) => meta_signal_criome::Output::parked_requests_fetched(snapshot),
+            Err(_error) => Self::unimplemented_meta_request(OperationKind::FetchParkedRequests),
+        }
+    }
+
+    async fn answer_parked_request_meta(
+        &self,
+        answer: ParkedRequestAnswer,
+    ) -> meta_signal_criome::Output {
+        match self
+            .answer_parked_spirit_request(answer, self.timestamp())
+            .await
+        {
+            Ok(resolution) => meta_signal_criome::Output::parked_request_answered(resolution),
+            Err(_error) => Self::unimplemented_meta_request(OperationKind::AnswerParkedRequest),
+        }
     }
 
     async fn evaluate_authorization(&self, evaluation: AuthorizationEvaluation) -> CriomeReply {

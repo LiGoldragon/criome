@@ -4,32 +4,38 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 
 use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology, SubmitRequest};
+use criome::actors::store::{InterceptSpiritAuthorization, StoreInterceptPolicy, StoreKernel};
 use criome::command::CriomeDaemonCommand;
 #[cfg(feature = "nota-text")]
 use criome::command::CriomeRequestArgument;
-use criome::daemon::CriomeDaemon;
+use criome::daemon::{BoundCriomeDaemon, CriomeDaemon};
 use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
 use criome::language::{AttestedMomentStatement, OperationStatement};
 use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec, CriomeMetaClient};
+use kameo::actor::Spawn;
 use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 #[cfg(feature = "nota-text")]
 use nota_next::NotaEncode;
 use signal_criome::{
-    AttestedMoment, AttestedMomentProposition, AuditContext, AuthorizationDenialReason,
-    AuthorizationDenialSource, AuthorizationEvaluation, AuthorizationExpired, AuthorizationGrant,
-    AuthorizationObservation, AuthorizationPolicyClass, AuthorizationPolicySatisfaction,
-    AuthorizationRejection, AuthorizationRequestSlot, AuthorizationScope, AuthorizationStatus,
-    AuthorizedObjectInterest, AuthorizedObjectKind, AuthorizedObjectObservation,
-    AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature, ComponentKind,
-    ComponentObjectInterest, ContentPurpose, ContentReference, Contract, ContractName,
-    ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody, CriomeReply,
-    CriomeRequest, EscalationTarget, EvaluationDecision, Evidence, Identity, IdentityLookup,
-    IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, RejectionReason, ReplayNonce,
+    ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
+    AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
+    AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
+    AuthorizationPolicySatisfaction, AuthorizationRejection, AuthorizationRequestSlot,
+    AuthorizationScope, AuthorizationStatus, AuthorizedObjectInterest, AuthorizedObjectKind,
+    AuthorizedObjectObservation, AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature,
+    ComponentKind, ComponentObjectInterest, ContentPurpose, ContentReference, Contract,
+    ContractName, ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody,
+    CriomeReply, CriomeRequest, EscalationTarget, EvaluationDecision, Evidence, ExpiryAction,
+    Identity, IdentityLookup, IdentityRegistration, InterceptPolicyCancellation,
+    InterceptPolicyProposal, InterceptTargetSelector, KeyPurpose, MentciSessionSlot, ObjectDigest,
+    OperationDigest, ParkedRequestAnswer, ParkedRequestDecision, ParkedRequestOutcome,
+    ParkedRequestQuery, PolicyDurationNanos, PolicyOverlapMode, PolicyPriority, PrincipalName,
+    PrincipalStatus, PublicKeyFingerprint, RawSpiritOperationPayload, RejectionReason, ReplayNonce,
     RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
-    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, SpiritAuthorizationContext,
+    SpiritOperationName, SpiritOperationNames, SpiritProcessKey, StampedSignatureEnvelope,
     TimeSignature, TimeWindow, TimestampNanos, WorkflowDigest, WorkflowGuard,
     WorkflowProvenanceDigest, WorkflowReceipt,
 };
@@ -61,6 +67,52 @@ fn daemon_configuration(name: &str) -> CriomeDaemonConfiguration {
         workspace.join("criome.sock").display().to_string(),
         workspace.join("criome.sema").display().to_string(),
     )
+}
+
+fn send_meta_request(
+    daemon: &BoundCriomeDaemon,
+    meta_socket: &std::path::Path,
+    request: meta_signal_criome::Input,
+) -> meta_signal_criome::Output {
+    thread::scope(move |scope| {
+        let server = scope.spawn(|| daemon.serve_next_meta().expect("serve meta request"));
+        let reply = CriomeMetaClient::new(meta_socket)
+            .send(request)
+            .expect("submit meta request");
+        assert_eq!(server.join().expect("join meta server"), reply);
+        reply
+    })
+}
+
+fn intercept_policy_proposal(
+    session: &str,
+    target: &str,
+    operation: &str,
+    priority: u64,
+) -> InterceptPolicyProposal {
+    InterceptPolicyProposal {
+        session_slot: MentciSessionSlot::new(session),
+        target: InterceptTargetSelector::new(SpiritProcessKey::new(target)),
+        spirit_operation_names: SpiritOperationNames::from_names(vec![SpiritOperationName::new(
+            operation,
+        )]),
+        duration: PolicyDurationNanos::new(u64::MAX),
+        expiry_action: ExpiryAction::AutoApprove,
+        priority: PolicyPriority::new(priority),
+        overlap_mode: PolicyOverlapMode::RejectSamePriorityOverlap,
+    }
+}
+
+fn spirit_authorization_context(
+    target: &str,
+    operation: &str,
+    raw_payload: &str,
+) -> SpiritAuthorizationContext {
+    SpiritAuthorizationContext {
+        operation_name: SpiritOperationName::new(operation),
+        raw_payload: RawSpiritOperationPayload::new(raw_payload),
+        target_key: SpiritProcessKey::new(target),
+    }
 }
 
 fn registration(name: &str) -> IdentityRegistration {
@@ -1584,6 +1636,264 @@ fn meta_socket_configure_rejects_malformed_configuration() {
     assert_eq!(
         *rejected.payload(),
         meta_signal_criome::ConfigurationRejectionReason::MalformedConfiguration
+    );
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
+    let workspace = fixture_path("meta-intercept-policy-lifecycle");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store)
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&meta_socket);
+
+    let created = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::create_intercept_policy(intercept_policy_proposal(
+            "mentci-main",
+            "spirit-main",
+            "Record",
+            50,
+        )),
+    );
+    let meta_signal_criome::Output::InterceptPolicyCreated(created) = created else {
+        panic!("expected InterceptPolicyCreated, got {created:?}");
+    };
+    assert_eq!(created.session_slot.as_str(), "mentci-main");
+    assert_eq!(created.spirit_operation_names.names().len(), 1);
+
+    let overlap = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::create_intercept_policy(intercept_policy_proposal(
+            "mentci-overlap",
+            "spirit-main",
+            "Record",
+            50,
+        )),
+    );
+    let meta_signal_criome::Output::RequestUnimplemented(overlap) = overlap else {
+        panic!("expected RequestUnimplemented for same-priority overlap, got {overlap:?}");
+    };
+    assert_eq!(
+        overlap.operation,
+        meta_signal_criome::OperationKind::CreateInterceptPolicy
+    );
+
+    let listed = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::list_intercept_policies(
+            meta_signal_criome::InterceptPolicyObservation {},
+        ),
+    );
+    let meta_signal_criome::Output::InterceptPoliciesListed(listed) = listed else {
+        panic!("expected InterceptPoliciesListed, got {listed:?}");
+    };
+    assert_eq!(listed.policies(), std::slice::from_ref(&created));
+
+    let observed = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::observe_intercept_policies(
+            meta_signal_criome::InterceptPolicyObservation {},
+        ),
+    );
+    let meta_signal_criome::Output::InterceptPolicyObservationOpened(observed) = observed else {
+        panic!("expected InterceptPolicyObservationOpened, got {observed:?}");
+    };
+    assert_eq!(observed.policies(), std::slice::from_ref(&created));
+
+    let retracted = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::retract_intercept_policy_observation("stream-1".to_string()),
+    );
+    let meta_signal_criome::Output::InterceptPolicyObservationRetracted(retracted) = retracted
+    else {
+        panic!("expected InterceptPolicyObservationRetracted, got {retracted:?}");
+    };
+    assert_eq!(retracted.payload(), "stream-1");
+
+    let replaced = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::replace_intercept_policy(intercept_policy_proposal(
+            "mentci-replacement",
+            "spirit-main",
+            "Record",
+            50,
+        )),
+    );
+    let meta_signal_criome::Output::InterceptPolicyReplaced(replaced) = replaced else {
+        panic!("expected InterceptPolicyReplaced, got {replaced:?}");
+    };
+    assert_ne!(replaced.identifier, created.identifier);
+
+    let listed_after_replace = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::list_intercept_policies(
+            meta_signal_criome::InterceptPolicyObservation {},
+        ),
+    );
+    let meta_signal_criome::Output::InterceptPoliciesListed(listed_after_replace) =
+        listed_after_replace
+    else {
+        panic!("expected InterceptPoliciesListed, got {listed_after_replace:?}");
+    };
+    assert_eq!(
+        listed_after_replace.policies(),
+        std::slice::from_ref(&replaced)
+    );
+
+    let cancelled = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::cancel_intercept_policy(InterceptPolicyCancellation::new(
+            replaced.identifier.clone(),
+        )),
+    );
+    let meta_signal_criome::Output::InterceptPolicyCancelled(cancelled) = cancelled else {
+        panic!("expected InterceptPolicyCancelled, got {cancelled:?}");
+    };
+    assert_eq!(cancelled, replaced.identifier);
+
+    let listed_after_cancel = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::list_intercept_policies(
+            meta_signal_criome::InterceptPolicyObservation {},
+        ),
+    );
+    let meta_signal_criome::Output::InterceptPoliciesListed(listed_after_cancel) =
+        listed_after_cancel
+    else {
+        panic!("expected InterceptPoliciesListed, got {listed_after_cancel:?}");
+    };
+    assert!(listed_after_cancel.policies().is_empty());
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn meta_socket_fetches_and_answers_parked_spirit_requests() {
+    let workspace = fixture_path("meta-parked-spirit-requests");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+
+    let parked = {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build store prepopulation runtime");
+        runtime.block_on(async {
+            let store_actor = StoreKernel::spawn(store.clone());
+            let stored_policy = store_actor
+                .ask(StoreInterceptPolicy::create(
+                    intercept_policy_proposal("mentci-parked", "spirit-main", "Record", 50),
+                    TimestampNanos::new(10),
+                ))
+                .await
+                .expect("store intercept policy")
+                .into_policy()
+                .into_policy();
+            let parked = store_actor
+                .ask(InterceptSpiritAuthorization::new(
+                    spirit_authorization_context("spirit-main", "Record", "(Record example)"),
+                    TimestampNanos::new(11),
+                ))
+                .await
+                .expect("intercept Spirit authorization")
+                .into_request()
+                .expect("request parked")
+                .request()
+                .clone();
+            assert_eq!(parked.matched_policy, stored_policy.identifier);
+            store_actor
+                .stop_gracefully()
+                .await
+                .expect("stop prepopulation store actor");
+            store_actor.wait_for_shutdown().await;
+            parked
+        })
+    };
+
+    let daemon = CriomeDaemon::new(&socket, store)
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&meta_socket);
+
+    let fetched = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
+            session_slot: None,
+            target: None,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestsFetched(fetched) = fetched else {
+        panic!("expected ParkedRequestsFetched, got {fetched:?}");
+    };
+    assert_eq!(fetched.requests(), std::slice::from_ref(&parked));
+    assert_eq!(
+        fetched.requests()[0].context.raw_payload.as_str(),
+        "(Record example)"
+    );
+
+    let answered = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
+            identifier: parked.identifier.clone(),
+            decision: ParkedRequestDecision::Approve,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestAnswered(answered) = answered else {
+        panic!("expected ParkedRequestAnswered, got {answered:?}");
+    };
+    assert_eq!(answered.identifier, parked.identifier);
+    assert_eq!(answered.outcome, ParkedRequestOutcome::Approved);
+    assert_eq!(answered.audit_source, ApprovalAuditSource::Manual);
+
+    let fetched_after_answer = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
+            session_slot: None,
+            target: None,
+        }),
+    );
+    let meta_signal_criome::Output::ParkedRequestsFetched(fetched_after_answer) =
+        fetched_after_answer
+    else {
+        panic!("expected ParkedRequestsFetched, got {fetched_after_answer:?}");
+    };
+    assert!(fetched_after_answer.requests().is_empty());
+
+    let missing = send_meta_request(
+        &daemon,
+        &meta_socket,
+        meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
+            identifier: signal_criome::ParkedRequestIdentifier::new("missing-request"),
+            decision: ParkedRequestDecision::Reject,
+        }),
+    );
+    let meta_signal_criome::Output::RequestUnimplemented(missing) = missing else {
+        panic!("expected RequestUnimplemented for missing parked request, got {missing:?}");
+    };
+    assert_eq!(
+        missing.operation,
+        meta_signal_criome::OperationKind::AnswerParkedRequest
     );
 
     daemon.shutdown().expect("shutdown daemon");
