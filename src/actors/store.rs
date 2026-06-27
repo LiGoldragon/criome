@@ -297,6 +297,24 @@ impl CreateAuthorizationState {
         }
     }
 
+    pub fn pending_signal_authorization(
+        authorization: signal_criome::SignalCallAuthorization,
+    ) -> Self {
+        Self {
+            request_digest: authorization.request_digest.clone(),
+            status: AuthorizationStatus::Pending,
+            missing_authorities: Vec::new(),
+            grant: None,
+            denial: None,
+            parked_evaluation: None,
+            signal_authorization: Some(authorization.clone()),
+            replay_identity: Some(AuthorizationReplayIdentity::new(
+                authorization.requester,
+                authorization.nonce,
+            )),
+        }
+    }
+
     pub fn parked(evaluation: AuthorizationEvaluation) -> Self {
         Self {
             request_digest: evaluation.object.digest.clone(),

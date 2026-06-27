@@ -353,7 +353,9 @@ impl CriomeRoot {
             Ok(Some(_parked)) => {
                 match self
                     .create_authorization_state(
-                        store::CreateAuthorizationState::parked_signal_authorization(authorization),
+                        store::CreateAuthorizationState::pending_signal_authorization(
+                            authorization,
+                        ),
                     )
                     .await
                 {
@@ -658,8 +660,10 @@ impl CriomeRoot {
             .into_iter()
             .map(crate::tables::StoredAuthorizationState::into_state)
             .find(|state| {
-                state.status == AuthorizationStatus::Parked
-                    && state.request_digest == request_digest
+                matches!(
+                    state.status,
+                    AuthorizationStatus::Pending | AuthorizationStatus::Parked
+                ) && state.request_digest == request_digest
                     && state
                         .signal_authorization()
                         .and_then(SignalCallAuthorization::spirit_context)
