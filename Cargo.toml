@@ -21,6 +21,11 @@ name = "criome-daemon"
 path = "src/bin/criome-daemon.rs"
 
 [[bin]]
+name = "criome-encode-configuration"
+path = "src/bin/criome-encode-configuration.rs"
+required-features = ["nota-text"]
+
+[[bin]]
 name = "criome-cluster-witness-test"
 path = "src/bin/criome-cluster-witness-test.rs"
 required-features = ["cluster-witness"]
