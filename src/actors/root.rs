@@ -903,11 +903,7 @@ impl CriomeRoot {
             denial,
         )
         .with_parked_evaluation(evaluation);
-        self.publish_authorization_update(state.clone());
-        let _ = self
-            .store
-            .ask(store::StoreAuthorizationState::new(state))
-            .await;
+        self.store_authorization_update(state).await;
     }
 
     async fn apply_signal_authorization_approval(
@@ -931,11 +927,7 @@ impl CriomeRoot {
                 denial,
             )
             .with_signal_authorization(authorization);
-            self.publish_authorization_update(state.clone());
-            let _ = self
-                .store
-                .ask(store::StoreAuthorizationState::new(state))
-                .await;
+            self.store_authorization_update(state).await;
             return;
         }
 
@@ -959,11 +951,7 @@ impl CriomeRoot {
             None,
         )
         .with_signal_authorization(authorization);
-        self.publish_authorization_update(state.clone());
-        let _ = self
-            .store
-            .ask(store::StoreAuthorizationState::new(state))
-            .await;
+        self.store_authorization_update(state).await;
     }
 
     async fn auto_approve_signal_call(
@@ -1000,13 +988,7 @@ impl CriomeRoot {
             Some(grant.clone()),
             None,
         );
-        self.publish_authorization_update(granted_state.clone());
-        if self
-            .store
-            .ask(store::StoreAuthorizationState::new(granted_state))
-            .await
-            .is_err()
-        {
+        if !self.store_authorization_update(granted_state).await {
             return rejection(RejectionReason::MalformedRequest);
         }
         CriomeReply::AuthorizationGranted(grant)
@@ -1034,6 +1016,19 @@ impl CriomeRoot {
             .await
             .map_err(|error| Error::ActorCall(error.to_string()))?;
         Ok(reply.into_state())
+    }
+
+    async fn store_authorization_update(&self, state: AuthorizationStateRecord) -> bool {
+        if self
+            .store
+            .ask(store::StoreAuthorizationState::new(state.clone()))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.publish_authorization_update(state);
+        true
     }
 
     async fn read_parked_authorization_snapshot(

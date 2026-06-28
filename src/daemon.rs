@@ -255,6 +255,11 @@ impl BoundCriomeDaemon {
         CriomeDaemon::handle_connection(&self.runtime, &self.root, stream)
     }
 
+    pub fn serve_next_streaming(&self) -> Result<Option<signal_criome::CriomeReply>> {
+        let (stream, _address) = self.listener.accept()?;
+        CriomeDaemon::handle_streaming_connection(&self.runtime.handle(), &self.root, stream)
+    }
+
     pub fn serve_next_meta(&self) -> Result<meta_signal_criome::Output> {
         let (stream, _address) = self.meta_listener.accept()?;
         CriomeDaemon::handle_meta_connection(&self.runtime, &self.root, stream)
