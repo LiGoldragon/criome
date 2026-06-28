@@ -1,12 +1,18 @@
+use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 use meta_signal_criome::{Frame as CriomeMetaFrame, FrameBody as CriomeMetaFrameBody};
-use signal_criome::{CriomeFrame, CriomeFrameBody as FrameBody, CriomeReply, CriomeRequest};
+use signal_criome::{
+    AuthorizationObservation, AuthorizationObservationSnapshot, AuthorizationObservationToken,
+    AuthorizationStateRecord, AuthorizationUpdate, CriomeEvent, CriomeFrame,
+    CriomeFrameBody as FrameBody, CriomeReply, CriomeRequest,
+};
 use signal_frame::{
     ExchangeIdentifier, ExchangeLane, LaneSequence, NonEmpty, Reply, RequestPayload, SessionEpoch,
-    SubReply,
+    StreamEventIdentifier, SubReply, SubscriptionTokenInner,
 };
 
 use crate::{Error, Result};
@@ -27,6 +33,11 @@ pub struct CriomeFrameCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CriomeMetaFrameCodec {
     maximum_frame_bytes: usize,
+}
+
+pub enum CriomeStreamItem {
+    Reply(CriomeReply),
+    Event(CriomeEvent),
 }
 
 impl Default for CriomeFrameCodec {
@@ -92,6 +103,45 @@ impl CriomeFrameCodec {
         self.write_frame(writer, frame)
     }
 
+    pub fn read_stream_item(&self, reader: &mut impl Read) -> Result<CriomeStreamItem> {
+        match self.read_frame(reader)?.into_body() {
+            FrameBody::Reply { reply, .. } => match reply {
+                Reply::Accepted { per_operation, .. } => match per_operation.into_head() {
+                    SubReply::Ok(payload) => Ok(CriomeStreamItem::Reply(payload)),
+                    other => Err(Error::UnexpectedSignalFrame {
+                        got: format!("{other:?}"),
+                    }),
+                },
+                Reply::Rejected { reason } => Err(Error::UnexpectedSignalFrame {
+                    got: format!("rejected: {reason}"),
+                }),
+            },
+            FrameBody::SubscriptionEvent { event, .. } => Ok(CriomeStreamItem::Event(event)),
+            other => Err(Error::UnexpectedSignalFrame {
+                got: format!("{other:?}"),
+            }),
+        }
+    }
+
+    pub fn write_authorization_update(
+        &self,
+        writer: &mut impl Write,
+        event_sequence: u64,
+        token: &AuthorizationObservationToken,
+        state: AuthorizationStateRecord,
+    ) -> Result<()> {
+        let frame = CriomeFrame::new(FrameBody::SubscriptionEvent {
+            event_identifier: StreamEventIdentifier::new(
+                SessionEpoch::new(0),
+                ExchangeLane::Acceptor,
+                LaneSequence::new(event_sequence),
+            ),
+            token: token_inner(token),
+            event: CriomeEvent::AuthorizationUpdate(AuthorizationUpdate::new(state)),
+        });
+        self.write_frame(writer, frame)
+    }
+
     fn read_frame(&self, reader: &mut impl Read) -> Result<CriomeFrame> {
         let mut prefix = [0_u8; 4];
         reader.read_exact(&mut prefix)?;
@@ -114,6 +164,12 @@ impl CriomeFrameCodec {
         writer.flush()?;
         Ok(())
     }
+}
+
+fn token_inner(token: &AuthorizationObservationToken) -> SubscriptionTokenInner {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.payload().as_str().hash(&mut hasher);
+    SubscriptionTokenInner::new(hasher.finish())
 }
 
 impl CriomeMetaFrameCodec {
@@ -204,6 +260,13 @@ pub struct CriomeClient {
     codec: CriomeFrameCodec,
 }
 
+pub struct CriomeAuthorizationObservationSession {
+    token: AuthorizationObservationToken,
+    snapshot: AuthorizationObservationSnapshot,
+    stream: BufReader<UnixStream>,
+    codec: CriomeFrameCodec,
+}
+
 pub struct CriomeMetaClient {
     socket: std::path::PathBuf,
     codec: CriomeMetaFrameCodec,
@@ -234,6 +297,70 @@ impl CriomeClient {
         let mut stream = BufReader::new(stream);
         self.codec.write_request(stream.get_mut(), request)?;
         self.codec.read_reply(&mut stream)
+    }
+
+    pub fn observe_authorization(
+        &self,
+        observation: AuthorizationObservation,
+    ) -> Result<CriomeAuthorizationObservationSession> {
+        if !Path::new(&self.socket).exists() {
+            return Err(Error::MissingSocket {
+                path: self.socket.clone(),
+            });
+        }
+        let token = AuthorizationObservationToken::new(observation.payload().clone());
+        let stream = UnixStream::connect(&self.socket)?;
+        let mut stream = BufReader::new(stream);
+        self.codec.write_request(
+            stream.get_mut(),
+            CriomeRequest::ObserveAuthorization(observation),
+        )?;
+        let reply = self.codec.read_reply(&mut stream)?;
+        let CriomeReply::AuthorizationObservationSnapshot(snapshot) = reply else {
+            return Err(Error::UnexpectedSignalFrame {
+                got: format!("{reply:?}"),
+            });
+        };
+        Ok(CriomeAuthorizationObservationSession {
+            token,
+            snapshot,
+            stream,
+            codec: self.codec,
+        })
+    }
+}
+
+impl CriomeAuthorizationObservationSession {
+    pub fn token(&self) -> &AuthorizationObservationToken {
+        &self.token
+    }
+
+    pub fn snapshot(&self) -> &AuthorizationObservationSnapshot {
+        &self.snapshot
+    }
+
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        self.stream.get_ref().set_read_timeout(timeout)?;
+        Ok(())
+    }
+
+    pub fn next_update(&mut self) -> Result<AuthorizationStateRecord> {
+        loop {
+            match self.codec.read_stream_item(&mut self.stream)? {
+                CriomeStreamItem::Event(CriomeEvent::AuthorizationUpdate(update)) => {
+                    let state = update.into_payload();
+                    if state.request_slot == *self.token.payload() {
+                        return Ok(state);
+                    }
+                }
+                CriomeStreamItem::Event(_) => {}
+                CriomeStreamItem::Reply(reply) => {
+                    return Err(Error::UnexpectedSignalFrame {
+                        got: format!("{reply:?}"),
+                    });
+                }
+            }
+        }
     }
 }
 

@@ -17,6 +17,7 @@ use signal_criome::{
     ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest,
     RejectionReason, SignalCallAuthorization, SpiritAuthorizationContext, TimestampNanos,
 };
+use tokio::sync::broadcast;
 
 use crate::actors::{
     CriomeActorReply, actor_reply, authorization, registry, rejection, signer, store, subscription,
@@ -37,6 +38,7 @@ pub struct CriomeRoot {
     store: ActorRef<store::StoreKernel>,
     authorization_mode: AuthorizationMode,
     configuration_generation: u64,
+    authorization_updates: broadcast::Sender<AuthorizationStateRecord>,
 }
 
 pub struct Arguments {
@@ -53,6 +55,10 @@ pub struct SubmitMetaRequest {
     request: meta_signal_criome::Input,
 }
 
+pub struct OpenAuthorizationObservation {
+    request_slot: AuthorizationRequestSlot,
+}
+
 pub struct ReadTopology;
 
 #[derive(Debug, Clone, PartialEq, Eq, kameo::Reply)]
@@ -67,6 +73,12 @@ pub struct CriomeTopology {
 #[derive(Debug, Clone, PartialEq, Eq, kameo::Reply)]
 pub struct CriomeMetaActorReply {
     reply: meta_signal_criome::Output,
+}
+
+pub struct AuthorizationObservationOpened {
+    token: AuthorizationObservationToken,
+    snapshot: signal_criome::AuthorizationObservationSnapshot,
+    updates: broadcast::Receiver<AuthorizationStateRecord>,
 }
 
 impl Arguments {
@@ -88,6 +100,26 @@ impl SubmitRequest {
 impl SubmitMetaRequest {
     pub fn new(request: meta_signal_criome::Input) -> Self {
         Self { request }
+    }
+}
+
+impl OpenAuthorizationObservation {
+    pub fn new(request_slot: AuthorizationRequestSlot) -> Self {
+        Self { request_slot }
+    }
+}
+
+impl AuthorizationObservationOpened {
+    pub fn token(&self) -> &AuthorizationObservationToken {
+        &self.token
+    }
+
+    pub fn snapshot(&self) -> &signal_criome::AuthorizationObservationSnapshot {
+        &self.snapshot
+    }
+
+    pub fn into_updates(self) -> broadcast::Receiver<AuthorizationStateRecord> {
+        self.updates
     }
 }
 
@@ -143,6 +175,7 @@ impl CriomeRoot {
         store: ActorRef<store::StoreKernel>,
         authorization_mode: AuthorizationMode,
     ) -> Self {
+        let (authorization_updates, _updates) = broadcast::channel(128);
         Self {
             registry,
             signer,
@@ -152,6 +185,7 @@ impl CriomeRoot {
             store,
             authorization_mode,
             configuration_generation: 0,
+            authorization_updates,
         }
     }
 
@@ -298,6 +332,25 @@ impl CriomeRoot {
         }
     }
 
+    async fn open_authorization_observation(
+        &self,
+        request_slot: AuthorizationRequestSlot,
+    ) -> Result<AuthorizationObservationOpened> {
+        let token = AuthorizationObservationToken::new(request_slot.clone());
+        let updates = self.authorization_updates.subscribe();
+        let states = self
+            .lookup_authorization_state(request_slot)
+            .await?
+            .map(crate::tables::StoredAuthorizationState::into_state)
+            .into_iter()
+            .collect();
+        Ok(AuthorizationObservationOpened {
+            token,
+            snapshot: signal_criome::AuthorizationObservationSnapshot::from_states(states),
+            updates,
+        })
+    }
+
     async fn submit_meta(
         &mut self,
         request: meta_signal_criome::Input,
@@ -362,6 +415,7 @@ impl CriomeRoot {
                     Ok(stored) => {
                         let state = stored.state();
                         let request_slot = state.request_slot.clone();
+                        self.publish_authorization_update(state.clone());
                         Some(CriomeReply::AuthorizationPending(
                             AuthorizationPending::new(
                                 request_slot.clone(),
@@ -706,6 +760,7 @@ impl CriomeRoot {
         {
             Ok(stored) => {
                 let state = stored.state();
+                self.publish_authorization_update(state.clone());
                 CriomeReply::AuthorizationPending(AuthorizationPending::new(
                     state.request_slot.clone(),
                     state.request_digest.clone(),
@@ -729,6 +784,7 @@ impl CriomeRoot {
         {
             Ok(stored) => {
                 let state = stored.state();
+                self.publish_authorization_update(state.clone());
                 CriomeReply::AuthorizationPending(AuthorizationPending::new(
                     state.request_slot.clone(),
                     state.request_digest.clone(),
@@ -847,6 +903,7 @@ impl CriomeRoot {
             denial,
         )
         .with_parked_evaluation(evaluation);
+        self.publish_authorization_update(state.clone());
         let _ = self
             .store
             .ask(store::StoreAuthorizationState::new(state))
@@ -874,6 +931,7 @@ impl CriomeRoot {
                 denial,
             )
             .with_signal_authorization(authorization);
+            self.publish_authorization_update(state.clone());
             let _ = self
                 .store
                 .ask(store::StoreAuthorizationState::new(state))
@@ -901,6 +959,7 @@ impl CriomeRoot {
             None,
         )
         .with_signal_authorization(authorization);
+        self.publish_authorization_update(state.clone());
         let _ = self
             .store
             .ask(store::StoreAuthorizationState::new(state))
@@ -941,6 +1000,7 @@ impl CriomeRoot {
             Some(grant.clone()),
             None,
         );
+        self.publish_authorization_update(granted_state.clone());
         if self
             .store
             .ask(store::StoreAuthorizationState::new(granted_state))
@@ -1107,6 +1167,10 @@ impl CriomeRoot {
             .subscription
             .ask(subscription::PublishAuthorizedObjectUpdate::new(update))
             .await;
+    }
+
+    fn publish_authorization_update(&self, state: AuthorizationStateRecord) {
+        let _ = self.authorization_updates.send(state);
     }
 
     async fn contract_store(&self) -> Option<ContractStore> {
@@ -1282,6 +1346,19 @@ impl Message<SubmitMetaRequest> for CriomeRoot {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         CriomeMetaActorReply::new(self.submit_meta(message.request).await)
+    }
+}
+
+impl Message<OpenAuthorizationObservation> for CriomeRoot {
+    type Reply = Result<AuthorizationObservationOpened>;
+
+    async fn handle(
+        &mut self,
+        message: OpenAuthorizationObservation,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.open_authorization_observation(message.request_slot)
+            .await
     }
 }
 

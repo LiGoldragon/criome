@@ -6,11 +6,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
-use signal_criome::{AuthorizationMode, BlsPublicKey};
+use signal_criome::{
+    AuthorizationMode, AuthorizationObservation, BlsPublicKey, CriomeReply, CriomeRequest,
+};
 use triad_runtime::SignalFile;
 
 use crate::actors::root::{
-    Arguments as RootArguments, CriomeRoot, SubmitMetaRequest, SubmitRequest,
+    Arguments as RootArguments, CriomeRoot, OpenAuthorizationObservation, SubmitMetaRequest,
+    SubmitRequest,
 };
 use crate::tables::StoreLocation;
 use crate::transport::{CriomeFrameCodec, CriomeMetaFrameCodec};
@@ -153,6 +156,27 @@ impl CriomeDaemon {
         Ok(reply)
     }
 
+    fn handle_streaming_connection(
+        runtime: &tokio::runtime::Handle,
+        root: &ActorRef<CriomeRoot>,
+        stream: UnixStream,
+    ) -> Result<Option<signal_criome::CriomeReply>> {
+        let mut connection = CriomeConnection::new(stream);
+        let request = connection.read_request()?;
+        let CriomeRequest::ObserveAuthorization(observation) = request else {
+            let reply = runtime.block_on(async {
+                root.ask(SubmitRequest::new(request))
+                    .await
+                    .map(crate::actors::CriomeActorReply::into_reply)
+                    .map_err(|error| Error::ActorCall(error.to_string()))
+            })?;
+            connection.write_reply(reply.clone())?;
+            return Ok(Some(reply));
+        };
+        connection.stream_authorization_observation(runtime, root, observation)?;
+        Ok(None)
+    }
+
     fn handle_meta_connection(
         runtime: &tokio::runtime::Runtime,
         root: &ActorRef<CriomeRoot>,
@@ -258,7 +282,11 @@ impl BoundCriomeDaemon {
     fn try_serve_working_connection(&self) -> Result<bool> {
         match self.listener.accept() {
             Ok((stream, _address)) => {
-                let _reply = CriomeDaemon::handle_connection(&self.runtime, &self.root, stream)?;
+                let runtime = self.runtime.handle().clone();
+                let root = self.root.clone();
+                std::thread::spawn(move || {
+                    let _ = CriomeDaemon::handle_streaming_connection(&runtime, &root, stream);
+                });
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
@@ -282,6 +310,7 @@ impl BoundCriomeDaemon {
 pub struct CriomeConnection {
     stream: BufReader<UnixStream>,
     codec: CriomeFrameCodec,
+    authorization_event_sequence: u64,
 }
 
 impl CriomeConnection {
@@ -289,6 +318,7 @@ impl CriomeConnection {
         Self {
             stream: BufReader::new(stream),
             codec: CriomeFrameCodec::default(),
+            authorization_event_sequence: 0,
         }
     }
 
@@ -298,6 +328,53 @@ impl CriomeConnection {
 
     pub fn write_reply(&mut self, reply: signal_criome::CriomeReply) -> Result<()> {
         self.codec.write_reply(self.stream.get_mut(), reply)
+    }
+
+    pub fn stream_authorization_observation(
+        &mut self,
+        runtime: &tokio::runtime::Handle,
+        root: &ActorRef<CriomeRoot>,
+        observation: AuthorizationObservation,
+    ) -> Result<()> {
+        let request_slot = observation.into_payload();
+        let opened = runtime.block_on(async {
+            Ok::<_, Error>(
+                root.ask(OpenAuthorizationObservation::new(request_slot))
+                    .await
+                    .map_err(|error| Error::ActorCall(error.to_string()))?,
+            )
+        })?;
+        let token = opened.token().clone();
+        self.write_reply(CriomeReply::AuthorizationObservationSnapshot(
+            opened.snapshot().clone(),
+        ))?;
+        let mut updates = opened.into_updates();
+        loop {
+            let state = match updates.blocking_recv() {
+                Ok(state) => state,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_count)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            };
+            if state.request_slot != *token.payload() {
+                continue;
+            }
+            self.codec.write_authorization_update(
+                self.stream.get_mut(),
+                self.authorization_event_sequence,
+                &token,
+                state.clone(),
+            )?;
+            self.authorization_event_sequence = self.authorization_event_sequence.wrapping_add(1);
+            if matches!(
+                state.status,
+                signal_criome::AuthorizationStatus::Granted
+                    | signal_criome::AuthorizationStatus::Denied
+                    | signal_criome::AuthorizationStatus::Expired
+                    | signal_criome::AuthorizationStatus::Unavailable
+            ) {
+                return Ok(());
+            }
+        }
     }
 }
 
