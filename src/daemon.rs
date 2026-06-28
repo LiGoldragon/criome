@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
-use signal_criome::{AuthorizationMode, BlsPublicKey};
+use signal_criome::{AuthorizationMode, BlsPublicKey, Identity};
 use triad_runtime::SignalFile;
 
 use crate::actors::root::{
@@ -23,6 +23,7 @@ pub struct CriomeDaemon {
     store: StoreLocation,
     cluster_root: Option<BlsPublicKey>,
     authorization_mode: AuthorizationMode,
+    node_identity: Identity,
 }
 
 pub use signal_criome::CriomeDaemonConfiguration;
@@ -42,6 +43,7 @@ impl CriomeDaemon {
             store,
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
+            node_identity: RootArguments::default_node_identity(),
         }
     }
 
@@ -51,12 +53,17 @@ impl CriomeDaemon {
             .meta_socket_path()
             .map(|path| PathBuf::from(path.as_str()))
             .unwrap_or_else(|| Self::default_meta_socket_path(&socket));
+        let node_identity = configuration
+            .node_identity()
+            .cloned()
+            .unwrap_or_else(RootArguments::default_node_identity);
         Self {
             socket,
             meta_socket,
             store: StoreLocation::new(configuration.store_path.as_str()),
             cluster_root: configuration.cluster_root().cloned(),
             authorization_mode: *configuration.authorization_mode(),
+            node_identity,
         }
     }
 
@@ -89,6 +96,13 @@ impl CriomeDaemon {
         self
     }
 
+    /// Set the identity this criome signs attestations as. Distinct per node so
+    /// peers cross-verify by registered key.
+    pub fn with_node_identity(mut self, node_identity: Identity) -> Self {
+        self.node_identity = node_identity;
+        self
+    }
+
     pub fn run(self) -> Result<()> {
         let bound = self.bind()?;
         eprintln!("criome socket={}", bound.socket().display());
@@ -108,6 +122,7 @@ impl CriomeDaemon {
             store: self.store,
             cluster_root: self.cluster_root,
             authorization_mode: self.authorization_mode,
+            node_identity: self.node_identity,
         }))?;
         Ok(BoundCriomeDaemon {
             socket: self.socket,

@@ -43,6 +43,10 @@ pub struct Arguments {
     pub store: StoreLocation,
     pub cluster_root: Option<BlsPublicKey>,
     pub authorization_mode: AuthorizationMode,
+    /// The identity this criome signs attestations as. A single-node deployment
+    /// keeps the historical `Host("criome")`; a multi-node cluster gives each
+    /// node a distinct identity so peers cross-verify by registered key.
+    pub node_identity: Identity,
 }
 
 pub struct SubmitRequest {
@@ -75,7 +79,14 @@ impl Arguments {
             store,
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
+            node_identity: Self::default_node_identity(),
         }
+    }
+
+    /// The historical single-node signing identity, used when a deployment does
+    /// not configure a distinct per-node identity.
+    pub fn default_node_identity() -> Identity {
+        Identity::host("criome".to_string())
     }
 }
 
@@ -1161,7 +1172,7 @@ impl Actor for CriomeRoot {
     ) -> std::result::Result<Self, Self::Error> {
         let master_key_path = arguments.store.as_path().with_extension("masterkey");
         let master_key = MasterKey::load_or_generate(&master_key_path)?;
-        let criome_identity = Identity::host("criome".to_string());
+        let criome_identity = arguments.node_identity;
         let cluster_root = arguments.cluster_root.map(ClusterRoot::new);
 
         let store = store::StoreKernel::supervise(&actor_reference, arguments.store)

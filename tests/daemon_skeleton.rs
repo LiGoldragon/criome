@@ -1017,6 +1017,7 @@ async fn parked_authorization_snapshot_sorts_slots_numerically() {
         store: store_location("parked-numeric-order"),
         cluster_root: None,
         authorization_mode: signal_criome::AuthorizationMode::ClientApproval,
+        node_identity: RootArguments::default_node_identity(),
     })
     .await
     .expect("start criome root");
@@ -1210,6 +1211,7 @@ async fn cluster_root_gates_registration() {
         store: StoreLocation::new(workspace.join("criome.sema")),
         cluster_root: Some(cluster_root.public_key()),
         authorization_mode: signal_criome::AuthorizationMode::Quorum,
+        node_identity: RootArguments::default_node_identity(),
     })
     .await
     .expect("start criome root");
