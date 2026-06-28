@@ -115,8 +115,13 @@ impl CriomeDaemon {
     }
 
     pub fn bind(self) -> Result<BoundCriomeDaemon> {
-        let listener = Self::bind_private_socket(&self.socket)?;
-        let meta_listener = Self::bind_private_socket(&self.meta_socket)?;
+        // The working socket is a shared IPC surface: a co-resident peer (the
+        // persona-router's milestone-3 criome client) dials it, so it is bound
+        // group-accessible (0660) and the deployment puts that peer in criome's
+        // group. The meta socket and the master key stay owner-private (0600 /
+        // 0700 state dir), so group membership never exposes the signing key.
+        let listener = Self::bind_socket(&self.socket, 0o660)?;
+        let meta_listener = Self::bind_socket(&self.meta_socket, 0o600)?;
         let runtime = tokio::runtime::Runtime::new()?;
         let root = runtime.block_on(CriomeRoot::start(RootArguments {
             store: self.store,
@@ -141,13 +146,13 @@ impl CriomeDaemon {
         }
     }
 
-    fn bind_private_socket(socket: &Path) -> Result<UnixListener> {
+    fn bind_socket(socket: &Path, mode: u32) -> Result<UnixListener> {
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let _ = std::fs::remove_file(socket);
         let listener = UnixListener::bind(socket)?;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(mode))?;
         Ok(listener)
     }
 

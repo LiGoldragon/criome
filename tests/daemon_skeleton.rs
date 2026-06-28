@@ -1283,7 +1283,7 @@ fn criome_daemon_signal_frame_registers_identity() {
 }
 
 #[test]
-fn criome_daemon_meta_socket_is_user_private() {
+fn criome_daemon_socket_modes_split_shared_working_from_private_meta() {
     let workspace = fixture_path("socket-mode");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
@@ -1293,12 +1293,15 @@ fn criome_daemon_meta_socket_is_user_private() {
         .bind()
         .expect("bind daemon");
 
+    // The working socket is a shared IPC surface (a co-resident persona-router
+    // dials it as a criome-group member), so it is group-accessible 0660.
     let mode = std::fs::metadata(daemon.socket())
         .expect("read socket metadata")
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(mode, 0o600);
+    assert_eq!(mode, 0o660);
+    // The meta socket stays owner-private 0600 (local approval/configuration).
     let meta_mode = std::fs::metadata(daemon.meta_socket())
         .expect("read meta socket metadata")
         .permissions()
