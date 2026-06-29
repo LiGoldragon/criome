@@ -6,8 +6,9 @@
 //!
 //!   * the WORKING socket (`CriomeClient`) is the requester half — it submits an
 //!     `EvaluateAuthorization` that, under `ClientApproval`, is PARKED rather than
-//!     evaluated, and later reads the settled verdict back via
-//!     `ObserveAuthorization`.
+//!     evaluated. This legacy evaluation witness performs a post-decision
+//!     `ObserveAuthorization(slot)` check because it already holds the slot; the
+//!     Signal-call submit path waits on its submit-open stream instead.
 //!   * the META socket (`CriomeMetaClient`) is the policy/operator half — it
 //!     reconfigures the daemon into `ClientApproval`, lists the parked requests,
 //!     and decides each one with `SubmitAuthorizationApproval`.
@@ -20,7 +21,8 @@
 //!   (3) LIST        — meta `ObserveParkedAuthorizations` -> snapshot containing
 //!                     the parked slot.
 //!   (4) APPROVE     — meta `SubmitAuthorizationApproval(Approve)` -> recorded.
-//!   (5) GRANTED     — working `ObserveAuthorization(slot)` -> state `Granted`.
+//!   (5) GRANTED     — compatibility working `ObserveAuthorization(slot)` check
+//!                     -> state `Granted`.
 //!   (6) REJECT PATH — a SECOND, different request parks under a different slot,
 //!                     is decided `Reject`, and settles `Denied`.
 //!
@@ -208,7 +210,9 @@ impl Witness {
         );
     }
 
-    /// (5) Read the settled verdict over the working socket and assert its status.
+    /// (5) Read the settled verdict through the compatibility observe-by-slot
+    /// surface and assert its status. This is not the Signal-call submit wait
+    /// path; that path receives the request-scoped stream from submit.
     fn assert_status(&self, slot: &AuthorizationRequestSlot, expected: AuthorizationStatus) {
         let reply = self
             .working
@@ -234,7 +238,7 @@ impl Witness {
             "the settled authorization status matches the decision"
         );
         eprintln!(
-            "criome-client-approval-witness-test: PROOF (5) ObserveAuthorization -> status {expected:?}"
+            "criome-client-approval-witness-test: PROOF (5) compatibility ObserveAuthorization -> status {expected:?}"
         );
     }
 

@@ -154,10 +154,12 @@ authorization decisions, and privilege elevations.*
 - **`AuthorizationGrant` carries the satisfied policy.** Scope, the
   signatures collected, and the threshold expression that says why
   those signatures are sufficient.
-- **Pending authorization is observable.** `ObserveAuthorization`
-  pushes pending → granted/denied/expired state. Lojix effects wait
-  for `AuthorizationGranted` over the request's exact digest, not by
-  polling.
+- **Pending authorization is pushed.** `AuthorizeSignalCall` opens a
+  request-scoped lifecycle stream for the submitted request: current
+  snapshot first, then pending → granted/denied/expired updates.
+  `ObserveAuthorization` remains available when a caller already holds
+  a slot. Lojix effects wait for `AuthorizationGranted` over the
+  request's exact digest, not by polling.
 
 ## Security model — Unix-user as boundary
 
@@ -454,7 +456,7 @@ The headline boundaries:
 | `router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
 | `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
-| `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
+| Signal-requesting daemon | `AuthorizeSignalCall`, `VerifyAuthorization`; `ObserveAuthorization` only when it already holds a slot | The requester submits an exact Signal request digest, receives the submit-open lifecycle stream until terminal grant/rejection/expiry/closure, and verifies grants before local effects. |
 | `criome` CLI (meta) | `meta-signal-criome` | The authority Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
 | `tui-criome` (meta, long-running) | `meta-signal-criome` | The authority's long-running interactive client. Same contract as the CLI, but stays connected to receive approval-request push events and answer them. Not a separate triad daemon. |
 | Peer criome daemons | `signal-criome` (peer routing) | Receive `RouteSignatureRequest` for quorum solicitations; reply with `SubmitSignature` or `RejectAuthorization`. Found by predictable socket name (§6.1). |
@@ -496,15 +498,16 @@ constraints:
   install in router.
 - Archive deployments without a valid attestation abort
   in lojix-cli.
-- Lojix deploy effects do not begin until `AuthorizeSignalCall`
-  returns `AuthorizationGranted` for the exact request digest and
-  requested scope.
+- Lojix deploy effects do not begin until the `AuthorizeSignalCall`
+  request-scoped stream returns `AuthorizationGranted` for the exact
+  request digest and requested scope.
 - **Authorization is constituted by signatures-over-the-exact-digest
   that satisfy criome's policy.** Policy alone does not grant;
   signatures alone are not enough without policy that names them as
   sufficient.
-- Pending authorization is a first-class state. It is
-  observed through `ObserveAuthorization`, not by polling.
+- Pending authorization is a first-class state. The submitting caller
+  receives it on the `AuthorizeSignalCall` lifecycle stream; other
+  authorized observers may use `ObserveAuthorization`. No caller polls.
 - An authorization grant for request A cannot authorize
   request B; `VerifyAuthorization` checks the typed
   digest match.
@@ -641,7 +644,8 @@ Current implementation status:
 - `AuthorizationCoordinator` is present as a data-bearing Kameo
   actor. It asks `StoreKernel` to mint durable authorization request
   slots, records `AuthorizeSignalCall` as durable signing-state,
-  exposes that state through `ObserveAuthorization`, stores
+  exposes that state through the submit-open lifecycle stream and the
+  compatibility `ObserveAuthorization` surface, stores
   signature solicitations/submissions, records signer denials, and
   rejects `VerifyAuthorization` when the grant digest does not match
   the requested digest. **Authorization expiry and replay guard are
