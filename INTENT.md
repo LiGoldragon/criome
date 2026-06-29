@@ -24,6 +24,15 @@ network identity, validation, and auth/security across the stack.
 Today's Spartan daemon is one realization step that brings forward the
 auth/identity slice; it does not carry the eventual scope.
 
+Peer discovery and node indexing are a forward want, not the first slice.
+criome daemons are meant to gain peer discovery and node indexing so a criome
+daemon can find other criome daemons and nodes — at minimum a first daemon
+discovering a second. This is a want for a later slice: hardwiring the peer
+addresses is acceptable for now, and automatic discovery and indexing of criome
+daemons and nodes comes afterward (Spirit [burk]). This is distinct from the
+peer-routing table's predictable-socket-name addressing of an already-registered
+peer (see `ARCHITECTURE.md` §"Peer discovery and cross-criome routing").
+
 The internal policy-language slice lives on that realization path: it models
 Criome contracts as a finite typed rule tree over signatures, quorum /
 timelock evidence, and reconciliation facts, with contracts admitted into
