@@ -48,10 +48,11 @@ authorization decisions, and privilege elevations.*
   ChannelGrantAttestation from `mind`).
 - **Routed authorization is the Lojix integration path.**
   `lojix-daemon` submits the exact canonical `signal-lojix`
-  request digest to its local `criome-daemon`. Criome routes
-  signature solicitations, records pending/granted/denied state,
-  checks expiry and replay, and issues an authorization envelope
-  whose permission comes from signatures over the exact request.
+  request digest to its local `criome-daemon` and waits on the
+  submit-open request stream. Criome routes signature solicitations,
+  records pending/granted/denied state, checks expiry and replay, and
+  issues an authorization envelope whose permission comes from
+  signatures over the exact request.
   Lojix owns deployment coordination after the envelope grants the
   requested scope.
 - **Signature scheme**: **BLS12-381 from day one**, via
