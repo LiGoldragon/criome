@@ -19,6 +19,18 @@ authorization decisions, and privilege elevations.*
 > it serves now (per `~/primary/ESSENCE.md` §"Today and
 > eventually").
 
+> **Place in Telos.** Telos is the umbrella meta-project (Greek:
+> ultimate end) — the far-horizon eventual Criome plus Sema, realized
+> now as Persona, a meta-AI of LLMs over a typed dumb mechanism.
+> `criome` is *not* Telos; it is Telos's **agreement-and-authorization
+> organ** — a universal agreement machine for authorization. Quorum is
+> criome's universal primitive: one membership-scoped quorum serves both
+> a single principal's reliability and credible time (its own multi-node
+> agreement) and cross-party trust (multi-principal agreement). The
+> §"Future direction" section below records the eventual-Criome
+> trajectory these intent records name; it is direction, not today's
+> implemented surface.
+
 > **Archaeology note.** Prior to this rewrite, today's
 > `criome` was the sema-ecosystem records validator
 > (Graph/Node/Edge/Derivation/CompiledBinary). That skeleton
@@ -134,6 +146,16 @@ authorization decisions, and privilege elevations.*
   - *Complex policy (quorum)* — needs criome's own signature plus
     signatures from named peer criome daemons. Cross-criome routing
     solicits the additional signatures.
+- **The first cluster quorum contract mirrors SSH `authorized-keys`.**
+  Starting from the one-of-one local production milestone, the first
+  multi-node contract is a deliberately permissive *one-of-any*: any
+  registered node key grants full authorization, always approving and
+  never refusing. It is deployed incrementally as nodes are added
+  (one-of-one grows to two-of-two and beyond) while the daemon observes
+  that added nodes also approve, collecting operational data on the live
+  quorum before a later upgrade tightens it to a stricter k-of-n
+  contract. This is the simple, upgradeable starting point for the
+  cluster; the quorum primitive carries the path to stricter thresholds.
 - **Two escalation kinds are first-class:**
   - *Escalation-to-sign* — policy is satisfied; criome signs with its
     master key and returns the grant.
@@ -149,7 +171,19 @@ authorization decisions, and privilege elevations.*
 - **There are many criome daemons.** One per Unix user; new trust
   boundaries spawn new daemons. Complex policies that demand peer
   signatures find peers by predictable socket names (§"Peer discovery
-  and cross-criome routing" below).
+  and cross-criome routing" below). The Unix-user boundary *is* the
+  trust boundary, so there is no shared multi-user system daemon, and
+  the same single-user custody boundary rules out an embeddable Criome
+  engine library. The privileged **system** Criome tier serves
+  host-scoped system services under a service user that a home Criome
+  *peers* with — a peering relation, not a shared daemon. Each agent
+  receives its own Criome identity at agent start, recorded in
+  `persona-mind`; its public key is the authoritative authentication
+  anchor, and complex (especially agent-initiated) interactions run
+  through the agent's own Criome daemon. Authorization for many
+  workspace operations checks against Criome, not SSH, and any
+  component or daemon can escalate to Criome for a check; the substrate
+  is per-component-per-domain agent spaces.
 - **Criome-daemon's authority state.** Request state, signature
   solicitation state, submitted-signature state, grant state, expiry,
   and replay policy — all owned through sema-engine tables. Plus the
@@ -401,6 +435,18 @@ mismatch (per
   by an already-registered Developer identity (or, at
   cluster bootstrap, by criome's master key). The registration
   message includes the new identity's public key.
+- **The public key IS the identifier.** A long-lived agent's
+  cryptographic identity is its Criome master public key; there is no
+  separate UID storage. (When Criome is absent, an ephemeral keypair
+  stands in transitionally.) Possessing identity is the power to sign
+  opinions, and Criome Identity is the canonical existence-verification
+  surface — a SignalCore primitive. Graduated short forms are *methods*
+  derived from the key, not stored fields: a short identifier is the
+  first three bytes of the public key, exposed by a `shortest_id()`
+  method that returns the shortest non-colliding prefix (3 bytes
+  default, widening up to the NOTA namespace width on collision).
+  Because identities are binary in the signal layer, the collision
+  check is a direct byte comparison on the public-key prefix.
 - Public-key distribution to verifiers is **pushed** via
   `SubscribeIdentityUpdates` (per
   `~/primary/skills/push-not-pull.md`). Verifiers cache
@@ -544,6 +590,11 @@ constraints:
   searches post-zeroization.)
 - Prompt-audit policy code does not live in this repo
   (it belongs to `mind`).
+- **Error-kind subtyping is an ongoing first-class design surface.**
+  The categorization of error kinds into subtypes develops over time
+  and is one of the most important parts of designing the Criome stack;
+  the typed `Error` enum is expected to grow new variants as the stack
+  matures rather than collapsing failures into a few coarse kinds.
 
 
 ## 8.1 · Future possibilities
@@ -566,6 +617,148 @@ the trajectory is visible from today's narrow Spartan substrate:
   first cut treats master keys as long-lived; full rotation
   (publishing a new master with continuity proofs back to the old)
   is deferred.
+
+
+## 8.2 · Future direction
+
+This section records the eventual-Criome trajectory the workspace
+intends. It is *direction*, not today's implemented daemon: today's
+Spartan criome (above) realizes the auth/identity slice of it.
+
+### Universal guard substrate
+
+criome is the universal guard substrate. A guarded operation anywhere
+in the stack binds to a criome **guard contract** written in criome's
+typed policy language, composing *deterministic guards* — k-of-n
+signature quorums and time-locks — with *cognitive guards* that
+reference an LLM workflow. criome stays **verify-only**: it holds the
+contract and verifies the signed content-addressed verdict, and does
+not run models itself. The internal language is a limited typed policy
+language over public-key identity atoms (not a general VM; the
+discipline is drawn from the Ethereum/Tezos/Solana VMs), composing
+identity contracts from quorums and time-locks with time-varying
+thresholds plus explicit divergence-reconciliation objects (conflict
+resolution may invoke an LLM oracle).
+
+`orchestrate` executes the referenced workflow as a graph of agents
+(parallel, series, or combination): `agent` makes each LLM call, `mind`
+owns the workflow graph, and `orchestrate` holds the LLM run logs.
+Every guard can escalate higher — to a more complex workflow, a smarter
+agent, the psyche, or a combination requiring multiple verdicts. The
+substrate is designed general from the start; the Spirit intent
+guardian becomes the **first guard contract** instantiated on it, and
+Spirit's guardian migrates onto the substrate after it is built
+generically.
+
+Provenance and status split by ownership: criome holds the verdict and
+contract reference, `orchestrate` holds the LLM run logs, `introspect`
+holds the execution trace, and `mentci` renders the psyche-facing
+status board.
+
+### Guard workflow trust — two planes
+
+Guard-workflow trust has two planes:
+
+- A **local execution chamber** treats co-resident trusted components
+  (criome, orchestrate, agent, introspect, mentci) as one collaborating
+  local system for first-substrate workflow receipts.
+- The independent **authority layer** is the criome quorum layer, where
+  peer nodes run their own LLM workflows and produce their own
+  signatures over the content-addressed object or verdict; the system
+  observes expected peer co-signatures and surfaces missing ones.
+
+### Content-addressed composable contracts
+
+Authorization contracts are content-addressed composable objects: each
+component can decide acceptance based on another accepted object or
+contract, and dependencies refer to each other's content-addressed
+contract objects rather than ad hoc mutable state. Threshold, majority,
+and time-window acceptance policies are contract logic layered on those
+composable authorization objects.
+
+### Crystallized-time and AttestedMoment
+
+criome's clock is decentralized quorum-attested coarse
+crystallized-**PAST** time: there is no single trusted or precise
+clock; only the past is provable. A time attestation begins as a
+forward-extending **window proposition** (content-addressed as its
+identity); a quorum signs that the present falls within it, and the
+window closes at the last signature or at expiry, crystallizing a
+non-forgeable monotonic lower bound on *now*. The window extends
+forward so every member can sign; the tolerance gap is bounded below by
+quorum signing latency and widens under partition. Every quorum-signed
+object carries an `AttestedMoment` (a signature is never timeless), so
+every admission envelope, verdict, agreement fact, and triad
+input/output is time-bound for freshness and replay; time-locks compare
+against the operation's own proof-of-when. `AttestedMoment` is the
+self-grounding base case carrying no inner moment, which stops the
+regress.
+
+### Last-known-acknowledgment state
+
+Component state across the Criome stack is **last-known-acknowledgment**,
+not live-query. Components in a state relationship constantly agree via
+natural acknowledgment, forming a quorum-of-agreement — the root pattern
+at Criome: components share state by always agreeing whenever it
+changes. External non-Criome systems (today's cloud providers) break
+this; until they speak the protocol, the local state is the last
+acknowledgment received from them. Future federation enables
+cross-stack last-known-state status with non-Criome providers.
+
+### Two transport lanes
+
+CriomOS communication has two transport lanes. **Router** is the
+ordinary fabric for cross-sandbox and cross-network traffic
+(router-to-router remote delivery, reference push, payload-blind byte
+movement). criome keeps a **direct criome-to-criome peer lane** for
+time-sensitive agreement (quorum signing, crystallized-time windows)
+carrying only agreement and authorization messages — keeping criome
+auth-only and Router the general transport. Each agent runs in its own
+microVM sandbox; the tailnet gives confidentiality and criome BLS
+attestations give per-frame authenticity. Intra-host
+sandbox-to-router transport is tap/L3 (vsock is deferred because it
+loses `SO_PEERCRED`). Mirror version-controls and moves objects.
+
+### domain-criome — content-addressed DNS
+
+`domain-criome` is the authority for `.criome` domains: a
+content-addressed DNS where each domain (e.g. `goldragon.criome`) is its
+own content-addressable authority server, queried via its daemon with
+the last snapshot as cached state. A daemon may host multiple domains
+and resolve ones it does not own from agreed last-known cached records;
+domain-criome decides node ownership, with `NotAuthoritative(Delegation)`
+redirect as the off-network fallback. domain-criome excludes provider
+APIs and direct CLI store access.
+
+### Cross-system trust root
+
+A **cluster-root** identity signs member keys, and that signature is the
+criome registry admission gate: `RegisterIdentity` requires a valid root
+signature, and cross-system peers trust keys chained to the cluster
+root. This closes the current no-admission-control gap (the registry
+accepts any key today) and gives a non-circular first-cross-system-trust
+bootstrap. (Today's daemon already enforces this when a cluster-root
+public key is configured — see §9.)
+
+### Validation substrate and spirit gate
+
+The criome/lojix cluster is validated by a fully-networked multi-node
+test substrate with the spirit gate authenticated end-to-end through one
+reusable interface. One identical propagation test targets three
+substrates: a default hermetic host-untouched `runNixOSTest` VM cluster
+on prometheus; an opt-in durable on-demand microvm node on prometheus
+(BootOnce-activated, a typed horizon-rs `NodeService`, router and
+production untouched); and opt-in DigitalOcean droplets for
+cross-machine validation. The gate accepts an authorized head and
+rejects an unauthorized one fail-closed, building from 1-of-1 local
+toward multi-machine quorum. The first witness that makes VM testing
+real proves criome auth propagation through the persona router
+authenticating a real Spirit record — the recorded
+spirit→criome→router→mirror chain, sourced from a no-guardian Spirit
+daemon and received by mirror — including the fail-closed negative
+control where a head bearing no valid criome credential is refused. It
+runs on prometheus on real booting VMs, and a Nix store cache-hit must
+not be able to fake it: a re-run must actually boot the VMs.
 
 
 ## 9 · Code map
