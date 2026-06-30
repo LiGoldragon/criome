@@ -13,8 +13,11 @@ authorization decisions, and privilege elevations.*
 > programming, version control, network identity, validation,
 > and auth/security across the stack. Today's Spartan criome
 > is one step toward that eventual shape, bringing forward
-> the auth/identity slice. See
-> `INTENT.md` §"Why this repo exists".
+> the auth/identity slice. It does not carry the eventual
+> scope; today's daemon is one realization step on the
+> eventually-self-hosting stack, built rightly for the scope
+> it serves now (per `~/primary/ESSENCE.md` §"Today and
+> eventually").
 
 > **Archaeology note.** Prior to this rewrite, today's
 > `criome` was the sema-ecosystem records validator
@@ -443,6 +446,16 @@ The choice is deferred to a follow-up designer report. Single-host
 quorum (peers under different Unix users on one host) works today
 without the cross-host crypto layer.
 
+**Automatic peer discovery and node indexing are a forward want,
+not the first slice.** criome daemons are meant to gain peer
+discovery and node indexing so that a criome daemon can find other
+criome daemons and nodes — at minimum a first daemon discovering a
+second. Hardwiring the peer addresses (the peer-routing table above)
+is acceptable for now; automatic discovery and indexing of criome
+daemons and nodes comes in a later slice. This is distinct from the
+peer-routing table's predictable-socket-name addressing of an
+already-registered peer described above (Spirit `burk`).
+
 
 ## 7 · Integration map
 
@@ -665,8 +678,8 @@ Current implementation status:
 
 ## See also
 
-- `INTENT.md` §"Why this repo exists" — the scope discipline
-  this ARCH applies.
+- The §"Scope: today, not eventually" note above — the
+  today-vs-eventual scope discipline this document applies.
 - `~/primary/skills/kameo.md` — the actor runtime.
 - `~/primary/skills/actor-systems.md` — the actor
   discipline.
