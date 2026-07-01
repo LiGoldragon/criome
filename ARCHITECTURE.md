@@ -196,6 +196,19 @@ defense-in-depth for the cases where a different UID observes bytes
 without owning the socket: bind-time races, runtime-directory
 mistakes, symlink races, or partial-frame protocol bugs.
 
+**`SO_PEERCRED` makes the owner boundary kernel-enforced, not
+path-secrecy-only.** On every accepted meta connection the daemon
+reads the peer's kernel credentials (`MetaSocketAuthority`, via
+`rustix::net::sockopt::socket_peercred`) and serves only the Unix
+user that owns the bound meta socket inode; any other UID is refused
+before the first meta request is read. This closes exactly the gaps
+the `0600` mode alone cannot: if the socket mode is ever loosened, or
+a bind-time / runtime-directory / symlink race exposes the socket to
+a different UID, the kernel-supplied peer UID still gates the policy
+plane. A refused peer is logged and dropped without stopping the
+serve loop, so a non-owner cannot wedge the daemon by dialling the
+meta socket.
+
 The `meta-signal-criome` session starts with an ECDH exchange, derives
 a symmetric session key through HKDF, then carries AEAD-encrypted
 frames. The exact cipher suite belongs to the `meta-signal-criome`
@@ -521,7 +534,12 @@ constraints:
   table mutation, or escalation-approval replies.
 - **The daemon's meta socket is mode 0600, owned by the daemon's
   Unix user.** A witness test asserts the socket's mode and owner
-  match the configured user at daemon ready.
+  match the configured user at daemon ready. Beyond the file mode,
+  the daemon reads `SO_PEERCRED` on every accepted meta connection
+  and serves only the socket-owning UID; a non-owner peer is refused
+  before its first meta request and dropped without stalling the
+  serve loop. Unit tests exercise both the owning-UID admit and the
+  non-owner refusal over a socket pair.
 - **Meta-session traffic is encrypted.** Passphrase submission,
   master-key operations, policy mutation, peer-route mutation, and
   escalation-approval replies travel inside the future

@@ -1,5 +1,5 @@
 use std::io::BufReader;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::path::PathBuf;
@@ -126,6 +126,7 @@ impl CriomeDaemon {
         // 0700 state dir), so group membership never exposes the signing key.
         let listener = Self::bind_socket(&self.socket, 0o660)?;
         let meta_listener = Self::bind_socket(&self.meta_socket, 0o600)?;
+        let meta_authority = MetaSocketAuthority::for_socket(&self.meta_socket)?;
         let runtime = tokio::runtime::Runtime::new()?;
         let root = runtime.block_on(CriomeRoot::start(RootArguments {
             store: self.store,
@@ -139,6 +140,7 @@ impl CriomeDaemon {
             runtime,
             listener,
             meta_listener,
+            meta_authority,
             root,
         })
     }
@@ -256,6 +258,7 @@ pub struct BoundCriomeDaemon {
     runtime: tokio::runtime::Runtime,
     listener: UnixListener,
     meta_listener: UnixListener,
+    meta_authority: MetaSocketAuthority,
     root: ActorRef<CriomeRoot>,
 }
 
@@ -286,6 +289,7 @@ impl BoundCriomeDaemon {
 
     pub fn serve_next_meta(&self) -> Result<meta_signal_criome::Output> {
         let (stream, _address) = self.meta_listener.accept()?;
+        self.meta_authority.authorize(&stream)?;
         CriomeDaemon::handle_meta_connection(&self.runtime, &self.root, stream)
     }
 
@@ -326,12 +330,61 @@ impl BoundCriomeDaemon {
     fn try_serve_meta_connection(&self) -> Result<bool> {
         match self.meta_listener.accept() {
             Ok((stream, _address)) => {
+                // Refusing a non-owner peer must not stop the daemon: a hostile
+                // same-host user could otherwise wedge the serve loop by dialing
+                // the meta socket. Log and drop the connection, keep serving.
+                if let Err(error) = self.meta_authority.authorize(&stream) {
+                    eprintln!("criome meta connection refused: {error}");
+                    return Ok(true);
+                }
                 let _reply =
                     CriomeDaemon::handle_meta_connection(&self.runtime, &self.root, stream)?;
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+/// The owner-authority the meta socket enforces at the kernel boundary.
+///
+/// The meta socket carries privileged policy orders (Configure, parked-request
+/// decisions, intercept-policy mutation), so the daemon reads `SO_PEERCRED` on
+/// every accepted meta connection and serves only the Unix user that owns the
+/// socket. This makes the meta-vs-working authority boundary kernel-enforced
+/// rather than path-secrecy-only: even under a loosened socket mode, a bind-time
+/// race, a runtime-directory mistake, or a symlink race, a different-UID peer is
+/// refused before any meta request is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetaSocketAuthority {
+    owner_uid: u32,
+}
+
+impl MetaSocketAuthority {
+    /// The authorized owner is whoever owns the bound meta socket inode — the
+    /// Unix user criome runs as. Read once at bind time through the safe std
+    /// metadata wrapper, so no `unsafe` `geteuid` call is needed.
+    fn for_socket(socket: &Path) -> Result<Self> {
+        let owner_uid = std::fs::metadata(socket)?.uid();
+        Ok(Self { owner_uid })
+    }
+
+    /// Refuse a meta connection whose peer credential is not the owning Unix
+    /// user. `SO_PEERCRED` is read through the safe `rustix` wrapper, so this
+    /// stays on stable Rust with no `unsafe` `getsockopt` call.
+    fn authorize(&self, stream: &UnixStream) -> Result<()> {
+        let uid = rustix::net::sockopt::socket_peercred(stream)
+            .map_err(std::io::Error::from)?
+            .uid
+            .as_raw();
+        if uid == self.owner_uid {
+            Ok(())
+        } else {
+            Err(Error::MetaSocketUnauthorized {
+                uid,
+                owner_uid: self.owner_uid,
+            })
         }
     }
 }
@@ -503,5 +556,41 @@ impl CriomeMetaConnection {
 
     pub fn write_reply(&mut self, reply: meta_signal_criome::Output) -> Result<()> {
         self.codec.write_reply(self.stream.get_mut(), reply)
+    }
+}
+
+#[cfg(test)]
+mod meta_socket_authority_tests {
+    use super::*;
+
+    /// The connecting peer of a same-process socket pair carries this process's
+    /// own uid, so the owning-uid authority admits it — the operator path.
+    #[test]
+    fn admits_the_owning_uid() {
+        let (near, _far) = UnixStream::pair().expect("socket pair");
+        let ours = rustix::net::sockopt::socket_peercred(&near)
+            .expect("peer credentials")
+            .uid
+            .as_raw();
+        let authority = MetaSocketAuthority { owner_uid: ours };
+        assert!(authority.authorize(&near).is_ok());
+    }
+
+    /// A peer whose uid does not match the socket owner is refused before any
+    /// meta request is read — the kernel-enforced non-owner boundary.
+    #[test]
+    fn refuses_a_non_owner_uid() {
+        let (near, _far) = UnixStream::pair().expect("socket pair");
+        let ours = rustix::net::sockopt::socket_peercred(&near)
+            .expect("peer credentials")
+            .uid
+            .as_raw();
+        let authority = MetaSocketAuthority {
+            owner_uid: ours.wrapping_add(1),
+        };
+        assert!(matches!(
+            authority.authorize(&near),
+            Err(Error::MetaSocketUnauthorized { .. })
+        ));
     }
 }

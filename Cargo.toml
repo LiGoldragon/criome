@@ -60,6 +60,7 @@ kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "mai
 nota-next    = { package = "nota", git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
 meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "criome-authorization-push" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+rustix       = { version = "1", features = ["net"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "criome-authorization-push" }

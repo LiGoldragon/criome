@@ -57,6 +57,8 @@ pub enum Error {
     FlagArgument(String),
     #[error("socket does not exist: {}", .path.display())]
     MissingSocket { path: PathBuf },
+    #[error("meta socket connection refused: peer uid {uid} is not the owning uid {owner_uid}")]
+    MetaSocketUnauthorized { uid: u32, owner_uid: u32 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
