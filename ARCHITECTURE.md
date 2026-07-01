@@ -16,8 +16,7 @@ authorization decisions, and privilege elevations.*
 > the auth/identity slice. It does not carry the eventual
 > scope; today's daemon is one realization step on the
 > eventually-self-hosting stack, built rightly for the scope
-> it serves now (per `~/primary/ESSENCE.md` §"Today and
-> eventually").
+> it serves now (per `~/primary/ARCHITECTURE.md` §"Workspace vision and intent").
 
 > **Place in Telos.** Telos is the umbrella meta-project (Greek:
 > ultimate end) — the far-horizon eventual Criome plus Sema, realized
