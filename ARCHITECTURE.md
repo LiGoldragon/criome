@@ -456,7 +456,7 @@ The headline boundaries:
 | `mind` | `AttestChannelGrant`, `AttestAuthorization` | Mind requests attestations before forwarding decisions to router. |
 | `router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
-| `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
+| Lojix | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
 | Signal-requesting daemon | `AuthorizeSignalCall`, `VerifyAuthorization`; `ObserveAuthorization` only when it already holds a slot | The requester submits an exact Signal request digest, receives the submit-open lifecycle stream until terminal grant/rejection/expiry/closure, and verifies grants before local effects. |
 | `criome` CLI (meta) | `meta-signal-criome` | The authority Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
 | `tui-criome` (meta, long-running) | `meta-signal-criome` | The authority's long-running interactive client. Same contract as the CLI, but stays connected to receive approval-request push events and answer them. Not a separate triad daemon. |
@@ -498,7 +498,7 @@ constraints:
 - Channel grants without a valid attestation do not
   install in router.
 - Archive deployments without a valid attestation abort
-  in lojix-cli.
+  in Lojix before effects begin.
 - Lojix deploy effects do not begin until the `AuthorizeSignalCall`
   request-scoped stream returns `AuthorizationGranted` for the exact
   request digest and requested scope.
