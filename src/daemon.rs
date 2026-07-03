@@ -3,6 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use kameo::actor::ActorRef;
@@ -14,9 +15,10 @@ use crate::actors::root::{
 };
 use crate::tables::StoreLocation;
 use crate::transport::{CriomeFrameCodec, CriomeMetaFrameCodec};
+use crate::voice::{QuorumVoice, SilentVoice};
 use crate::{Error, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct CriomeDaemon {
     socket: PathBuf,
     meta_socket: PathBuf,
@@ -24,6 +26,7 @@ pub struct CriomeDaemon {
     cluster_root: Option<BlsPublicKey>,
     authorization_mode: AuthorizationMode,
     node_identity: Identity,
+    voice: Arc<dyn QuorumVoice>,
 }
 
 pub use signal_criome::CriomeDaemonConfiguration;
@@ -44,6 +47,7 @@ impl CriomeDaemon {
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
             node_identity: RootArguments::default_node_identity(),
+            voice: Arc::new(SilentVoice),
         }
     }
 
@@ -64,6 +68,7 @@ impl CriomeDaemon {
             cluster_root: configuration.cluster_root().cloned(),
             authorization_mode: *configuration.authorization_mode(),
             node_identity,
+            voice: Arc::new(SilentVoice),
         }
     }
 
@@ -93,6 +98,13 @@ impl CriomeDaemon {
 
     pub fn with_authorization_mode(mut self, authorization_mode: AuthorizationMode) -> Self {
         self.authorization_mode = authorization_mode;
+        self
+    }
+
+    /// Arm this node's quorum voice — how it conveys solicitations and votes to
+    /// peer members. Unset, the node self-votes but originates no solicitation.
+    pub fn with_quorum_voice(mut self, voice: Arc<dyn QuorumVoice>) -> Self {
+        self.voice = voice;
         self
     }
 
@@ -128,6 +140,7 @@ impl CriomeDaemon {
             cluster_root: self.cluster_root,
             authorization_mode: self.authorization_mode,
             node_identity: self.node_identity,
+            voice: self.voice,
         }))?;
         Ok(BoundCriomeDaemon {
             socket: self.socket,

@@ -4,18 +4,24 @@ use meta_signal_criome::{
     AuthorizationApproval, AuthorizationApprovalDecision, AuthorizationApprovalRecorded,
     ConfigurationRejectionReason, OperationKind, RequestUnimplemented, UnimplementedReason,
 };
+use std::sync::Arc;
+
 use signal_criome::{
-    AuthorizationAttestationRequest, AuthorizationDenial, AuthorizationDenialReason,
-    AuthorizationDenialSource, AuthorizationEvaluated, AuthorizationEvaluation, AuthorizationMode,
-    AuthorizationObservationToken, AuthorizationPending, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectUpdate,
-    AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected, ContractAdmitted,
-    ContractFound, ContractMissing, CriomeDaemonConfiguration, CriomeReply, CriomeRequest,
-    EvaluationDecision, Identity, IdentityRegistration, IdentitySubscriptionToken,
-    InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose, ParkedAuthorization,
+    AttestedMoment, AttestedMomentProposition, AuthorizationAttestationRequest, AuthorizationDenial,
+    AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluated,
+    AuthorizationEvaluation, AuthorizationMode, AuthorizationObservationToken, AuthorizationPending,
+    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus,
+    AuthorizedObjectReference, AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey,
+    ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing,
+    CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity,
+    IdentityRegistration, IdentitySubscriptionToken, InterceptPolicyCancellation,
+    InterceptPolicyProposal, KeyPurpose, OperationDigest, ParkedAuthorization,
     ParkedAuthorizationObservation, ParkedAuthorizationSnapshot, ParkedRequestAnswer,
     ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest,
-    RejectionReason, SignalCallAuthorization, SpiritAuthorizationContext, TimestampNanos,
+    PolicyMember, QuorumProposal, QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus,
+    QuorumVote, QuorumVoteSolicitation, RejectionReason, RequiredSignatureThreshold, Rule,
+    SignalCallAuthorization, SpiritAuthorizationContext, StampedSignatureEnvelope, TimeSignature,
+    TimestampNanos,
 };
 
 use crate::actors::{
@@ -26,6 +32,8 @@ use crate::admission::ClusterRoot;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
 use crate::master_key::SystemClock;
+use crate::tables::StoredQuorumRound;
+use crate::voice::{QuorumVoice, SilentVoice};
 use crate::{Error, Result, StoreLocation};
 
 pub struct CriomeRoot {
@@ -37,6 +45,11 @@ pub struct CriomeRoot {
     store: ActorRef<store::StoreKernel>,
     authorization_mode: AuthorizationMode,
     configuration_generation: u64,
+    /// The identity this node casts its quorum votes as — the same identity its
+    /// master key is registered under, so a peer's registry verifies its votes.
+    node_identity: Identity,
+    /// How this node conveys solicitations and votes to peer members' criomes.
+    voice: Arc<dyn QuorumVoice>,
 }
 
 pub struct Arguments {
@@ -47,6 +60,10 @@ pub struct Arguments {
     /// keeps the historical `Host("criome")`; a multi-node cluster gives each
     /// node a distinct identity so peers cross-verify by registered key.
     pub node_identity: Identity,
+    /// How this node conveys quorum solicitations and votes to peer members.
+    /// Defaults to the unarmed [`SilentVoice`]; a deployment supplies a
+    /// router-mediated or direct-dial voice.
+    pub voice: Arc<dyn QuorumVoice>,
 }
 
 pub struct SubmitRequest {
@@ -80,7 +97,15 @@ impl Arguments {
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
             node_identity: Self::default_node_identity(),
+            voice: Arc::new(SilentVoice),
         }
+    }
+
+    /// Arm this node's quorum voice (router-mediated or direct-dial). Absent, the
+    /// node self-votes but originates no solicitation.
+    pub fn with_voice(mut self, voice: Arc<dyn QuorumVoice>) -> Self {
+        self.voice = voice;
+        self
     }
 
     /// The historical single-node signing identity, used when a deployment does
@@ -145,6 +170,7 @@ impl CriomeTopology {
 }
 
 impl CriomeRoot {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         registry: ActorRef<registry::IdentityRegistry>,
         signer: ActorRef<signer::AttestationSigner>,
@@ -153,6 +179,8 @@ impl CriomeRoot {
         subscription: ActorRef<subscription::SubscriptionRegistry>,
         store: ActorRef<store::StoreKernel>,
         authorization_mode: AuthorizationMode,
+        node_identity: Identity,
+        voice: Arc<dyn QuorumVoice>,
     ) -> Self {
         Self {
             registry,
@@ -163,6 +191,8 @@ impl CriomeRoot {
             store,
             authorization_mode,
             configuration_generation: 0,
+            node_identity,
+            voice,
         }
     }
 
@@ -305,6 +335,16 @@ impl CriomeRoot {
             CriomeRequest::AuthorizationObservationRetraction(token) => {
                 self.ask_authorization(authorization::CloseAuthorizationObservation::new(token))
                     .await
+            }
+            CriomeRequest::ProposeQuorumAuthorization(proposal) => {
+                self.propose_quorum_authorization(proposal).await
+            }
+            CriomeRequest::SolicitQuorumVote(solicitation) => {
+                self.solicit_quorum_vote(solicitation).await
+            }
+            CriomeRequest::SubmitQuorumVote(vote) => self.submit_quorum_vote(vote).await,
+            CriomeRequest::ObserveQuorumRound(query) => {
+                self.observe_quorum_round(query.into_payload()).await
             }
         }
     }
@@ -1160,6 +1200,283 @@ impl CriomeRoot {
         }
         Some(key_registry)
     }
+
+    // ─── Quorum collection (propose → gather → judge → commit) ────────────────
+    //
+    // The genuinely new consensus core. An originating node proposes an
+    // operation under an admitted Threshold contract, casts its own BLS vote,
+    // solicits each peer member's vote across the voice, collects the stamped
+    // signatures into a durable round, and feeds the assembled Evidence to the
+    // EXISTING majority-judge (`ContractStore::evaluate`, reused unchanged). A
+    // round is WITHHELD (`Gathering`) until the judge returns `Authorized`; an
+    // unreachable peer leaves it pending forever. Below-majority Evidence is
+    // refused fail-closed by the same judge.
+
+    /// Propose (originator). Derive the moment from the contract's members, cast
+    /// the self-vote, open the durable round, solicit each peer, and return the
+    /// withheld round state.
+    async fn propose_quorum_authorization(&self, proposal: QuorumProposal) -> CriomeReply {
+        let QuorumProposal {
+            round,
+            contract,
+            object,
+            window,
+        } = proposal;
+        let Some(store) = self.contract_store().await else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        let Some((required, members)) = self.quorum_members(&store, &contract) else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        let proposition = AttestedMomentProposition::new(window, required, members);
+        let self_vote = match self.cast_quorum_vote(&round, &object, &proposition).await {
+            Ok(vote) => vote,
+            Err(reply) => return reply,
+        };
+        let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
+        stored.record_vote(self_vote);
+        if self.persist_quorum_round(stored.clone()).await.is_err() {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+        self.solicit_peers(&stored);
+        CriomeReply::QuorumRoundOpened(self.round_state(&stored).await)
+    }
+
+    /// Peer vote. Independently re-validate the solicitation (contract admitted
+    /// here, this node is a member), cast this node's vote, convey it back to the
+    /// originator across the voice, and record it locally for idempotent redial.
+    async fn solicit_quorum_vote(&self, solicitation: QuorumVoteSolicitation) -> CriomeReply {
+        let QuorumVoteSolicitation {
+            round,
+            contract,
+            object,
+            proposition,
+            originator,
+        } = solicitation;
+        let Some(store) = self.contract_store().await else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        let Some((required, members)) = self.quorum_members(&store, &contract) else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        if !members.contains(&self.node_identity) {
+            return rejection(RejectionReason::UnknownIdentity);
+        }
+        // Independent re-validation: the moment this node time-attests must name
+        // the FULL contract member set with the contract's majority threshold, so
+        // a dishonest originator cannot make the peer time-sign a degenerate
+        // moment (e.g. a self-only time authority) that weakens the time-quorum.
+        if !self.proposition_matches_members(&proposition, required, &members) {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+        let vote = match self.cast_quorum_vote(&round, &object, &proposition).await {
+            Ok(vote) => vote,
+            Err(reply) => return reply,
+        };
+        let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
+        stored.record_vote(vote.clone());
+        let _ = self.persist_quorum_round(stored.clone()).await;
+        self.voice
+            .convey(&originator, CriomeRequest::submit_quorum_vote(vote));
+        CriomeReply::QuorumVoteSolicited(self.round_state(&stored).await)
+    }
+
+    /// A peer's vote arrived. Record it into the round, re-judge, and — on a true
+    /// majority — publish the authorized-object update so subscribers converge.
+    async fn submit_quorum_vote(&self, vote: QuorumVote) -> CriomeReply {
+        let Some(mut stored) = self.stored_quorum_round(&vote.round).await else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        stored.record_vote(vote);
+        if self.persist_quorum_round(stored.clone()).await.is_err() {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+        let state = self.round_state(&stored).await;
+        if state.status == QuorumRoundStatus::Authorized {
+            let stamp = self.assemble_evidence(&stored).stamp;
+            self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                object: stored.object().clone(),
+                contract: stored.contract().clone(),
+                decision: EvaluationDecision::Authorized,
+                stamp,
+            })
+            .await;
+        }
+        CriomeReply::QuorumVoteAccepted(state)
+    }
+
+    /// Read a round's current withheld/authorized state.
+    async fn observe_quorum_round(&self, round: QuorumRoundIdentifier) -> CriomeReply {
+        match self.stored_quorum_round(&round).await {
+            Some(stored) => CriomeReply::QuorumRoundObserved(self.round_state(&stored).await),
+            None => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
+    /// The withheld-until-authorized rule made concrete: assemble the Evidence
+    /// from the gathered votes and hand it to the reused majority-judge. Only an
+    /// `Authorized` verdict carries the Evidence; anything short stays `Gathering`.
+    async fn round_state(&self, stored: &StoredQuorumRound) -> QuorumRoundState {
+        let evidence = self.assemble_evidence(stored);
+        let gathered = RequiredSignatureThreshold::new(stored.votes().len() as u64);
+        let store = self.contract_store().await;
+        let registry = self.key_registry().await;
+        let required = store
+            .as_ref()
+            .and_then(|store| self.quorum_members(store, stored.contract()))
+            .map(|(required, _members)| required)
+            .unwrap_or_else(|| RequiredSignatureThreshold::new(0));
+        let authorized = match (&store, &registry) {
+            (Some(store), Some(registry)) => matches!(
+                store.evaluate(stored.contract(), &evidence, registry),
+                Ok(EvaluationDecision::Authorized)
+            ),
+            _ => false,
+        };
+        let (status, authorized_evidence) = if authorized {
+            (QuorumRoundStatus::Authorized, Some(evidence))
+        } else {
+            (QuorumRoundStatus::Gathering, None)
+        };
+        QuorumRoundState {
+            round: stored.round().clone(),
+            contract: stored.contract().clone(),
+            status,
+            gathered,
+            required,
+            authorized_evidence,
+        }
+    }
+
+    /// Wrap the gathered votes into the `Evidence` the judge consumes: one shared
+    /// `AttestedMoment` carrying every member's time signature, and one stamped
+    /// operation signature per member.
+    fn assemble_evidence(&self, stored: &StoredQuorumRound) -> Evidence {
+        let stamp = AttestedMoment::new(
+            stored.proposition().clone(),
+            stored
+                .votes()
+                .iter()
+                .map(|vote| TimeSignature {
+                    signer: vote.voter.clone(),
+                    envelope: vote.time_signature.clone(),
+                })
+                .collect(),
+        );
+        let evidence_signatures = stored
+            .votes()
+            .iter()
+            .map(|vote| StampedSignatureEnvelope {
+                stamp: stamp.clone(),
+                envelope: vote.operation_signature.clone(),
+            })
+            .collect();
+        let operation = OperationDigest::new(stored.object().digest.clone());
+        Evidence::new(
+            stored.object().component,
+            operation,
+            stamp,
+            evidence_signatures,
+            Vec::new(),
+        )
+    }
+
+    /// Cast this node's vote and time attestation over `object` under `proposition`.
+    async fn cast_quorum_vote(
+        &self,
+        round: &QuorumRoundIdentifier,
+        object: &AuthorizedObjectReference,
+        proposition: &AttestedMomentProposition,
+    ) -> std::result::Result<QuorumVote, CriomeReply> {
+        let operation = OperationDigest::new(object.digest.clone());
+        let signatures = self
+            .signer
+            .ask(signer::SignQuorumVote::new(operation, proposition.clone()))
+            .await
+            .map_err(|_error| rejection(RejectionReason::MalformedRequest))?;
+        Ok(QuorumVote {
+            round: round.clone(),
+            voter: self.node_identity.clone(),
+            operation_signature: signatures.operation_signature,
+            time_signature: signatures.time_signature,
+        })
+    }
+
+    /// Solicit every peer member (contract members other than this node) across
+    /// the voice. Best-effort: an unreachable peer leaves the round pending.
+    fn solicit_peers(&self, stored: &StoredQuorumRound) {
+        for peer in stored.proposition().authorities() {
+            if peer == &self.node_identity {
+                continue;
+            }
+            let solicitation = QuorumVoteSolicitation {
+                round: stored.round().clone(),
+                contract: stored.contract().clone(),
+                object: stored.object().clone(),
+                proposition: stored.proposition().clone(),
+                originator: self.node_identity.clone(),
+            };
+            self.voice
+                .convey(peer, CriomeRequest::solicit_quorum_vote(solicitation));
+        }
+    }
+
+    /// The `KeyMember` identities and required threshold of an admitted Threshold
+    /// contract. Returns `None` for a missing contract or a non-Threshold rule —
+    /// quorum collection governs only Threshold contracts.
+    fn quorum_members(
+        &self,
+        store: &ContractStore,
+        contract: &signal_criome::ContractDigest,
+    ) -> Option<(RequiredSignatureThreshold, Vec<Identity>)> {
+        let Rule::Threshold(threshold) = store.resolve(contract).ok()?.payload() else {
+            return None;
+        };
+        let members = threshold
+            .members()
+            .iter()
+            .filter_map(|member| match member {
+                PolicyMember::KeyMember(identity) => Some(identity.clone()),
+                PolicyMember::ObjectMember(_) => None,
+            })
+            .collect();
+        Some((threshold.required_signatures, members))
+    }
+
+    /// Whether a solicited moment proposition names exactly this contract's member
+    /// set (as a set) with its majority threshold — the peer's guard against
+    /// time-attesting a moment weaker than the operation quorum it authorizes.
+    fn proposition_matches_members(
+        &self,
+        proposition: &AttestedMomentProposition,
+        required: RequiredSignatureThreshold,
+        members: &[Identity],
+    ) -> bool {
+        let authorities = proposition.authorities();
+        proposition.required_signatures.into_u16() == required.into_u16()
+            && authorities.len() == members.len()
+            && members.iter().all(|member| authorities.contains(member))
+    }
+
+    async fn persist_quorum_round(&self, round: StoredQuorumRound) -> Result<StoredQuorumRound> {
+        let reply = self
+            .store
+            .ask(store::StoreQuorumRound::new(round))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_round())
+    }
+
+    async fn stored_quorum_round(
+        &self,
+        round: &QuorumRoundIdentifier,
+    ) -> Option<StoredQuorumRound> {
+        self.store
+            .ask(store::LookupQuorumRound::new(round.clone()))
+            .await
+            .ok()?
+            .into_round()
+    }
 }
 
 impl Actor for CriomeRoot {
@@ -1173,6 +1490,8 @@ impl Actor for CriomeRoot {
         let master_key_path = arguments.store.as_path().with_extension("masterkey");
         let master_key = MasterKey::load_or_generate(&master_key_path)?;
         let criome_identity = arguments.node_identity;
+        let node_identity = criome_identity.clone();
+        let voice = arguments.voice;
         let cluster_root = arguments.cluster_root.map(ClusterRoot::new);
 
         let store = store::StoreKernel::supervise(&actor_reference, arguments.store)
@@ -1268,6 +1587,8 @@ impl Actor for CriomeRoot {
             subscription,
             store,
             arguments.authorization_mode,
+            node_identity,
+            voice,
         ))
     }
 }

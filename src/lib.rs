@@ -17,6 +17,7 @@ pub mod tables;
 #[cfg(feature = "nota-text")]
 pub mod text;
 pub mod transport;
+pub mod voice;
 
 pub use error::{Error, Result};
 pub use kameo::actor::ActorRef;

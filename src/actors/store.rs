@@ -6,14 +6,15 @@ use signal_criome::{
     Contract, ContractAdmissionRejectionReason, ContractDigest, Identity, IdentityRegistration,
     IdentityRevocation, InterceptPolicyCancellation, InterceptPolicyProposal, ObjectDigest,
     ParkedRequestAnswer, ParkedRequestQuery, ParkedRequestResolution, ParkedRequestSnapshot,
-    SignatureSolicitationRoute, SignatureSubmission, SpiritAuthorizationContext, TimestampNanos,
+    QuorumRoundIdentifier, SignatureSolicitationRoute, SignatureSubmission,
+    SpiritAuthorizationContext, TimestampNanos,
 };
 
 use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
     AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, InterceptPolicyDraft,
     StoreLocation, StoredAttestation, StoredAuthorizationState, StoredContract, StoredIdentity,
-    StoredInterceptPolicy, StoredParkedSpiritRequest, StoredRevocation,
+    StoredInterceptPolicy, StoredParkedSpiritRequest, StoredQuorumRound, StoredRevocation,
     StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
@@ -76,6 +77,14 @@ pub struct StoreSignatureSolicitation {
 
 pub struct StoreSignatureSubmission {
     submission: SignatureSubmission,
+}
+
+pub struct StoreQuorumRound {
+    round: StoredQuorumRound,
+}
+
+pub struct LookupQuorumRound {
+    round: QuorumRoundIdentifier,
 }
 
 pub struct StoreInterceptPolicy {
@@ -184,6 +193,16 @@ pub struct StoredSignatureSolicitationReply {
 #[derive(kameo::Reply)]
 pub struct StoredSignatureSubmissionReply {
     submission: StoredSignatureSubmission,
+}
+
+#[derive(kameo::Reply)]
+pub struct StoredQuorumRoundReply {
+    round: StoredQuorumRound,
+}
+
+#[derive(kameo::Reply)]
+pub struct LookupQuorumRoundReply {
+    round: Option<StoredQuorumRound>,
 }
 
 #[derive(kameo::Reply)]
@@ -369,6 +388,30 @@ impl StoreSignatureSolicitation {
 impl StoreSignatureSubmission {
     pub fn new(submission: SignatureSubmission) -> Self {
         Self { submission }
+    }
+}
+
+impl StoreQuorumRound {
+    pub fn new(round: StoredQuorumRound) -> Self {
+        Self { round }
+    }
+}
+
+impl LookupQuorumRound {
+    pub fn new(round: QuorumRoundIdentifier) -> Self {
+        Self { round }
+    }
+}
+
+impl StoredQuorumRoundReply {
+    pub fn into_round(self) -> StoredQuorumRound {
+        self.round
+    }
+}
+
+impl LookupQuorumRoundReply {
+    pub fn into_round(self) -> Option<StoredQuorumRound> {
+        self.round
     }
 }
 
@@ -708,6 +751,18 @@ impl StoreKernel {
         Ok(stored)
     }
 
+    fn store_quorum_round(&self, round: StoredQuorumRound) -> crate::Result<StoredQuorumRound> {
+        self.tables.put_quorum_round(&round)?;
+        Ok(round)
+    }
+
+    fn quorum_round(
+        &self,
+        round: &QuorumRoundIdentifier,
+    ) -> crate::Result<Option<StoredQuorumRound>> {
+        self.tables.quorum_round(round)
+    }
+
     fn store_intercept_policy(
         &self,
         draft: InterceptPolicyDraft,
@@ -947,6 +1002,32 @@ impl Message<StoreSignatureSubmission> for StoreKernel {
     ) -> Self::Reply {
         self.store_signature_submission(message.submission)
             .map(|submission| StoredSignatureSubmissionReply { submission })
+    }
+}
+
+impl Message<StoreQuorumRound> for StoreKernel {
+    type Reply = crate::Result<StoredQuorumRoundReply>;
+
+    async fn handle(
+        &mut self,
+        message: StoreQuorumRound,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_quorum_round(message.round)
+            .map(|round| StoredQuorumRoundReply { round })
+    }
+}
+
+impl Message<LookupQuorumRound> for StoreKernel {
+    type Reply = crate::Result<LookupQuorumRoundReply>;
+
+    async fn handle(
+        &mut self,
+        message: LookupQuorumRound,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.quorum_round(&message.round)
+            .map(|round| LookupQuorumRoundReply { round })
     }
 }
 

@@ -6,12 +6,13 @@ use signal_criome::{
     AttestedMomentProposition, AuditContext, AuthorizationGrant, AuthorizationPolicyClass,
     AuthorizationPolicySatisfaction, AuthorizationRequestSlot, BlsSignature,
     ChannelGrantAttestationRequest, ContentPurpose, ContentReference, CriomeReply, Identity,
-    RejectionReason, RequiredSignatureThreshold, SignReceipt, SignRequest, SignalCallAuthorization,
-    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
-    TimeWindow, TimestampNanos,
+    OperationDigest, RejectionReason, RequiredSignatureThreshold, SignReceipt, SignRequest,
+    SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme,
+    StampedSignatureEnvelope, TimeWindow, TimestampNanos,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, store};
+use crate::language::{AttestedMomentStatement, OperationStatement};
 use crate::master_key::{AttestationPreimage, MasterKey, SystemClock};
 use crate::tables::StoredIdentity;
 
@@ -52,6 +53,25 @@ pub struct AttestAuthorization {
 pub struct SignAuthorizationGrant {
     request_slot: AuthorizationRequestSlot,
     authorization: SignalCallAuthorization,
+}
+
+/// Cast this node's quorum vote: sign the operation statement and time-sign the
+/// attested moment with the master key, as the node's own identity. Unlike
+/// `SignContent`, this mints no attestation record — a vote is a ballot, not an
+/// attestation — and it is not identity-gated: criome always votes as itself.
+pub struct SignQuorumVote {
+    operation: OperationDigest,
+    proposition: AttestedMomentProposition,
+}
+
+/// The two BLS signatures a single member contributes to a quorum round: one
+/// over the `OperationStatement` (the vote), one over the moment proposition
+/// (the time attestation). The originator wraps these into the assembled
+/// `Evidence` when it judges the round.
+#[derive(Clone, Debug, kameo::Reply)]
+pub struct QuorumVoteSignatures {
+    pub operation_signature: SignatureEnvelope,
+    pub time_signature: SignatureEnvelope,
 }
 
 struct AuthorizationGrantStatement<'a> {
@@ -95,6 +115,15 @@ impl SignAuthorizationGrant {
         Self {
             request_slot,
             authorization,
+        }
+    }
+}
+
+impl SignQuorumVote {
+    pub fn new(operation: OperationDigest, proposition: AttestedMomentProposition) -> Self {
+        Self {
+            operation,
+            proposition,
         }
     }
 }
@@ -308,6 +337,36 @@ impl AttestationSigner {
         CriomeReply::AuthorizationGranted(grant)
     }
 
+    /// Cast this node's vote and time attestation over `operation` under the
+    /// shared moment `proposition`. Both preimages fold the proposition digest,
+    /// so every member signs the same moment; the originator re-stamps these
+    /// envelopes against the assembled moment when it judges.
+    fn sign_quorum_vote(
+        &self,
+        operation: &OperationDigest,
+        proposition: &AttestedMomentProposition,
+    ) -> crate::Result<QuorumVoteSignatures> {
+        let provisional_stamp = AttestedMoment::new(proposition.clone(), Vec::new());
+        let operation_bytes = OperationStatement::new(&self.criome_identity, operation, &provisional_stamp)
+            .to_signing_bytes()
+            .map_err(|error| crate::Error::VoteSigning(error.to_string()))?;
+        let moment_bytes = AttestedMomentStatement::new(proposition)
+            .to_signing_bytes()
+            .map_err(|error| crate::Error::VoteSigning(error.to_string()))?;
+        Ok(QuorumVoteSignatures {
+            operation_signature: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: self.master_key.public_key(),
+                signature: self.master_key.sign(&operation_bytes),
+            },
+            time_signature: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: self.master_key.public_key(),
+                signature: self.master_key.sign(&moment_bytes),
+            },
+        })
+    }
+
     fn grant_stamp(&self, issued_at: TimestampNanos) -> AttestedMoment {
         AttestedMoment::new(
             AttestedMomentProposition::new(
@@ -429,6 +488,18 @@ impl Message<SignAuthorizationGrant> for AttestationSigner {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         actor_reply(self.sign_authorization_grant(message).await)
+    }
+}
+
+impl Message<SignQuorumVote> for AttestationSigner {
+    type Reply = crate::Result<QuorumVoteSignatures>;
+
+    async fn handle(
+        &mut self,
+        message: SignQuorumVote,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.sign_quorum_vote(&message.operation, &message.proposition)
     }
 }
 

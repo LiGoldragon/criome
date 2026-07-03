@@ -57,6 +57,12 @@ pub enum Error {
     FlagArgument(String),
     #[error("socket does not exist: {}", .path.display())]
     MissingSocket { path: PathBuf },
+    #[error("quorum vote signing failed: {0}")]
+    VoteSigning(String),
+    #[error("quorum round is not governed by a threshold contract")]
+    QuorumContractNotThreshold,
+    #[error("quorum voice delivery failed: {0}")]
+    VoiceDelivery(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

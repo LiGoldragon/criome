@@ -502,6 +502,62 @@ daemons and nodes comes in a later slice. This is distinct from the
 peer-routing table's predictable-socket-name addressing of an
 already-registered peer described above (Spirit `burk`).
 
+### 6.2 Quorum collection — propose → gather → judge → commit
+
+**The validity rule.** A change is valid only when a *majority of the nodes'
+criomes* authorize it — quorum authorizes, or nothing changes. This is
+M-of-N in the general case (2-of-2 for the standing mirror pair); the strict
+majority is enforced at contract admission (`QuorumShape::is_valid_majority`).
+An originating node's *own* change is withheld until a peer co-signs: agreement
+or nothing, never last-writer-wins.
+
+The quorum *judge* was already built and wired (`ContractStore::evaluate`,
+`Threshold::decide`, `Evidence::has_valid_signature_from` — real per-signer BLS
+against admitted keys, fail-closed). What this slice adds is the *collection
+driver* that gathers the votes across the voice and feeds them to that judge.
+The driver lives on `CriomeRoot` and is exercised over the `signal-criome`
+contract-quorum ops (`ProposeQuorumAuthorization`, `SolicitQuorumVote`,
+`SubmitQuorumVote`, `ObserveQuorumRound`); it is deliberately distinct from the
+1-of-1 signal-call skeleton (`RouteSignatureRequest` / `SubmitSignature`).
+
+The round, for an operation authorized under an admitted `Threshold` contract:
+
+1. **Propose (originator).** The originating criome derives the attested-moment
+   proposition from the contract's members (authorities = the `KeyMember`
+   identities, threshold = the contract's), casts its own vote — a BLS signature
+   over the `OperationStatement` plus a time-signature over the moment — and
+   opens a durable round (the `quorum_rounds` table). One vote is one short of a
+   2-of-2 majority, so the round is `Gathering`.
+2. **Gather (across the voice).** The criome hands a `SolicitQuorumVote` package
+   to its voice — the router's opaque routed-object carriage (a `signal-criome`
+   request wrapped as a `RoutedContractObject`), or a direct peer-socket dial for
+   the single-host multi-user mode. If the peer is unreachable the package does
+   not arrive; the round simply **waits**, still `Gathering`. Nothing commits.
+3. **Peer vote.** The peer criome independently re-validates the solicitation
+   (contract admitted here, this node is a member), casts its own vote over the
+   *same* moment proposition, and conveys the `SubmitQuorumVote` back across the
+   voice. Both nodes signing the same proposition is what lets one assembled
+   `AttestedMoment` carry a proven time-quorum.
+4. **Judge.** The originator records each arriving vote into the durable round,
+   assembles the `Evidence` (one shared moment with every time-signature; one
+   stamped operation signature per member), and calls the reused
+   `evaluate_authorization`. `Authorized` iff a true majority co-signed;
+   otherwise the round stays `Gathering` (withheld). A below-majority Evidence is
+   refused `QuorumShort` fail-closed.
+5. **Commit.** On `Authorized` the round carries the assembled Evidence and the
+   node publishes the authorized-object update so subscribers converge. The
+   originating Spirit ships {authorized entry + Evidence} to the peer Spirit.
+
+**Independent re-judge on apply.** The applying node hands the carried Evidence
+to its *own* criome's `evaluate_authorization` before touching its store — every
+node confirms the majority for itself from the signatures, fail-closed. This
+dissolves "trust the sender" into the normal case "judge locally", so redelivery
+after a crash is safe and lands the same content-addressed head.
+
+The durable outbound backlog and push redial that let a parked solicitation
+survive a restart and drain on reconnect are a following slice; today an
+unreachable peer leaves the round pending until the next proposal.
+
 
 ## 7 · Integration map
 
@@ -516,7 +572,8 @@ The headline boundaries:
 | `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
 | `criome` CLI (meta) | `meta-signal-criome` | The authority Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
 | `tui-criome` (meta, long-running) | `meta-signal-criome` | The authority's long-running interactive client. Same contract as the CLI, but stays connected to receive approval-request push events and answer them. Not a separate triad daemon. |
-| Peer criome daemons | `signal-criome` (peer routing) | Receive `RouteSignatureRequest` for quorum solicitations; reply with `SubmitSignature` or `RejectAuthorization`. Found by predictable socket name (§6.1). |
+| Peer criome daemons | `signal-criome` (contract-quorum, §6.2) | Receive `SolicitQuorumVote`, independently re-validate and cast vote #2, and convey `SubmitQuorumVote` back — across the router's opaque routed-object carriage (the voice) or a direct peer-socket dial. The 1-of-1 `RouteSignatureRequest` / `SubmitSignature` signal-call skeleton is a separate surface. |
+| `router` (as the voice) | `signal-router` `SubmitRoutedObjects` | criome originates a solicitation/vote as one `RoutedContractObject` to its local router, which carries it opaquely to the peer node and delivers the octets to the peer criome's working socket unchanged. No router source knows criome's payload. |
 | ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
 | Future audit-policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
 
@@ -779,13 +836,23 @@ src/actors/store.rs        StoreKernel + criome.sema tables
 src/tables.rs              component-local sema-engine table facade
 src/text.rs                Nexus/NOTA projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
+src/voice.rs               quorum voice (router-mediated / direct-dial / silent)
 src/command.rs             CLI client process-boundary logic
 src/daemon.rs              Unix-socket daemon wrapper around CriomeRoot
+tests/quorum_collection.rs two-daemon 2-of-2 gather + withhold witness
 tests/*.rs                 round-trip + architectural-truth tests
 ```
 
+The quorum-collection driver (§6.2) lives on `CriomeRoot`
+(`propose_quorum_authorization` / `solicit_quorum_vote` /
+`submit_quorum_vote` / `observe_quorum_round`), signs votes in
+`AttestationSigner::sign_quorum_vote`, and persists each round in the
+durable `quorum_rounds` table (`StoredQuorumRound`). `signal-router` is a
+dependency solely for the router-mediated voice.
+
 Cargo dependencies after the rewrite: `signal-frame`,
-`signal-criome`, `kameo`, `sema-engine`, `tokio`, `thiserror`,
+`signal-criome`, `signal-router` (the quorum voice only),
+`kameo`, `sema-engine`, `tokio`, `thiserror`,
 `triad-runtime`, `rkyv`, `blst`, `blake3`, `nota-next`.
 **Drops** the retired `signal` and `ractor` dependencies.
 

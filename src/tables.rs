@@ -12,16 +12,17 @@ use sema_engine::{
     VersionedStoreName, VersioningPolicy,
 };
 use signal_criome::{
-    ActiveInterceptPolicies, ApprovalAuditSource, Attestation, AuthorizationDenial,
-    AuthorizationEvaluation, AuthorizationGrant, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, BlsPublicKey, Contract, ContractDigest,
-    ExpiryAction, Identity, IdentityReceipt, IdentityRegistration, IdentityRevocation,
-    InterceptPolicies, InterceptPolicy, InterceptPolicyIdentifier, InterceptPolicyProposal,
-    InterceptPolicyWindow, KeyPurpose, ObjectDigest, ParkedRequestAnswer, ParkedRequestDecision,
-    ParkedRequestIdentifier, ParkedRequestOutcome, ParkedRequestQuery, ParkedRequestResolution,
-    ParkedRequestSnapshot, ParkedSpiritRequest, ParkedSpiritRequests, PolicyOverlapMode,
-    PrincipalName, PrincipalStatus, PublicKeyFingerprint, ReplayNonce, SignatureSolicitationRoute,
-    SignatureSubmission, SpiritAuthorizationContext, TimestampNanos,
+    ActiveInterceptPolicies, ApprovalAuditSource, Attestation, AttestedMomentProposition,
+    AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference, BlsPublicKey, Contract,
+    ContractDigest, ExpiryAction, Identity, IdentityReceipt, IdentityRegistration,
+    IdentityRevocation, InterceptPolicies, InterceptPolicy, InterceptPolicyIdentifier,
+    InterceptPolicyProposal, InterceptPolicyWindow, KeyPurpose, ObjectDigest, ParkedRequestAnswer,
+    ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestOutcome, ParkedRequestQuery,
+    ParkedRequestResolution, ParkedRequestSnapshot, ParkedSpiritRequest, ParkedSpiritRequests,
+    PolicyOverlapMode, PrincipalName, PrincipalStatus, PublicKeyFingerprint, QuorumRoundIdentifier,
+    QuorumVote, ReplayNonce, SignatureSolicitationRoute, SignatureSubmission,
+    SpiritAuthorizationContext, TimestampNanos,
 };
 
 use crate::Result;
@@ -35,6 +36,7 @@ const AUTHORIZATION_REPLAY_NONCES: TableName = TableName::new("authorization_rep
 const CONTRACTS: TableName = TableName::new("contracts");
 const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitations");
 const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
+const QUORUM_ROUNDS: TableName = TableName::new("quorum_rounds");
 const INTERCEPT_POLICIES: TableName = TableName::new("intercept_policies");
 const PARKED_SPIRIT_REQUESTS: TableName = TableName::new("parked_spirit_requests");
 const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot");
@@ -54,6 +56,7 @@ const AUTHORIZATION_REPLAY_NONCES_FAMILY: &str = "criome-authorization-replay-no
 const CONTRACTS_FAMILY: &str = "criome-contract";
 const SIGNATURE_SOLICITATIONS_FAMILY: &str = "criome-signature-solicitation";
 const SUBMITTED_SIGNATURES_FAMILY: &str = "criome-submitted-signature";
+const QUORUM_ROUNDS_FAMILY: &str = "criome-quorum-round";
 const INTERCEPT_POLICIES_FAMILY: &str = "criome-intercept-policy";
 const PARKED_SPIRIT_REQUESTS_FAMILY: &str = "criome-parked-spirit-request";
 const ATTESTATION_NEXT_SLOT_FAMILY: &str = "criome-attestation-slot";
@@ -237,6 +240,68 @@ impl StoredSignatureSolicitation {
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StoredSignatureSubmission {
     submission: SignatureSubmission,
+}
+
+/// A durable quorum-collection round: the withheld pending row for the
+/// propose→gather→judge protocol. It holds the proposal (contract, object, and
+/// the shared moment proposition) and every gathered `QuorumVote` (the
+/// originator's self-vote plus each peer member's). The assembled `Evidence` is
+/// derived from these votes at judge time — the votes are the source of truth,
+/// so redelivery of a vote is idempotent.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredQuorumRound {
+    round: QuorumRoundIdentifier,
+    contract: ContractDigest,
+    object: AuthorizedObjectReference,
+    proposition: AttestedMomentProposition,
+    votes: Vec<QuorumVote>,
+}
+
+impl StoredQuorumRound {
+    pub fn open(
+        round: QuorumRoundIdentifier,
+        contract: ContractDigest,
+        object: AuthorizedObjectReference,
+        proposition: AttestedMomentProposition,
+    ) -> Self {
+        Self {
+            round,
+            contract,
+            object,
+            proposition,
+            votes: Vec::new(),
+        }
+    }
+
+    pub fn round(&self) -> &QuorumRoundIdentifier {
+        &self.round
+    }
+
+    pub fn contract(&self) -> &ContractDigest {
+        &self.contract
+    }
+
+    pub fn object(&self) -> &AuthorizedObjectReference {
+        &self.object
+    }
+
+    pub fn proposition(&self) -> &AttestedMomentProposition {
+        &self.proposition
+    }
+
+    pub fn votes(&self) -> &[QuorumVote] {
+        self.votes.as_slice()
+    }
+
+    /// Record `vote`, replacing any earlier vote from the same member. A member
+    /// votes once; redelivery updates in place rather than double-counting.
+    pub fn record_vote(&mut self, vote: QuorumVote) {
+        if let Some(existing) = self.votes.iter_mut().find(|held| held.voter == vote.voter) {
+            *existing = vote;
+        } else {
+            self.votes.push(vote);
+        }
+    }
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -540,6 +605,7 @@ pub struct CriomeTables {
     contracts: TableReference<StoredContract>,
     signature_solicitations: TableReference<StoredSignatureSolicitation>,
     submitted_signatures: TableReference<StoredSignatureSubmission>,
+    quorum_rounds: TableReference<StoredQuorumRound>,
     intercept_policies: TableReference<StoredInterceptPolicy>,
     parked_spirit_requests: TableReference<StoredParkedSpiritRequest>,
     attestation_next_slot: TableReference<u64>,
@@ -575,6 +641,8 @@ impl CriomeTables {
             SUBMITTED_SIGNATURES,
             SUBMITTED_SIGNATURES_FAMILY,
         ))?;
+        let quorum_rounds =
+            engine.register_table(Self::family_descriptor(QUORUM_ROUNDS, QUORUM_ROUNDS_FAMILY))?;
         let intercept_policies = engine.register_table(Self::family_descriptor(
             INTERCEPT_POLICIES,
             INTERCEPT_POLICIES_FAMILY,
@@ -609,6 +677,7 @@ impl CriomeTables {
             contracts,
             signature_solicitations,
             submitted_signatures,
+            quorum_rounds,
             intercept_policies,
             parked_spirit_requests,
             attestation_next_slot,
@@ -785,6 +854,20 @@ impl CriomeTables {
         let key = SignatureSubmissionKey::new(submission.submission()).into_string();
         self.upsert(self.submitted_signatures, key, submission.clone())?;
         Ok(())
+    }
+
+    pub fn put_quorum_round(&self, round: &StoredQuorumRound) -> Result<()> {
+        let key = QuorumRoundKey::new(round.round()).into_string();
+        self.upsert(self.quorum_rounds, key, round.clone())?;
+        Ok(())
+    }
+
+    pub fn quorum_round(
+        &self,
+        round: &QuorumRoundIdentifier,
+    ) -> Result<Option<StoredQuorumRound>> {
+        let key = QuorumRoundKey::new(round).into_string();
+        self.read_key(self.quorum_rounds, key)
     }
 
     pub fn put_intercept_policy(
@@ -1388,5 +1471,21 @@ impl SignatureSubmissionKey {
 
     fn into_string(self) -> String {
         format!("{}:{}", self.request_slot, self.signer)
+    }
+}
+
+struct QuorumRoundKey {
+    round: String,
+}
+
+impl QuorumRoundKey {
+    fn new(round: &QuorumRoundIdentifier) -> Self {
+        Self {
+            round: round.as_str().to_owned(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.round
     }
 }

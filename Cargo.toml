@@ -63,6 +63,7 @@ rkyv         = { version = "0.8", default-features = false, features = ["std", "
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
+signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
 thiserror    = "2"
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
 triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
