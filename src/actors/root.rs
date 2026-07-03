@@ -1222,6 +1222,14 @@ impl CriomeRoot {
             object,
             window,
         } = proposal;
+        // Round-id bound to the change's fingerprint: the round key MUST be the
+        // one derived from the operation digest, so two distinct operations can
+        // never share a round and a colliding proposal cannot clobber an
+        // unrelated in-flight round (audit S1). Enforced at every round-creation
+        // ingress; `submit_quorum_vote` inherits it via the round key.
+        if round != QuorumRoundIdentifier::for_operation(&object.digest) {
+            return rejection(RejectionReason::MalformedRequest);
+        }
         let Some(store) = self.contract_store().await else {
             return rejection(RejectionReason::MalformedRequest);
         };
@@ -1253,6 +1261,12 @@ impl CriomeRoot {
             proposition,
             originator,
         } = solicitation;
+        // Same round-id ⇄ operation-digest binding the originator enforced, so a
+        // dishonest originator cannot make this peer open a round under a round
+        // key that is not the one its operation dictates (audit S1).
+        if round != QuorumRoundIdentifier::for_operation(&object.digest) {
+            return rejection(RejectionReason::MalformedRequest);
+        }
         let Some(store) = self.contract_store().await else {
             return rejection(RejectionReason::MalformedRequest);
         };
@@ -1287,6 +1301,20 @@ impl CriomeRoot {
         let Some(mut stored) = self.stored_quorum_round(&vote.round).await else {
             return rejection(RejectionReason::MalformedRequest);
         };
+        // Drop votes from non-members of the admitted contract at ingress. The
+        // judge already refuses to COUNT a non-member's signature, but an
+        // unadmitted voter's row would still accumulate in the round (a storage
+        // lever the audit flagged, S1); a member set the vote is not part of has
+        // no business extending this round.
+        let Some(store) = self.contract_store().await else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        let Some((_required, members)) = self.quorum_members(&store, stored.contract()) else {
+            return rejection(RejectionReason::MalformedRequest);
+        };
+        if !members.contains(&vote.voter) {
+            return rejection(RejectionReason::UnknownIdentity);
+        }
         stored.record_vote(vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);

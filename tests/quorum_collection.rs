@@ -143,6 +143,24 @@ fn observe(socket: &Path, round: &QuorumRoundIdentifier) -> QuorumRoundState {
     }
 }
 
+fn submit(socket: &Path, vote: QuorumVote) -> QuorumRoundState {
+    match ask(socket, CriomeRequest::submit_quorum_vote(vote)) {
+        CriomeReply::QuorumVoteAccepted(state) => state,
+        other => panic!("expected QuorumVoteAccepted, got {other:?}"),
+    }
+}
+
+/// A signature envelope that is present and well-formed on the wire but carries a
+/// foreign key + garbage signature — it can never satisfy a member whose admitted
+/// key differs, so the judge does not count it.
+fn forged_envelope() -> SignatureEnvelope {
+    SignatureEnvelope {
+        scheme: SignatureScheme::Bls12_381MinPk,
+        public_key: BlsPublicKey::new("forged-foreign-key"),
+        signature: BlsSignature::new("forged-signature"),
+    }
+}
+
 fn evaluate(
     socket: &Path,
     contract: ContractDigest,
@@ -228,7 +246,9 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
 
     // Propose on A. The self-vote alone is one short of the 2-of-2 majority.
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::new("mirror-round-1");
+    // The round-id is bound to the change's fingerprint (the operation digest);
+    // the originator derives it and the criome ingress enforces the binding.
+    let round = QuorumRoundIdentifier::for_operation(&object.digest);
     let opened = propose(
         &socket_a,
         QuorumProposal {
@@ -319,7 +339,7 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
 
     let contract_digest = admit(&socket_a, mirror_contract(&alpha, &beta));
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::new("lonely-round-1");
+    let round = QuorumRoundIdentifier::for_operation(&object.digest);
     let opened = propose(
         &socket_a,
         QuorumProposal {
@@ -343,6 +363,75 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
         assert!(state.authorized_evidence.is_none());
         std::thread::sleep(Duration::from_millis(150));
     }
+}
+
+#[test]
+fn a_forged_member_vote_is_recorded_but_not_counted() {
+    // The attack: a vote arrives claiming to be from member `beta` (a real member
+    // of the admitted 2-of-2 contract, so it survives the non-member ingress drop)
+    // but carries a present-but-invalid signature — a foreign key, not beta's
+    // admitted key. The row is recorded (so `gathered` reflects it), yet the judge
+    // (`has_valid_signature_from`) does not COUNT it, because the envelope's key is
+    // not beta's admitted key. The round therefore stays WITHHELD: a below-majority
+    // set of VALID signatures is refused fail-closed even when the vote count
+    // reaches the threshold.
+    let alpha = host("mirror-alpha");
+    let beta = host("mirror-beta");
+
+    let (socket_a, store_a) = fixture("forged-alpha");
+    let (dead_socket, _dead_store) = fixture("forged-dead-beta");
+
+    let daemon_a = CriomeDaemon::new(&socket_a, store_a)
+        .with_node_identity(alpha.clone())
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
+            beta.clone(),
+            dead_socket,
+        )])));
+    serve(daemon_a);
+    wait_for_socket(&socket_a);
+
+    let contract_digest = admit(&socket_a, mirror_contract(&alpha, &beta));
+    let object = mirror_object();
+    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let opened = propose(
+        &socket_a,
+        QuorumProposal {
+            round: round.clone(),
+            contract: contract_digest,
+            object: object.clone(),
+            window: open_window(),
+        },
+    );
+    assert_eq!(opened.status, QuorumRoundStatus::Gathering);
+    assert_eq!(opened.gathered.into_u16(), 1);
+
+    // Inject the forged vote for member beta.
+    let forged = QuorumVote {
+        round: round.clone(),
+        voter: beta.clone(),
+        operation_signature: forged_envelope(),
+        time_signature: forged_envelope(),
+    };
+    let after = submit(&socket_a, forged);
+    assert_eq!(
+        after.gathered.into_u16(),
+        2,
+        "the forged member vote IS recorded — gathered reflects the row"
+    );
+    assert_eq!(
+        after.status,
+        QuorumRoundStatus::Gathering,
+        "a present-but-invalid member signature is NOT counted — the round stays WITHHELD"
+    );
+    assert!(
+        after.authorized_evidence.is_none(),
+        "no Evidence is surfaced while the only valid signature is below the majority"
+    );
+
+    // And it stays withheld under an independent re-read.
+    let observed = observe(&socket_a, &round);
+    assert_eq!(observed.status, QuorumRoundStatus::Gathering);
+    assert!(observed.authorized_evidence.is_none());
 }
 
 #[test]

@@ -548,6 +548,20 @@ The round, for an operation authorized under an admitted `Threshold` contract:
    node publishes the authorized-object update so subscribers converge. The
    originating Spirit ships {authorized entry + Evidence} to the peer Spirit.
 
+**Round integrity.** Two ingress invariants keep a round tamper-resistant beyond
+the cryptographic judge. First, the `QuorumRoundIdentifier` is **bound to the
+operation digest** (`QuorumRoundIdentifier::for_operation`): every round-creation
+ingress (`ProposeQuorumAuthorization`, `SolicitQuorumVote`) rejects a round key
+that is not the one the operation dictates, so two distinct operations can never
+share a round and a colliding proposal cannot clobber an unrelated in-flight
+round; `SubmitQuorumVote` inherits the binding through the round key. Second,
+`SubmitQuorumVote` **drops votes from non-members** of the admitted contract at
+ingress — the judge already refuses to *count* a non-member's signature, but this
+stops an unadmitted voter's row from accumulating in the round at all. A member's
+present-but-invalid signature is still recorded (so `gathered` reflects it) yet is
+never counted toward the majority: below a majority of *valid* signatures the
+round stays withheld, fail-closed.
+
 **Independent re-judge on apply.** The applying node hands the carried Evidence
 to its *own* criome's `evaluate_authorization` before touching its store — every
 node confirms the majority for itself from the signatures, fail-closed. This
