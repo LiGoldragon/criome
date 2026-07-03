@@ -16,7 +16,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[cfg(feature = "nota-text")]
     #[error("nota: {0}")]
-    Nota(#[from] nota_next::NotaDecodeError),
+    Nota(#[from] nota::NotaDecodeError),
     #[error("sema: {0}")]
     Sema(#[from] sema_engine::Error),
     #[error("signal frame: {0}")]

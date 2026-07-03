@@ -17,7 +17,7 @@ use criome::transport::{CriomeClient, CriomeFrameCodec, CriomeMetaClient};
 use kameo::actor::Spawn;
 use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 #[cfg(feature = "nota-text")]
-use nota_next::NotaEncode;
+use nota::NotaEncode;
 use signal_criome::{
     ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,

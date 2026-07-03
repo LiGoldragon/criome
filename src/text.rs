@@ -1,4 +1,4 @@
-use nota_next::{NotaEncode, NotaSource};
+use nota::{NotaEncode, NotaSource};
 use signal_criome::{CriomeReply, CriomeRequest};
 
 use crate::Result;

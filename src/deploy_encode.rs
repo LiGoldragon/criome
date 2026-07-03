@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nota_next::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError};
+use nota::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError};
 use signal_criome::CriomeDaemonConfiguration;
 use triad_runtime::{ComponentArgument, ComponentCommand};
 
@@ -33,7 +33,7 @@ use crate::{Error, Result};
 ///
 /// criome aliases the NOTA codec crate as `nota-next` (package `nota`), so the
 /// `nota` derive macros — which resolve the crate as bare `nota` — are
-/// unavailable here; this record decodes itself through the `nota_next` block
+/// unavailable here; this record decodes itself through the `nota` block
 /// API, the same way criome's other crate-local NOTA boundaries do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CriomeConfigurationArtifact {
@@ -127,7 +127,7 @@ impl CriomeConfigurationEncoder {
 
     fn request(&self) -> Result<CriomeConfigurationArtifact> {
         let text = ArtifactSource::read(&self.command)?;
-        Ok(nota_next::NotaSource::new(text.as_str()).parse()?)
+        Ok(nota::NotaSource::new(text.as_str()).parse()?)
     }
 }
 

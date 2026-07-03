@@ -47,7 +47,7 @@ required-features = ["cluster-witness"]
 
 [features]
 default = []
-nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text"]
+nota-text = ["dep:nota", "signal-criome/nota-text", "signal-frame/nota-text"]
 # The criome-cluster test harness binaries (the authorization witness and its
 # daemon-config encoder) — designer report 704, Stage A. Excluded from
 # production builds; the NixOS cluster test enables it.
@@ -57,7 +57,7 @@ cluster-witness = []
 blake3       = "1"
 blst         = "0.3"
 kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
-nota-next    = { package = "nota", git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
+nota    = { package = "nota", git = "https://github.com/LiGoldragon/nota.git", branch = "main", optional = true }
 meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "criome-authorization-push" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 rustix       = { version = "1", features = ["net"] }
