@@ -412,7 +412,7 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 [[package]]
 name = "meta-signal-criome"
 version = "0.3.0"
-source = "git+https://github.com/LiGoldragon/meta-signal-criome.git?branch=drop-next#365fb6815e8b2d5b06aafcc22b9b79eebd62db64"
+source = "git+https://github.com/LiGoldragon/meta-signal-criome.git?branch=drop-next#2de0ad4f56327bd7cc7dc558cd1551a0ee6ae7e6"
 dependencies = [
  "rkyv",
  "schema-rust",
@@ -657,7 +657,7 @@ dependencies = [
 [[package]]
 name = "schema-rust"
 version = "0.5.3"
-source = "git+https://github.com/LiGoldragon/schema-rust.git?branch=drop-next#8a81a408eb250bf6c7d6ccd2c2b9ae9e18dfc290"
+source = "git+https://github.com/LiGoldragon/schema-rust.git?branch=drop-next#67b91f5a6a70eced5854f27c7af8b39ace7e2d88"
 dependencies = [
  "nota",
  "prettyplease",
@@ -750,7 +750,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-criome"
 version = "0.6.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=drop-next#a7701f6405f6dc7959160e821dd1c754597fd365"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=drop-next#4c1aa76ac647899db3c60b380f0642cdd10019b9"
 dependencies = [
  "blake3",
  "blst",
