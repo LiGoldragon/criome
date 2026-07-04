@@ -1299,6 +1299,13 @@ impl CriomeRoot {
         if let Some(conflict) = self.check_successor_conflict(&contract, &object) {
             return conflict;
         }
+        // Durable-first veto: commit this node's single-successor veto row BEFORE it
+        // casts (and later solicits) its vote, so a failed veto write aborts the
+        // vote instead of emitting one whose anti-equivocation veto is only
+        // best-effort.
+        if let Err(reply) = self.record_co_sign(&contract, &object).await {
+            return reply;
+        }
         let self_vote = match self
             .cast_quorum_vote(&round, &object, &proposition, phase)
             .await
@@ -1306,7 +1313,6 @@ impl CriomeRoot {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
-        self.record_co_sign(&contract, &object).await;
         let mut stored = StoredQuorumRound::open(round.clone(), contract, object, proposition);
         stored.record_vote(self_vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
@@ -1388,6 +1394,13 @@ impl CriomeRoot {
         if phase == RoundPhase::Commit && !self.round_one_verified(&object).await {
             return rejection(RejectionReason::MalformedRequest);
         }
+        // Durable-first veto: persist this peer's single-successor veto row BEFORE it
+        // casts and conveys its vote to the originator, so a failed veto write aborts
+        // the vote instead of conveying one whose anti-equivocation veto is only
+        // best-effort.
+        if let Err(reply) = self.record_co_sign(&contract, &object).await {
+            return reply;
+        }
         let vote = match self
             .cast_quorum_vote(&round, &object, &proposition, phase)
             .await
@@ -1395,7 +1408,6 @@ impl CriomeRoot {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
-        self.record_co_sign(&contract, &object).await;
         let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
         stored.record_vote(vote.clone());
         let _ = self.persist_quorum_round(stored.clone()).await;
@@ -1636,6 +1648,14 @@ impl CriomeRoot {
         if self.check_successor_conflict(&contract, &object).is_some() {
             return;
         }
+        // Durable-first veto: commit this driver's single-successor veto row BEFORE it
+        // casts and conveys its own commit vote, so a failed veto write aborts the
+        // commit rather than conveying a vote whose anti-equivocation veto is only
+        // best-effort. (Idempotent: round 1 already co-signed this same successor, so
+        // the row is already durable and this is a no-op re-write.)
+        if self.record_co_sign(&contract, &object).await.is_err() {
+            return;
+        }
         let self_vote = match self
             .cast_quorum_vote(&commit_round, &object, &proposition, RoundPhase::Commit)
             .await
@@ -1643,7 +1663,6 @@ impl CriomeRoot {
             Ok(vote) => vote,
             Err(_reply) => return,
         };
-        self.record_co_sign(&contract, &object).await;
 
         // Convey the round-1 evidence (its votes), the commit solicitation, and
         // this node's own commit vote to each peer IN ORDER over the voice: the
@@ -1750,31 +1769,43 @@ impl CriomeRoot {
         })
     }
 
-    /// Record `object` as the one successor this node has co-signed for
-    /// `contract`'s current head. Idempotent: a later identical co-sign keeps the
-    /// first record; a conflicting one is refused earlier by
-    /// [`Self::check_successor_conflict`]. The record is also persisted so the
-    /// single-successor veto survives a restart — a node that co-signed S1 from
-    /// this head must not, after a boot that clears the in-memory map, co-sign a
-    /// conflicting S2 from the same head.
+    /// Durably record `object` as the one successor this node has co-signed for
+    /// `contract`'s current head, BEFORE the caller casts or conveys its vote.
+    /// Idempotent: a later identical co-sign keeps the first record (and needs no
+    /// re-write); a conflicting one is refused earlier by
+    /// [`Self::check_successor_conflict`].
+    ///
+    /// The veto row is a HARD guarantee, not best-effort: the durable write happens
+    /// first, and a failure returns a rejection so the caller aborts the vote. A
+    /// vote is therefore never cast or conveyed without its veto row already on
+    /// disk — a crash after the vote is emitted still finds the veto on the next
+    /// boot (rebuilt by `on_start`), so the node refuses a conflicting successor
+    /// from the same head rather than reopening the F2 equivocation window. The
+    /// only failure mode this admits is failing to emit (the round times out) —
+    /// safe and live-degraded, never equivocation.
     async fn record_co_sign(
         &mut self,
         contract: &signal_criome::ContractDigest,
         object: &AuthorizedObjectReference,
-    ) {
+    ) -> std::result::Result<(), CriomeReply> {
         let head = self.state_head(contract);
         let key = Self::state_point_key(contract, &head);
         if self.co_signed_successors.contains_key(&key) {
-            return;
+            return Ok(());
         }
+        // Durable-first: commit the veto row before touching the in-memory map and
+        // before the caller emits, so the durable ledger never lags the vote. A
+        // failed write aborts the vote with a rejection instead of leaving a vote
+        // whose anti-equivocation veto is only best-effort.
+        self.persist_co_signed_successor(StoredCoSignedSuccessor::new(
+            contract.clone(),
+            head,
+            object.clone(),
+        ))
+        .await
+        .map_err(|_error| rejection(RejectionReason::MalformedRequest))?;
         self.co_signed_successors.insert(key, object.clone());
-        let _ = self
-            .persist_co_signed_successor(StoredCoSignedSuccessor::new(
-                contract.clone(),
-                head,
-                object.clone(),
-            ))
-            .await;
+        Ok(())
     }
 
     /// Advance this node's head for `contract` to the just-committed successor, so
