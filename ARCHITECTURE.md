@@ -533,28 +533,45 @@ The round, for an operation authorized under an admitted `Threshold` contract:
    request wrapped as a `RoutedContractObject`), or a direct peer-socket dial for
    the single-host multi-user mode. If the peer is unreachable the package does
    not arrive; the round simply **waits**, still `Gathering`. Nothing commits.
-3. **Peer vote.** The peer criome independently re-validates the solicitation
-   (contract admitted here, this node is a member), casts its own vote over the
-   *same* moment proposition, and conveys the `SubmitQuorumVote` back across the
-   voice. Both nodes signing the same proposition is what lets one assembled
-   `AttestedMoment` carry a proven time-quorum.
-4. **Judge.** The originator records each arriving vote into the durable round,
-   assembles the `Evidence` (one shared moment with every time-signature; one
-   stamped operation signature per member), and calls the reused
-   `evaluate_authorization`. `Authorized` iff a true majority co-signed;
-   otherwise the round stays `Gathering` (withheld). A below-majority Evidence is
-   refused `QuorumShort` fail-closed.
-5. **Commit.** On `Authorized` the round carries the assembled Evidence and the
-   node publishes the authorized-object update so subscribers converge. The
-   originating Spirit ships {authorized entry + Evidence} to the peer Spirit.
+3. **Peer vote (witness-clock gated).** The peer criome independently
+   re-validates the solicitation (contract admitted here, this node is a member,
+   the moment names the full member set), casts its own vote over the *same*
+   moment proposition, and conveys the `SubmitQuorumVote` back across the voice.
+   Each signer time-signs only when its OWN clock places the present inside the
+   window (`SystemClock::admits_window`), so a signature witnesses "now is inside
+   this window", not merely agreement on a window value — a proposer's convenient
+   window is refused independently by every honest peer.
+4. **Round 1 — Request (judge).** The originator records each arriving vote into
+   the durable Request round, assembles the `Evidence` (one shared moment with
+   every time-signature; one stamped operation signature per member), and calls
+   the reused judge. A round-1 **majority** (`⌊n/2⌋+1`) is reached iff a true
+   majority co-signed; a below-majority or forged Evidence stays `Gathering`
+   (withheld), refused `QuorumShort` fail-closed. **A round-1 majority is not
+   approval** — it only opens round 2.
+5. **Round 2 — Commit.** On a round-1 majority the initiator conveys the round-1
+   evidence, then a commit solicitation, to each peer. Each round-2 signer
+   **independently re-judges a real round-1 majority within the window** before it
+   co-signs the commit object; round 2 gathers a majority-of-the-total (not
+   necessarily a subset of round 1). **Real approval lands only on the round-2
+   commit majority**, which publishes the authorized-object update so subscribers
+   converge. Request and Commit are distinct durable rounds
+   (`QuorumRoundIdentifier::for_phase(digest, {Request|Commit})`) so their
+   signatures never interchange, and the flow **stops at two rounds**.
+6. **Non-double-signing.** An honest node co-signs at most one successor per
+   state-point `(contract, head)`: having co-signed successor `S1` from head `H`,
+   it refuses any different `S2` from the same `H` with the typed `QuorumConflict`
+   ("refused, resubmit") reply. The conflict predicate is kept pluggable for a
+   phase-2 commutative/compatible-merge branch (both compatible changes commit).
 
 **Round integrity.** Two ingress invariants keep a round tamper-resistant beyond
 the cryptographic judge. First, the `QuorumRoundIdentifier` is **bound to the
-operation digest** (`QuorumRoundIdentifier::for_operation`): every round-creation
-ingress (`ProposeQuorumAuthorization`, `SolicitQuorumVote`) rejects a round key
-that is not the one the operation dictates, so two distinct operations can never
-share a round and a colliding proposal cannot clobber an unrelated in-flight
-round; `SubmitQuorumVote` inherits the binding through the round key. Second,
+operation digest AND the round phase** (`QuorumRoundIdentifier::for_phase`; the
+`for_operation` convenience is the Request phase): every round-creation ingress
+(`ProposeQuorumAuthorization`, `SolicitQuorumVote`) rejects a round key that is
+not the one the operation and phase dictate, so two distinct operations — or the
+Request and Commit rounds of one operation — can never share a round and a
+colliding proposal cannot clobber an unrelated in-flight round; `SubmitQuorumVote`
+inherits the binding through the round key. Second,
 `SubmitQuorumVote` **drops votes from non-members** of the admitted contract at
 ingress — the judge already refuses to *count* a non-member's signature, but this
 stops an unadmitted voter's row from accumulating in the round at all. A member's

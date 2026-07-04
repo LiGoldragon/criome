@@ -5,6 +5,7 @@ use meta_signal_criome::{
     ConfigurationRejectionReason, OperationKind, RequestUnimplemented, RootFoundingAcceptance,
     RootFoundingAccepted, RootFoundingRejectionReason, UnimplementedReason,
 };
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use signal_criome::{
@@ -14,14 +15,15 @@ use signal_criome::{
     AuthorizationObservationToken, AuthorizationPending, AuthorizationRequestSlot,
     AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference,
     AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected,
-    ContractAdmitted, ContractFound, ContractMissing, CriomeDaemonConfiguration, CriomeReply,
-    CriomeRequest, EvaluationDecision, Evidence, FoundingSignature, Identity, IdentityRegistration,
-    IdentitySubscriptionToken, InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose,
-    OperationDigest, ParkedAuthorization, ParkedAuthorizationObservation,
-    ParkedAuthorizationSnapshot, ParkedRequestAnswer, ParkedRequestDecision,
-    ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest, PolicyMember, QuorumProposal,
-    QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus, QuorumVote, QuorumVoteSolicitation,
-    RejectionReason, RequiredSignatureThreshold, RoundPhase, Rule, SignalCallAuthorization,
+    ContractAdmitted, ContractFound, ContractMissing, ContractOperationHead,
+    CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision, Evidence,
+    FoundingSignature, Identity, IdentityRegistration, IdentitySubscriptionToken,
+    InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose, OperationDigest,
+    ParkedAuthorization, ParkedAuthorizationObservation, ParkedAuthorizationSnapshot,
+    ParkedRequestAnswer, ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestQuery,
+    ParkedSpiritRequest, PolicyMember, QuorumConflict, QuorumProposal, QuorumRoundIdentifier,
+    QuorumRoundState, QuorumRoundStatus, QuorumVote, QuorumVoteSolicitation, RejectionReason,
+    RequiredSignatureThreshold, RoundPhase, Rule, SignalCallAuthorization,
     SpiritAuthorizationContext, StampedSignatureEnvelope, TimeSignature, TimestampNanos,
 };
 
@@ -56,6 +58,21 @@ pub struct CriomeRoot {
     /// solicited peer independently refuses a window its clock is not inside —
     /// the same gate the signer enforces before time-signing.
     clock: SystemClock,
+    /// The Request-phase rounds this node originated (proposed). Only the
+    /// originator drives the commit round when round 1 reaches a majority; a peer
+    /// whose round-1 round reaches a majority through conveyed round-1 evidence
+    /// does not re-drive. Keyed by the round identifier's canonical text.
+    originated_request_rounds: HashSet<String>,
+    /// One honest successor per state-point: the successor this node has co-signed
+    /// for each `(contract, head)`, keyed by [`Self::state_point_key`]. A
+    /// conflicting second successor from the same head is refused with
+    /// `QuorumConflict` (the pluggable phase-2 commutative-merge seam lives in
+    /// [`Self::successors_conflict`]).
+    co_signed_successors: HashMap<String, AuthorizedObjectReference>,
+    /// This node's view of each contract's current head — the state-point a change
+    /// advances from — keyed by the contract digest's text. Absent ⇒ the
+    /// contract's genesis head; advanced when a successor commits on round 2.
+    contract_heads: HashMap<String, ContractOperationHead>,
 }
 
 pub struct Arguments {
@@ -206,6 +223,9 @@ impl CriomeRoot {
             node_identity,
             voice,
             clock,
+            originated_request_rounds: HashSet::new(),
+            co_signed_successors: HashMap::new(),
+            contract_heads: HashMap::new(),
         }
     }
 
@@ -1234,24 +1254,25 @@ impl CriomeRoot {
     /// Propose (originator). Derive the moment from the contract's members, cast
     /// the self-vote, open the durable round, solicit each peer, and return the
     /// withheld round state.
-    async fn propose_quorum_authorization(&self, proposal: QuorumProposal) -> CriomeReply {
+    async fn propose_quorum_authorization(&mut self, proposal: QuorumProposal) -> CriomeReply {
         let QuorumProposal {
             round,
-            // Single-gather round today: the round key is pinned to
-            // `RoundPhase::Request` via `for_operation` below, so the proposal's
-            // phase carries no extra choice yet. The two-round worker (.12/.13)
-            // makes this phase-aware and must reconcile the round-key binding.
-            phase: _,
+            // The round is phase-aware: round 1 (Request) and round 2 (Commit) over
+            // the same object occupy DISTINCT durable rounds (`for_phase`), so their
+            // signatures are never interchangeable. An external propose opens the
+            // Request round; the originator drives the Commit round itself.
+            phase,
             contract,
             object,
             window,
         } = proposal;
-        // Round-id bound to the change's fingerprint: the round key MUST be the
-        // one derived from the operation digest, so two distinct operations can
-        // never share a round and a colliding proposal cannot clobber an
-        // unrelated in-flight round (audit S1). Enforced at every round-creation
-        // ingress; `submit_quorum_vote` inherits it via the round key.
-        if round != QuorumRoundIdentifier::for_operation(&object.digest) {
+        // Round-id bound to the change's fingerprint AND phase: the round key MUST
+        // be the one derived from the operation digest and phase, so two distinct
+        // operations (or the two rounds of one operation) can never share a round
+        // and a colliding proposal cannot clobber an unrelated in-flight round
+        // (audit S1). Enforced at every round-creation ingress; `submit_quorum_vote`
+        // inherits it via the round key.
+        if round != QuorumRoundIdentifier::for_phase(&object.digest, phase) {
             return rejection(RejectionReason::MalformedRequest);
         }
         let Some(store) = self.contract_store().await else {
@@ -1261,37 +1282,54 @@ impl CriomeRoot {
             return rejection(RejectionReason::MalformedRequest);
         };
         let proposition = AttestedMomentProposition::new(window, required, members);
-        let self_vote = match self.cast_quorum_vote(&round, &object, &proposition).await {
+        // Non-double-signing guard (reconciled with the clock gate the cast below
+        // enforces): this node co-signs at most one successor per (contract, head).
+        if let Some(conflict) = self.check_successor_conflict(&contract, &object) {
+            return conflict;
+        }
+        let self_vote = match self
+            .cast_quorum_vote(&round, &object, &proposition, phase)
+            .await
+        {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
-        let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
+        self.record_co_sign(&contract, &object);
+        let mut stored = StoredQuorumRound::open(round.clone(), contract, object, proposition);
         stored.record_vote(self_vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);
         }
-        self.solicit_peers(&stored);
+        // Remember that THIS node originated the Request round: only the originator
+        // drives the Commit round once round 1 reaches a majority.
+        if phase == RoundPhase::Request {
+            self.originated_request_rounds
+                .insert(round.as_str().to_string());
+        }
+        self.solicit_peers(&stored, phase);
         CriomeReply::QuorumRoundOpened(self.round_state(&stored).await)
     }
 
     /// Peer vote. Independently re-validate the solicitation (contract admitted
     /// here, this node is a member), cast this node's vote, convey it back to the
     /// originator across the voice, and record it locally for idempotent redial.
-    async fn solicit_quorum_vote(&self, solicitation: QuorumVoteSolicitation) -> CriomeReply {
+    async fn solicit_quorum_vote(&mut self, solicitation: QuorumVoteSolicitation) -> CriomeReply {
         let QuorumVoteSolicitation {
             round,
-            // See `propose_quorum_authorization`: single Request-phase gather
-            // today; the two-round worker threads the phase here.
-            phase: _,
+            // Phase-aware: a Request solicitation opens round 1; a Commit
+            // solicitation opens round 2, gated on an independently verified
+            // round-1 majority below.
+            phase,
             contract,
             object,
             proposition,
             originator,
         } = solicitation;
-        // Same round-id ⇄ operation-digest binding the originator enforced, so a
-        // dishonest originator cannot make this peer open a round under a round
-        // key that is not the one its operation dictates (audit S1).
-        if round != QuorumRoundIdentifier::for_operation(&object.digest) {
+        // Same round-id ⇄ (operation-digest, phase) binding the originator
+        // enforced, so a dishonest originator cannot make this peer open a round
+        // under a round key that is not the one its operation and phase dictate
+        // (audit S1).
+        if round != QuorumRoundIdentifier::for_phase(&object.digest, phase) {
             return rejection(RejectionReason::MalformedRequest);
         }
         let Some(store) = self.contract_store().await else {
@@ -1322,10 +1360,30 @@ impl CriomeRoot {
                 return rejection(RejectionReason::MalformedRequest);
             }
         }
-        let vote = match self.cast_quorum_vote(&round, &object, &proposition).await {
+        // Non-double-signing guard, reconciled with the clock gate above: at most
+        // one honest successor per (contract, head). Having co-signed successor S1
+        // from this head (in either round), refuse any different successor from the
+        // same head, answering the loser with the typed QuorumConflict reply.
+        if let Some(conflict) = self.check_successor_conflict(&contract, &object) {
+            return conflict;
+        }
+        // Round-2 (Commit) independent verification: this node re-runs the reused
+        // judge on the round-1 evidence it holds locally and co-signs the commit
+        // only when a REAL round-1 majority for the same object is Authorized. A
+        // forged or short round-1 never judges Authorized, so it cannot be
+        // committed; the window is enforced by the clock gate above (both rounds
+        // share the window).
+        if phase == RoundPhase::Commit && !self.round_one_verified(&object).await {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+        let vote = match self
+            .cast_quorum_vote(&round, &object, &proposition, phase)
+            .await
+        {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
+        self.record_co_sign(&contract, &object);
         let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
         stored.record_vote(vote.clone());
         let _ = self.persist_quorum_round(stored.clone()).await;
@@ -1334,9 +1392,12 @@ impl CriomeRoot {
         CriomeReply::QuorumVoteSolicited(self.round_state(&stored).await)
     }
 
-    /// A peer's vote arrived. Record it into the round, re-judge, and — on a true
-    /// majority — publish the authorized-object update so subscribers converge.
-    async fn submit_quorum_vote(&self, vote: QuorumVote) -> CriomeReply {
+    /// A vote arrived. Record it into the round, re-judge, and act on a true
+    /// majority by phase: a Request-round majority DRIVES the commit round (on the
+    /// originator only) — real approval is still withheld; a Commit-round majority
+    /// is the real approval, so it publishes the authorized-object update and
+    /// advances this node's head.
+    async fn submit_quorum_vote(&mut self, vote: QuorumVote) -> CriomeReply {
         let Some(mut stored) = self.stored_quorum_round(&vote.round).await else {
             return rejection(RejectionReason::MalformedRequest);
         };
@@ -1354,20 +1415,41 @@ impl CriomeRoot {
         if !members.contains(&vote.voter) {
             return rejection(RejectionReason::UnknownIdentity);
         }
+        let phase = vote.phase;
         stored.record_vote(vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);
         }
         let state = self.round_state(&stored).await;
         if state.status == QuorumRoundStatus::Authorized {
-            let stamp = self.assemble_evidence(&stored).stamp;
-            self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                object: stored.object().clone(),
-                contract: stored.contract().clone(),
-                decision: EvaluationDecision::Authorized,
-                stamp,
-            })
-            .await;
+            match phase {
+                RoundPhase::Request => {
+                    // Round 1 reached a majority. Only the ORIGINATOR drives round 2:
+                    // a peer whose round-1 round reached a majority through the
+                    // conveyed round-1 evidence does not re-drive. Real approval is
+                    // withheld until the commit round itself reaches a majority.
+                    if self
+                        .originated_request_rounds
+                        .contains(stored.round().as_str())
+                    {
+                        self.drive_commit_round(&stored).await;
+                    }
+                }
+                RoundPhase::Commit => {
+                    // Round 2 reached a majority — real approval lands here. Publish
+                    // the authorized-object update so subscribers converge, and
+                    // advance this node's head to the committed successor.
+                    let stamp = self.assemble_evidence(&stored).stamp;
+                    self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                        object: stored.object().clone(),
+                        contract: stored.contract().clone(),
+                        decision: EvaluationDecision::Authorized,
+                        stamp,
+                    })
+                    .await;
+                    self.advance_head(stored.contract(), stored.object());
+                }
+            }
         }
         CriomeReply::QuorumVoteAccepted(state)
     }
@@ -1405,9 +1487,15 @@ impl CriomeRoot {
         } else {
             (QuorumRoundStatus::Gathering, None)
         };
+        // The round's phase is carried by its votes — a round key is phase-specific
+        // (`for_phase`), so every vote in a round shares the round's phase.
+        let phase = stored
+            .votes()
+            .first()
+            .map_or(RoundPhase::Request, |vote| vote.phase);
         QuorumRoundState {
             round: stored.round().clone(),
-            phase: RoundPhase::Request,
+            phase,
             contract: stored.contract().clone(),
             status,
             gathered,
@@ -1449,12 +1537,16 @@ impl CriomeRoot {
         )
     }
 
-    /// Cast this node's vote and time attestation over `object` under `proposition`.
+    /// Cast this node's `phase` vote and time attestation over `object` under
+    /// `proposition`. The signer's witness-clock gate refuses the time-signature
+    /// (failing the whole vote) when this node's clock is not inside the window, so
+    /// BOTH rounds are independently clock-gated as they are cast.
     async fn cast_quorum_vote(
         &self,
         round: &QuorumRoundIdentifier,
         object: &AuthorizedObjectReference,
         proposition: &AttestedMomentProposition,
+        phase: RoundPhase,
     ) -> std::result::Result<QuorumVote, CriomeReply> {
         let operation = OperationDigest::new(object.digest.clone());
         let signatures = self
@@ -1464,7 +1556,7 @@ impl CriomeRoot {
             .map_err(|_error| rejection(RejectionReason::MalformedRequest))?;
         Ok(QuorumVote {
             round: round.clone(),
-            phase: RoundPhase::Request,
+            phase,
             voter: self.node_identity.clone(),
             operation_signature: signatures.operation_signature,
             time_signature: signatures.time_signature,
@@ -1472,15 +1564,16 @@ impl CriomeRoot {
     }
 
     /// Solicit every peer member (contract members other than this node) across
-    /// the voice. Best-effort: an unreachable peer leaves the round pending.
-    fn solicit_peers(&self, stored: &StoredQuorumRound) {
+    /// the voice in the given `phase`. Best-effort: an unreachable peer leaves the
+    /// round pending.
+    fn solicit_peers(&self, stored: &StoredQuorumRound, phase: RoundPhase) {
         for peer in stored.proposition().authorities() {
             if peer == &self.node_identity {
                 continue;
             }
             let solicitation = QuorumVoteSolicitation {
                 round: stored.round().clone(),
-                phase: RoundPhase::Request,
+                phase,
                 contract: stored.contract().clone(),
                 object: stored.object().clone(),
                 proposition: stored.proposition().clone(),
@@ -1489,6 +1582,177 @@ impl CriomeRoot {
             self.voice
                 .convey(peer, CriomeRequest::solicit_quorum_vote(solicitation));
         }
+    }
+
+    /// Round 1 reached a majority on the originator: drive round 2 (Commit). The
+    /// initiator conveys the round-1 evidence — the gathered Request votes — THEN
+    /// the commit solicitation to each peer IN ORDER over the voice, so every
+    /// round-2 signer holds a real round-1 majority to re-judge before it co-signs
+    /// the commit (the ordered conveyance closes the race the best-effort voice
+    /// would otherwise open). The initiator then casts its OWN commit vote — its
+    /// round 1 is Authorized and the clock gate re-checks the window as it signs.
+    /// Round 2 assembles a majority-of-the-total; it need not be a subset of the
+    /// round-1 signers. Real approval lands only when the commit round itself
+    /// reaches a majority (`submit_quorum_vote`). This stops at two rounds — no third.
+    async fn drive_commit_round(&mut self, request_round: &StoredQuorumRound) {
+        let contract = request_round.contract().clone();
+        let object = request_round.object().clone();
+        let proposition = request_round.proposition().clone();
+        let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+
+        // Drive the commit round at most once. A redelivered round-1 vote can bring
+        // an already-Authorized round-1 round through here again; if this node has
+        // already cast its commit vote, re-driving would re-broadcast and could
+        // clobber commit votes already gathered from peers, so stop here.
+        let existing_commit = self.stored_quorum_round(&commit_round).await;
+        if existing_commit.as_ref().is_some_and(|stored| {
+            stored
+                .votes()
+                .iter()
+                .any(|vote| vote.voter == self.node_identity)
+        }) {
+            return;
+        }
+
+        // Convey the round-1 evidence (its votes) followed by the commit
+        // solicitation to each peer, ordered so the evidence lands first and the
+        // peer's round-1 round judges Authorized when it verifies the solicitation.
+        let commit_solicitation = CriomeRequest::solicit_quorum_vote(QuorumVoteSolicitation {
+            round: commit_round.clone(),
+            phase: RoundPhase::Commit,
+            contract: contract.clone(),
+            object: object.clone(),
+            proposition: proposition.clone(),
+            originator: self.node_identity.clone(),
+        });
+        for peer in proposition.authorities() {
+            if peer == &self.node_identity {
+                continue;
+            }
+            let mut sequence: Vec<CriomeRequest> = request_round
+                .votes()
+                .iter()
+                .map(|vote| CriomeRequest::submit_quorum_vote(vote.clone()))
+                .collect();
+            sequence.push(commit_solicitation.clone());
+            self.voice.convey_ordered(peer, sequence);
+        }
+
+        // The initiator's own commit vote. Its round-1 round is Authorized (it is
+        // the driver), so its independent verification is already satisfied; the
+        // single-successor guard sees the same successor it co-signed in round 1
+        // (idempotent), and the clock gate re-checks the window as it signs.
+        if self.check_successor_conflict(&contract, &object).is_some() {
+            return;
+        }
+        let self_vote = match self
+            .cast_quorum_vote(&commit_round, &object, &proposition, RoundPhase::Commit)
+            .await
+        {
+            Ok(vote) => vote,
+            Err(_reply) => return,
+        };
+        self.record_co_sign(&contract, &object);
+        // Preserve any commit votes a peer already conveyed ahead of this node's own
+        // vote rather than opening a fresh round over them.
+        let mut stored = existing_commit.unwrap_or_else(|| {
+            StoredQuorumRound::open(commit_round, contract, object, proposition)
+        });
+        stored.record_vote(self_vote);
+        let _ = self.persist_quorum_round(stored).await;
+    }
+
+    /// A round-2 (Commit) signer's independent check: a REAL round-1 (Request)
+    /// majority for the same object is held locally — the reused judge returns
+    /// `Authorized` over the round-1 evidence this node gathered. A forged or short
+    /// round-1 never reaches `Authorized`, so it cannot be committed.
+    async fn round_one_verified(&self, object: &AuthorizedObjectReference) -> bool {
+        let request_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
+        match self.stored_quorum_round(&request_round).await {
+            Some(stored) => self.round_state(&stored).await.status == QuorumRoundStatus::Authorized,
+            None => false,
+        }
+    }
+
+    /// This node's view of `contract`'s current head — the state-point a change
+    /// advances from. Absent from the ledger ⇒ the contract's genesis head
+    /// (nothing has committed on this node yet).
+    fn state_head(&self, contract: &signal_criome::ContractDigest) -> ContractOperationHead {
+        self.contract_heads
+            .get(contract.as_str())
+            .cloned()
+            .unwrap_or_else(|| ContractOperationHead::new(format!("genesis:{}", contract.as_str())))
+    }
+
+    /// The state-point key `(contract, head)` under which one co-signed successor
+    /// is tracked. Mirrors the string-keyed identity convention in `tables.rs`.
+    fn state_point_key(
+        contract: &signal_criome::ContractDigest,
+        head: &ContractOperationHead,
+    ) -> String {
+        format!("{}@{}", contract.as_str(), head.as_str())
+    }
+
+    /// The pluggable conflict predicate (the phase-2 commutative-merge seam): TODAY
+    /// two successors from the same head conflict iff they are different objects. A
+    /// later compatible/commutative-merge predicate slots in here to let
+    /// order-independent changes both commit.
+    fn successors_conflict(
+        &self,
+        existing: &AuthorizedObjectReference,
+        proposed: &AuthorizedObjectReference,
+    ) -> bool {
+        existing.digest != proposed.digest
+    }
+
+    /// Non-double-signing guard: at most one honest successor per (contract, head).
+    /// Returns the typed `QuorumConflict` refusal when this node has already
+    /// co-signed a CONFLICTING successor from the same head; `None` when the
+    /// successor is new or identical (idempotent re-co-sign) and may proceed.
+    fn check_successor_conflict(
+        &self,
+        contract: &signal_criome::ContractDigest,
+        object: &AuthorizedObjectReference,
+    ) -> Option<CriomeReply> {
+        let head = self.state_head(contract);
+        let existing = self
+            .co_signed_successors
+            .get(&Self::state_point_key(contract, &head))?;
+        self.successors_conflict(existing, object).then(|| {
+            CriomeReply::quorum_conflict(QuorumConflict::new(
+                contract.clone(),
+                head.clone(),
+                existing.clone(),
+            ))
+        })
+    }
+
+    /// Record `object` as the one successor this node has co-signed for
+    /// `contract`'s current head. Idempotent: a later identical co-sign keeps the
+    /// first record; a conflicting one is refused earlier by
+    /// [`Self::check_successor_conflict`].
+    fn record_co_sign(
+        &mut self,
+        contract: &signal_criome::ContractDigest,
+        object: &AuthorizedObjectReference,
+    ) {
+        let head = self.state_head(contract);
+        self.co_signed_successors
+            .entry(Self::state_point_key(contract, &head))
+            .or_insert_with(|| object.clone());
+    }
+
+    /// Advance this node's head for `contract` to the just-committed successor, so
+    /// a later change is a fresh state-point rather than a conflict.
+    fn advance_head(
+        &mut self,
+        contract: &signal_criome::ContractDigest,
+        object: &AuthorizedObjectReference,
+    ) {
+        self.contract_heads.insert(
+            contract.as_str().to_string(),
+            ContractOperationHead::new(object.digest.as_str().to_string()),
+        );
     }
 
     /// The `KeyMember` identities and required threshold of an admitted Threshold

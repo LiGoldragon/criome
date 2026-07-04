@@ -44,6 +44,13 @@ const CRIOME_CONTRACT_NAME: &str = "signal-criome";
 /// leaves the round pending rather than failing it.
 pub trait QuorumVoice: Send + Sync {
     fn convey(&self, recipient: &Identity, request: CriomeRequest);
+
+    /// Convey a sequence of requests to one peer IN ORDER — each delivered (and
+    /// its reply drained) before the next is sent. The two-round commit driver
+    /// uses this to deliver the round-1 evidence (the gathered votes) and THEN the
+    /// commit solicitation that re-judges it, so the ordering-dependent exchange is
+    /// race-free over the otherwise best-effort voice.
+    fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>);
 }
 
 /// The unarmed voice: a criome with no configured peers. An M-of-1 contract
@@ -52,6 +59,8 @@ pub struct SilentVoice;
 
 impl QuorumVoice for SilentVoice {
     fn convey(&self, _recipient: &Identity, _request: CriomeRequest) {}
+
+    fn convey_ordered(&self, _recipient: &Identity, _requests: Vec<CriomeRequest>) {}
 }
 
 /// One peer member mapped to the criome working socket that reaches it.
@@ -97,6 +106,17 @@ impl QuorumVoice for DirectDialQuorumVoice {
         };
         std::thread::spawn(move || {
             let _ = CriomeClient::new(socket).send(request);
+        });
+    }
+
+    fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>) {
+        let Some(socket) = self.socket_for(recipient) else {
+            return;
+        };
+        std::thread::spawn(move || {
+            for request in requests {
+                let _ = CriomeClient::new(socket.clone()).send(request);
+            }
         });
     }
 }
@@ -233,6 +253,22 @@ impl QuorumVoice for RouterQuorumVoice {
         let router_socket = self.router_socket.clone();
         std::thread::spawn(move || {
             let _ = Self::submit(&router_socket, payload);
+        });
+    }
+
+    fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>) {
+        let Some(destination) = self.destination_for(recipient) else {
+            return;
+        };
+        let payloads: Vec<ForwardedMessagePayload> = requests
+            .into_iter()
+            .filter_map(|request| self.payload(destination.clone(), request).ok())
+            .collect();
+        let router_socket = self.router_socket.clone();
+        std::thread::spawn(move || {
+            for payload in payloads {
+                let _ = Self::submit(&router_socket, payload);
+            }
         });
     }
 }
