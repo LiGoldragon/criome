@@ -56,6 +56,7 @@ async fn start_node(name: &str, node_identity: Identity) -> kameo::actor::ActorR
         authorization_mode: signal_criome::AuthorizationMode::Quorum,
         node_identity,
         voice: std::sync::Arc::new(criome::voice::SilentVoice),
+        clock: criome::master_key::SystemClock::system(),
     })
     .await
     .unwrap_or_else(|error| panic!("start criome {name}: {error}"))

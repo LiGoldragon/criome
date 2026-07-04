@@ -31,7 +31,7 @@ use crate::actors::{
 use crate::admission::ClusterRoot;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
-use crate::master_key::SystemClock;
+use crate::master_key::{SystemClock, WindowAdmission};
 use crate::tables::StoredQuorumRound;
 use crate::voice::{QuorumVoice, SilentVoice};
 use crate::{Error, Result, StoreLocation};
@@ -50,6 +50,10 @@ pub struct CriomeRoot {
     node_identity: Identity,
     /// How this node conveys solicitations and votes to peer members' criomes.
     voice: Arc<dyn QuorumVoice>,
+    /// This node's own clock, consulted by the peer witness-clock re-check so a
+    /// solicited peer independently refuses a window its clock is not inside —
+    /// the same gate the signer enforces before time-signing.
+    clock: SystemClock,
 }
 
 pub struct Arguments {
@@ -64,6 +68,10 @@ pub struct Arguments {
     /// Defaults to the unarmed [`SilentVoice`]; a deployment supplies a
     /// router-mediated or direct-dial voice.
     pub voice: Arc<dyn QuorumVoice>,
+    /// This node's clock. The peer witness-clock re-check reads it, and the same
+    /// clock is handed to the signer; a pinned clock makes the gate deterministic
+    /// under test. Defaults to the real wall clock.
+    pub clock: SystemClock,
 }
 
 pub struct SubmitRequest {
@@ -98,6 +106,7 @@ impl Arguments {
             authorization_mode: AuthorizationMode::Quorum,
             node_identity: Self::default_node_identity(),
             voice: Arc::new(SilentVoice),
+            clock: SystemClock::system(),
         }
     }
 
@@ -181,6 +190,7 @@ impl CriomeRoot {
         authorization_mode: AuthorizationMode,
         node_identity: Identity,
         voice: Arc<dyn QuorumVoice>,
+        clock: SystemClock,
     ) -> Self {
         Self {
             registry,
@@ -193,6 +203,7 @@ impl CriomeRoot {
             configuration_generation: 0,
             node_identity,
             voice,
+            clock,
         }
     }
 
@@ -1283,6 +1294,18 @@ impl CriomeRoot {
         if !self.proposition_matches_members(&proposition, required, &members) {
             return rejection(RejectionReason::MalformedRequest);
         }
+        // Independent witness-clock re-check: a solicited peer time-signs a window
+        // only when its OWN clock places the present inside it. This joins the
+        // member-set guard so an honest peer refuses a window it is not inside on
+        // its own clock — the same gate the signer enforces (defence in depth), so
+        // a proposer's convenient window is refused independently by every honest
+        // peer, not merely on the originator's say-so.
+        match self.clock.admits_window(&proposition.window) {
+            WindowAdmission::Inside => {}
+            WindowAdmission::OutsideTimeWindow => {
+                return rejection(RejectionReason::MalformedRequest);
+            }
+        }
         let vote = match self.cast_quorum_vote(&round, &object, &proposition).await {
             Ok(vote) => vote,
             Err(reply) => return reply,
@@ -1578,6 +1601,7 @@ impl Actor for CriomeRoot {
                 store: store.clone(),
                 master_key,
                 criome_identity,
+                clock: arguments.clock,
             },
         )
         .spawn()
@@ -1617,6 +1641,7 @@ impl Actor for CriomeRoot {
             arguments.authorization_mode,
             node_identity,
             voice,
+            arguments.clock,
         ))
     }
 }

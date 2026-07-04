@@ -22,7 +22,7 @@ use blst::BLST_ERROR;
 use blst::min_pk::{PublicKey, SecretKey, Signature};
 use signal_criome::{
     Attestation, AuditContext, BlsPublicKey, BlsSignature, ContentPurpose, ContentReference,
-    Identity, PublicKeyFingerprint, SignatureScheme, TimestampNanos,
+    Identity, PublicKeyFingerprint, SignatureScheme, TimeWindow, TimestampNanos,
 };
 
 use crate::{Error, Result};
@@ -215,32 +215,87 @@ impl<'a> AttestationPreimage<'a> {
     }
 }
 
-/// A wall clock for stamping and expiry checks, mirroring the nanos-since-epoch
-/// `TimestampNanos` the wire uses. Data-bearing (it holds its epoch) rather than
-/// a free `now()` helper; shared by the signer (stamp `issued_at`) and the
-/// verifier (reject expired attestations).
-pub struct SystemClock {
-    epoch: SystemTime,
+/// A clock for stamping, expiry checks, and the per-signer witness-clock gate,
+/// mirroring the nanos-since-epoch `TimestampNanos` the wire uses. Data-bearing
+/// (it holds its own source of now) rather than a free `now()` helper; shared by
+/// the signer (stamp `issued_at`, gate the time-signature) and the verifier
+/// (reject expired attestations).
+///
+/// The clock is either the real wall clock or a pinned instant. A pinned clock
+/// makes the witness-clock gate deterministic under test — a signer's refusal of
+/// an out-of-window request is proven without reading the real wall clock.
+#[derive(Clone, Copy)]
+pub enum SystemClock {
+    Wall { epoch: SystemTime },
+    Pinned { instant: TimestampNanos },
+}
+
+/// The verdict of the per-signer witness-clock gate: whether a signer's own
+/// clock places the present inside a requested `TimeWindow`. A quorum signer
+/// emits its time-signature only on `Inside`, so each signature testifies "now
+/// is inside this window" rather than merely "a quorum co-signed this window."
+///
+/// A closed variant set (not a bool) so a phase-2 self-ownership lease can add
+/// its own refusal (`OutsideLease`) beside `OutsideTimeWindow`, each mapping to a
+/// distinct typed reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowAdmission {
+    /// `now ∈ [opens_at, closes_at]`: the signer witnesses the present inside it.
+    Inside,
+    /// `now ∉ [opens_at, closes_at]`: the signer refuses to time-sign; maps to
+    /// `EvaluationRejectionReason::OutsideTimeWindow`.
+    OutsideTimeWindow,
 }
 
 impl SystemClock {
     pub fn system() -> Self {
-        Self {
+        Self::Wall {
             epoch: SystemTime::UNIX_EPOCH,
         }
     }
 
+    /// A clock pinned to a fixed instant. Deterministic: injected in tests so the
+    /// witness-clock gate is exercised without reading the real wall clock.
+    pub fn pinned(instant: TimestampNanos) -> Self {
+        Self::Pinned { instant }
+    }
+
     pub fn timestamp(&self) -> TimestampNanos {
-        let nanos = SystemTime::now()
-            .duration_since(self.epoch)
-            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-            .unwrap_or(0);
-        TimestampNanos::new(nanos)
+        match self {
+            Self::Wall { epoch } => {
+                let nanos = SystemTime::now()
+                    .duration_since(*epoch)
+                    .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+                    .unwrap_or(0);
+                TimestampNanos::new(nanos)
+            }
+            Self::Pinned { instant } => *instant,
+        }
     }
 
     /// Whether `deadline` is strictly in the past relative to now.
     pub fn is_past(&self, deadline: &TimestampNanos) -> bool {
         self.timestamp().into_u64() > (*deadline).into_u64()
+    }
+
+    /// The per-signer witness-clock gate: does this clock's present lie inside
+    /// `window`? A quorum signer consults its OWN clock and emits its
+    /// time-signature only on `Inside`, so a proposer cannot manufacture "now" by
+    /// choosing a convenient window — an honest signer refuses a window its clock
+    /// is not inside.
+    ///
+    /// The gate is a conjunction of admission predicates. Today it is the single
+    /// clock-in-window predicate; a phase-2 self-ownership lease joins it here as
+    /// a second conjunct (`now ∈ window` AND `window ⊆ lease`), a signer-side
+    /// refusal beside this one.
+    pub fn admits_window(&self, window: &TimeWindow) -> WindowAdmission {
+        let now = self.timestamp().into_u64();
+        let inside = now >= window.opens_at.into_u64() && now <= window.closes_at.into_u64();
+        if inside {
+            WindowAdmission::Inside
+        } else {
+            WindowAdmission::OutsideTimeWindow
+        }
     }
 }
 

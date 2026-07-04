@@ -13,7 +13,7 @@ use signal_criome::{
 
 use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, store};
 use crate::language::{AttestedMomentStatement, OperationStatement};
-use crate::master_key::{AttestationPreimage, MasterKey, SystemClock};
+use crate::master_key::{AttestationPreimage, MasterKey, SystemClock, WindowAdmission};
 use crate::tables::StoredIdentity;
 
 pub struct AttestationSigner {
@@ -30,6 +30,9 @@ pub struct Arguments {
     pub store: ActorRef<store::StoreKernel>,
     pub master_key: MasterKey,
     pub criome_identity: Identity,
+    /// This node's clock. The witness-clock gate reads it before time-signing a
+    /// quorum vote; a pinned clock makes that gate deterministic under test.
+    pub clock: SystemClock,
 }
 
 pub struct SignContent {
@@ -214,13 +217,14 @@ impl AttestationSigner {
         store: ActorRef<store::StoreKernel>,
         master_key: MasterKey,
         criome_identity: Identity,
+        clock: SystemClock,
     ) -> Self {
         Self {
             registry,
             store,
             master_key,
             criome_identity,
-            clock: SystemClock::system(),
+            clock,
         }
     }
 
@@ -346,6 +350,17 @@ impl AttestationSigner {
         operation: &OperationDigest,
         proposition: &AttestedMomentProposition,
     ) -> crate::Result<QuorumVoteSignatures> {
+        // The witness-clock gate: this node emits its time-signature only when its
+        // OWN clock places the present inside the request's window. A signature is
+        // thus a genuine "now is inside this window" witness, not merely agreement
+        // on a window value — so a proposer cannot manufacture "now" by choosing a
+        // convenient window; an honest signer refuses a window its clock is not
+        // inside, refusing the whole vote (a vote without a valid time-signature is
+        // worthless to the round).
+        match self.clock.admits_window(&proposition.window) {
+            WindowAdmission::Inside => {}
+            WindowAdmission::OutsideTimeWindow => return Err(crate::Error::OutsideTimeWindow),
+        }
         let provisional_stamp = AttestedMoment::new(proposition.clone(), Vec::new());
         let operation_bytes = OperationStatement::new(&self.criome_identity, operation, &provisional_stamp)
             .to_signing_bytes()
@@ -427,6 +442,7 @@ impl Actor for AttestationSigner {
             arguments.store,
             arguments.master_key,
             arguments.criome_identity,
+            arguments.clock,
         ))
     }
 }

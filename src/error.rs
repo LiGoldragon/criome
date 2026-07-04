@@ -59,6 +59,8 @@ pub enum Error {
     MissingSocket { path: PathBuf },
     #[error("quorum vote signing failed: {0}")]
     VoteSigning(String),
+    #[error("quorum vote refused: the signer's clock is outside the request time window")]
+    OutsideTimeWindow,
     #[error("quorum round is not governed by a threshold contract")]
     QuorumContractNotThreshold,
     #[error("quorum voice delivery failed: {0}")]

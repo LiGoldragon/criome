@@ -13,6 +13,7 @@ use triad_runtime::SignalFile;
 use crate::actors::root::{
     Arguments as RootArguments, CriomeRoot, SubmitMetaRequest, SubmitRequest,
 };
+use crate::master_key::SystemClock;
 use crate::tables::StoreLocation;
 use crate::transport::{CriomeFrameCodec, CriomeMetaFrameCodec};
 use crate::voice::{QuorumVoice, SilentVoice};
@@ -27,6 +28,7 @@ pub struct CriomeDaemon {
     authorization_mode: AuthorizationMode,
     node_identity: Identity,
     voice: Arc<dyn QuorumVoice>,
+    clock: SystemClock,
 }
 
 pub use signal_criome::CriomeDaemonConfiguration;
@@ -48,6 +50,7 @@ impl CriomeDaemon {
             authorization_mode: AuthorizationMode::Quorum,
             node_identity: RootArguments::default_node_identity(),
             voice: Arc::new(SilentVoice),
+            clock: SystemClock::system(),
         }
     }
 
@@ -69,6 +72,7 @@ impl CriomeDaemon {
             authorization_mode: *configuration.authorization_mode(),
             node_identity,
             voice: Arc::new(SilentVoice),
+            clock: SystemClock::system(),
         }
     }
 
@@ -115,6 +119,14 @@ impl CriomeDaemon {
         self
     }
 
+    /// Pin this node's clock (the witness-clock the quorum gate consults). Unset,
+    /// the node uses the real wall clock; a test pins it so an out-of-window
+    /// refusal is deterministic without reading wall time.
+    pub fn with_clock(mut self, clock: SystemClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
     pub fn run(self) -> Result<()> {
         let bound = self.bind()?;
         eprintln!("criome socket={}", bound.socket().display());
@@ -141,6 +153,7 @@ impl CriomeDaemon {
             authorization_mode: self.authorization_mode,
             node_identity: self.node_identity,
             voice: self.voice,
+            clock: self.clock,
         }))?;
         Ok(BoundCriomeDaemon {
             socket: self.socket,

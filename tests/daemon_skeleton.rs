@@ -1019,6 +1019,7 @@ async fn parked_authorization_snapshot_sorts_slots_numerically() {
         authorization_mode: signal_criome::AuthorizationMode::ClientApproval,
         node_identity: RootArguments::default_node_identity(),
         voice: std::sync::Arc::new(criome::voice::SilentVoice),
+        clock: criome::master_key::SystemClock::system(),
     })
     .await
     .expect("start criome root");
@@ -1214,6 +1215,7 @@ async fn cluster_root_gates_registration() {
         authorization_mode: signal_criome::AuthorizationMode::Quorum,
         node_identity: RootArguments::default_node_identity(),
         voice: std::sync::Arc::new(criome::voice::SilentVoice),
+        clock: criome::master_key::SystemClock::system(),
     })
     .await
     .expect("start criome root");
