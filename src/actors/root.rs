@@ -2,8 +2,9 @@ use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use meta_signal_criome::{
     AuthorizationApproval, AuthorizationApprovalDecision, AuthorizationApprovalRecorded,
-    ConfigurationRejectionReason, OperationKind, RequestUnimplemented, RootFoundingAcceptance,
-    RootFoundingAccepted, RootFoundingRejectionReason, UnimplementedReason,
+    ConfigurationRejectionReason, OperationKind, PendingFounding, RequestUnimplemented,
+    RootFoundingAcceptance, RootFoundingAccepted, RootFoundingInitiation, RootFoundingObservation,
+    RootFoundingRejectionReason, RootFoundingState, RootFoundingStatus, UnimplementedReason,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -17,14 +18,16 @@ use signal_criome::{
     AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected,
     ContractAdmitted, ContractFound, ContractMissing, ContractOperationHead,
     CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision, Evidence,
-    FoundingSignature, Identity, IdentityRegistration, IdentitySubscriptionToken,
-    InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose, OperationDigest,
-    ParkedAuthorization, ParkedAuthorizationObservation, ParkedAuthorizationSnapshot,
-    ParkedRequestAnswer, ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestQuery,
-    ParkedSpiritRequest, PolicyMember, QuorumConflict, QuorumProposal, QuorumRoundIdentifier,
-    QuorumRoundState, QuorumRoundStatus, QuorumVote, QuorumVoteSolicitation, RejectionReason,
-    RequiredSignatureThreshold, RoundPhase, Rule, SignalCallAuthorization,
-    SpiritAuthorizationContext, StampedSignatureEnvelope, TimeSignature, TimestampNanos,
+    FoundedRoot, FoundingConveyance, FoundingConveyanceOutcome, FoundingConveyanceReceipt,
+    FoundingProposal, FoundingSignature, FoundingSignatureReturn, Identity, IdentityRegistration,
+    IdentitySubscriptionToken, InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose,
+    OperationDigest, ParkedAuthorization, ParkedAuthorizationObservation,
+    ParkedAuthorizationSnapshot, ParkedRequestAnswer, ParkedRequestDecision,
+    ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest, PolicyMember, QuorumConflict,
+    QuorumProposal, QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus, QuorumVote,
+    QuorumVoteSolicitation, RejectionReason, RequiredSignatureThreshold, RootAnchorDigest,
+    RoundPhase, Rule, SignalCallAuthorization, SpiritAuthorizationContext,
+    StampedSignatureEnvelope, TimeSignature, TimestampNanos,
 };
 
 use crate::actors::{
@@ -36,7 +39,7 @@ use crate::founding::RootFounding;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
 use crate::master_key::{SystemClock, WindowAdmission};
-use crate::tables::StoredQuorumRound;
+use crate::tables::{StoredPendingFounding, StoredQuorumRound};
 use crate::voice::{QuorumVoice, SilentVoice};
 use crate::{Error, Result, StoreLocation};
 
@@ -382,6 +385,7 @@ impl CriomeRoot {
             CriomeRequest::ObserveNodePublicKey(_observation) => {
                 self.observe_node_public_key().await
             }
+            CriomeRequest::ConveyFounding(conveyance) => self.convey_founding(conveyance).await,
         }
     }
 
@@ -427,6 +431,12 @@ impl CriomeRoot {
             }
             meta_signal_criome::Input::AcceptRootFounding(acceptance) => {
                 self.accept_root_founding(acceptance).await
+            }
+            meta_signal_criome::Input::InitiateRootFounding(initiation) => {
+                self.initiate_root_founding(initiation).await
+            }
+            meta_signal_criome::Input::ObserveRootFounding(observation) => {
+                self.observe_root_founding(observation).await
             }
         }
     }
@@ -1901,8 +1911,29 @@ impl CriomeRoot {
         if self.persist_root_founding(founding.clone()).await.is_err() {
             return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis);
         }
+        // Return this node's signature to the founding's initiator when a PEER
+        // initiated it: a pending record naming another node is a proposal this node
+        // was asked to join, so its signature is conveyed back for the initiator to
+        // accumulate. A locally initiated founding names this node as its own
+        // initiator, so its signatures accumulate here directly with nothing to convey.
+        if let Some(pending) = self.pending_founding(&anchor).await
+            && pending.initiator() != &self.node_identity
+        {
+            self.voice.convey(
+                pending.initiator(),
+                CriomeRequest::convey_founding(FoundingConveyance::Signature(
+                    FoundingSignatureReturn {
+                        anchor: anchor.clone(),
+                        signature: signature.clone(),
+                    },
+                )),
+            );
+        }
+        // Unanimity here means this node holds every cohort member's signature (it is
+        // the initiator gathering them): seed the registry from the founded cohort and
+        // distribute the finished root to every peer so each adopts the SAME anchor.
         if founding.is_unanimous() {
-            self.seed_founding_registry(&founding).await;
+            self.on_founding_unanimous(&founding).await;
         }
         meta_signal_criome::Output::root_founding_accepted(RootFoundingAccepted::new(
             anchor, signature,
@@ -1953,6 +1984,260 @@ impl CriomeRoot {
                 .ask(store::StoreIdentity::new(registration))
                 .await;
         }
+    }
+
+    // ─── Cross-node founding conveyance (proposal → signatures → founded) ─────
+    //
+    // The wire that lets a multi-node cohort assemble a UNANIMOUS root across
+    // peers' working sockets, riding the SAME router voice the quorum path uses
+    // (no new lane). A founding moves in three conveyances between cohort
+    // criomes: the initiator conveys a Proposal to each peer; each peer's owner
+    // accepts and its criome conveys that Signature back; when the initiator has
+    // gathered every member's signature it distributes the finished Founded root
+    // to every peer, which each verify and persist. No auto-approval anywhere:
+    // every signature is minted only by an explicit owner AcceptRootFounding.
+    //
+    // PHASE-2 HOOK (root rotation/mutation, deliberately NOT built here): a
+    // founded root is immutable within this design. Rotating to a successor root
+    // would ride a new FoundingConveyance movement (a rotation proposal carrying
+    // the successor genesis and a link back to the current anchor) gathered the
+    // same unanimous way; `RootFounding`/the `root_founding` singleton would then
+    // hold a chain of founded anchors rather than the single record it holds today.
+
+    /// A founding conveyance arrived on the working socket. Route it by movement:
+    /// a proposal is stored pending (never signed on receipt), a returned
+    /// signature is accumulated toward unanimity, and a finished root is verified
+    /// and adopted.
+    async fn convey_founding(&self, conveyance: FoundingConveyance) -> CriomeReply {
+        match conveyance {
+            FoundingConveyance::Proposal(proposal) => {
+                self.receive_founding_proposal(proposal).await
+            }
+            FoundingConveyance::Signature(signature_return) => {
+                self.receive_founding_signature(signature_return).await
+            }
+            FoundingConveyance::Founded(founded) => self.receive_founded_root(founded).await,
+        }
+    }
+
+    /// Peer role: an initiator proposed this cohort. Validate the genesis, derive
+    /// its self-certifying anchor, and store it pending an explicit owner accept —
+    /// this node does NOT sign on receipt (no auto-approval). A malformed proposal
+    /// is refused, never stored.
+    async fn receive_founding_proposal(&self, proposal: FoundingProposal) -> CriomeReply {
+        let FoundingProposal { genesis, initiator } = proposal;
+        let founding = match RootFounding::found(genesis) {
+            Ok(founding) => founding,
+            Err(_) => return rejection(RejectionReason::MalformedRequest),
+        };
+        let anchor = founding.anchor().clone();
+        let pending =
+            StoredPendingFounding::new(anchor.clone(), founding.genesis().clone(), initiator);
+        if self.store_pending_founding(pending).await.is_err() {
+            return rejection(RejectionReason::MalformedRequest);
+        }
+        Self::founding_conveyed(anchor, FoundingConveyanceOutcome::ProposalPending)
+    }
+
+    /// Initiator role: a peer returned its accepted signature. Resume this node's
+    /// gathering for the anchor — the singleton `root_founding` if this node has
+    /// already accepted, else found afresh from the pending cohort it initiated (a
+    /// peer signature can arrive before this node's own accept). Accumulate the
+    /// signature; on unanimity, seed and distribute the finished root.
+    async fn receive_founding_signature(
+        &self,
+        signature_return: FoundingSignatureReturn,
+    ) -> CriomeReply {
+        let FoundingSignatureReturn { anchor, signature } = signature_return;
+        let mut founding = match self.stored_root_founding().await {
+            Some(existing) if existing.anchor() == &anchor => existing,
+            Some(_) => return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused),
+            None => match self.pending_founding(&anchor).await {
+                Some(pending) => {
+                    let (_, genesis, _) = pending.into_parts();
+                    match RootFounding::found(genesis) {
+                        Ok(founding) => founding,
+                        Err(_) => {
+                            return Self::founding_conveyed(
+                                anchor,
+                                FoundingConveyanceOutcome::Refused,
+                            );
+                        }
+                    }
+                }
+                None => return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused),
+            },
+        };
+        // attach_signature refuses a non-member; a member's redelivery updates in
+        // place rather than double-counting.
+        if !founding.attach_signature(signature) {
+            return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused);
+        }
+        if self.persist_root_founding(founding.clone()).await.is_err() {
+            return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused);
+        }
+        if founding.is_unanimous() {
+            self.on_founding_unanimous(&founding).await;
+            return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::RootFounded);
+        }
+        Self::founding_conveyed(anchor, FoundingConveyanceOutcome::SignatureAccumulated)
+    }
+
+    /// Peer role: the initiator distributed the finished root. Trust nothing on the
+    /// wire — reassemble it and adopt ONLY a root that `verify`s (the anchor matches
+    /// the embedded genesis, every attached signature is valid, and the cohort is
+    /// unanimous), persisting it and seeding the registry along the same durable
+    /// path `on_start` reboot adoption uses. A tampered or short distribution is
+    /// refused.
+    async fn receive_founded_root(&self, founded: FoundedRoot) -> CriomeReply {
+        let FoundedRoot {
+            genesis,
+            signatures,
+        } = founded;
+        let founding = match RootFounding::adopt(genesis, signatures) {
+            Ok(founding) => founding,
+            Err(_) => return rejection(RejectionReason::MalformedRequest),
+        };
+        let anchor = founding.anchor().clone();
+        if !founding.verify() {
+            return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused);
+        }
+        if self.persist_root_founding(founding.clone()).await.is_err() {
+            return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused);
+        }
+        self.seed_founding_registry(&founding).await;
+        Self::founding_conveyed(anchor, FoundingConveyanceOutcome::RootFounded)
+    }
+
+    fn founding_conveyed(
+        anchor: RootAnchorDigest,
+        outcome: FoundingConveyanceOutcome,
+    ) -> CriomeReply {
+        CriomeReply::founding_conveyed(FoundingConveyanceReceipt { anchor, outcome })
+    }
+
+    /// The initiator has gathered every cohort member's signature. Seed this node's
+    /// registry from the founded cohort (the same trust-anchor path reboot adoption
+    /// uses) and distribute the finished root to every peer so each verifies and
+    /// persists the SAME anchor.
+    async fn on_founding_unanimous(&self, founding: &RootFounding) {
+        self.seed_founding_registry(founding).await;
+        self.distribute_founded(founding);
+    }
+
+    /// Convey the finished unanimous root to every cohort member other than this
+    /// node, over the same best-effort voice.
+    fn distribute_founded(&self, founding: &RootFounding) {
+        let founded = FoundedRoot {
+            genesis: founding.genesis().clone(),
+            signatures: founding.signatures().to_vec(),
+        };
+        for member in founding.genesis().founding_keys() {
+            if member.identity == self.node_identity {
+                continue;
+            }
+            self.voice.convey(
+                &member.identity,
+                CriomeRequest::convey_founding(FoundingConveyance::Founded(founded.clone())),
+            );
+        }
+    }
+
+    /// Owner-only meta-op: initiate a multi-node founding on THIS node. Validate the
+    /// cohort, record this node's own gathering as pending (initiator = self, so a
+    /// peer signature arriving before this owner accepts can resume it and the
+    /// accept-by-anchor resolves the cohort here), and convey a Proposal to each
+    /// peer over the voice. No signing yet — founding stays owner-accepted with no
+    /// auto-approval, so the operator must still explicitly accept on this node.
+    async fn initiate_root_founding(
+        &self,
+        initiation: RootFoundingInitiation,
+    ) -> meta_signal_criome::Output {
+        let founding = match RootFounding::found(initiation.into_payload()) {
+            Ok(founding) => founding,
+            Err(_) => return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis),
+        };
+        let anchor = founding.anchor().clone();
+        let pending = StoredPendingFounding::new(
+            anchor,
+            founding.genesis().clone(),
+            self.node_identity.clone(),
+        );
+        if self.store_pending_founding(pending).await.is_err() {
+            return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis);
+        }
+        for member in founding.genesis().founding_keys() {
+            if member.identity == self.node_identity {
+                continue;
+            }
+            self.voice.convey(
+                &member.identity,
+                CriomeRequest::convey_founding(FoundingConveyance::Proposal(FoundingProposal {
+                    genesis: founding.genesis().clone(),
+                    initiator: self.node_identity.clone(),
+                })),
+            );
+        }
+        meta_signal_criome::Output::root_founding_status(self.root_founding_status().await)
+    }
+
+    /// Owner-only meta-op: this node's founding state and its pending-founding queue,
+    /// so the operator knows what awaits an accept and which anchor to accept.
+    async fn observe_root_founding(
+        &self,
+        _observation: RootFoundingObservation,
+    ) -> meta_signal_criome::Output {
+        meta_signal_criome::Output::root_founding_status(self.root_founding_status().await)
+    }
+
+    async fn root_founding_status(&self) -> RootFoundingStatus {
+        let state = match self.stored_root_founding().await {
+            Some(founding) if founding.is_unanimous() => RootFoundingState::Founded,
+            Some(_) => RootFoundingState::Gathering,
+            None => RootFoundingState::Unfounded,
+        };
+        let pending = self
+            .pending_foundings()
+            .await
+            .into_iter()
+            .map(|stored| {
+                let (anchor, cohort, initiator) = stored.into_parts();
+                PendingFounding {
+                    anchor,
+                    cohort,
+                    initiator,
+                }
+            })
+            .collect();
+        RootFoundingStatus { state, pending }
+    }
+
+    async fn store_pending_founding(
+        &self,
+        pending: StoredPendingFounding,
+    ) -> Result<StoredPendingFounding> {
+        let reply = self
+            .store
+            .ask(store::StorePendingFounding::new(pending))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_pending())
+    }
+
+    async fn pending_founding(&self, anchor: &RootAnchorDigest) -> Option<StoredPendingFounding> {
+        self.store
+            .ask(store::ReadPendingFounding::new(anchor.clone()))
+            .await
+            .ok()?
+            .into_pending()
+    }
+
+    async fn pending_foundings(&self) -> Vec<StoredPendingFounding> {
+        self.store
+            .ask(store::ReadPendingFoundings)
+            .await
+            .map(store::PendingFoundingsReply::into_pendings)
+            .unwrap_or_default()
     }
 }
 

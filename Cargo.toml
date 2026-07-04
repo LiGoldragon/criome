@@ -1,6 +1,6 @@
 [package]
 name         = "criome"
-version      = "0.4.3"
+version      = "0.5.0"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -26,6 +26,13 @@ path = "src/bin/criome-encode-configuration.rs"
 required-features = ["nota-text"]
 
 [[bin]]
+# The owner-only cross-node founding operator CLI: observe a node's public key,
+# initiate a founding, observe the pending-founding queue, and accept by anchor.
+name = "criome-founding"
+path = "src/bin/criome-founding.rs"
+required-features = ["nota-text"]
+
+[[bin]]
 name = "criome-cluster-witness-test"
 path = "src/bin/criome-cluster-witness-test.rs"
 required-features = ["cluster-witness"]
@@ -47,7 +54,7 @@ required-features = ["cluster-witness"]
 
 [features]
 default = []
-nota-text = ["dep:nota-next", "signal-criome/nota-text", "signal-frame/nota-text"]
+nota-text = ["dep:nota-next", "signal-criome/nota-text", "meta-signal-criome/nota-text", "signal-frame/nota-text"]
 # The criome-cluster test harness binaries (the authorization witness and its
 # daemon-config encoder) — designer report 704, Stage A. Excluded from
 # production builds; the NixOS cluster test enables it.

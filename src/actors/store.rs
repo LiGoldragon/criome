@@ -6,7 +6,7 @@ use signal_criome::{
     Contract, ContractAdmissionRejectionReason, ContractDigest, Identity, IdentityRegistration,
     IdentityRevocation, InterceptPolicyCancellation, InterceptPolicyProposal, ObjectDigest,
     ParkedRequestAnswer, ParkedRequestQuery, ParkedRequestResolution, ParkedRequestSnapshot,
-    QuorumRoundIdentifier, SignatureSolicitationRoute, SignatureSubmission,
+    QuorumRoundIdentifier, RootAnchorDigest, SignatureSolicitationRoute, SignatureSubmission,
     SpiritAuthorizationContext, TimestampNanos,
 };
 
@@ -15,8 +15,8 @@ use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
     AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, InterceptPolicyDraft,
     StoreLocation, StoredAttestation, StoredAuthorizationState, StoredContract, StoredIdentity,
-    StoredInterceptPolicy, StoredParkedSpiritRequest, StoredQuorumRound, StoredRevocation,
-    StoredSignatureSolicitation, StoredSignatureSubmission,
+    StoredInterceptPolicy, StoredParkedSpiritRequest, StoredPendingFounding, StoredQuorumRound,
+    StoredRevocation, StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
 pub struct StoreKernel {
@@ -93,6 +93,16 @@ pub struct StoreRootFounding {
 }
 
 pub struct ReadRootFounding;
+
+pub struct StorePendingFounding {
+    pending: StoredPendingFounding,
+}
+
+pub struct ReadPendingFounding {
+    anchor: RootAnchorDigest,
+}
+
+pub struct ReadPendingFoundings;
 
 pub struct StoreInterceptPolicy {
     draft: InterceptPolicyDraft,
@@ -220,6 +230,21 @@ pub struct RootFoundingReply {
 #[derive(kameo::Reply)]
 pub struct RootFoundingLookupReply {
     founding: Option<RootFounding>,
+}
+
+#[derive(kameo::Reply)]
+pub struct PendingFoundingReply {
+    pending: StoredPendingFounding,
+}
+
+#[derive(kameo::Reply)]
+pub struct PendingFoundingLookupReply {
+    pending: Option<StoredPendingFounding>,
+}
+
+#[derive(kameo::Reply)]
+pub struct PendingFoundingsReply {
+    pendings: Vec<StoredPendingFounding>,
 }
 
 #[derive(kameo::Reply)]
@@ -423,6 +448,36 @@ impl LookupQuorumRound {
 impl StoreRootFounding {
     pub fn new(founding: RootFounding) -> Self {
         Self { founding }
+    }
+}
+
+impl StorePendingFounding {
+    pub fn new(pending: StoredPendingFounding) -> Self {
+        Self { pending }
+    }
+}
+
+impl ReadPendingFounding {
+    pub fn new(anchor: RootAnchorDigest) -> Self {
+        Self { anchor }
+    }
+}
+
+impl PendingFoundingReply {
+    pub fn into_pending(self) -> StoredPendingFounding {
+        self.pending
+    }
+}
+
+impl PendingFoundingLookupReply {
+    pub fn into_pending(self) -> Option<StoredPendingFounding> {
+        self.pending
+    }
+}
+
+impl PendingFoundingsReply {
+    pub fn into_pendings(self) -> Vec<StoredPendingFounding> {
+        self.pendings
     }
 }
 
@@ -807,6 +862,25 @@ impl StoreKernel {
         self.tables.root_founding()
     }
 
+    fn store_pending_founding(
+        &self,
+        pending: StoredPendingFounding,
+    ) -> crate::Result<StoredPendingFounding> {
+        self.tables.put_pending_founding(&pending)?;
+        Ok(pending)
+    }
+
+    fn pending_founding(
+        &self,
+        anchor: &RootAnchorDigest,
+    ) -> crate::Result<Option<StoredPendingFounding>> {
+        self.tables.pending_founding(anchor)
+    }
+
+    fn pending_foundings(&self) -> crate::Result<Vec<StoredPendingFounding>> {
+        self.tables.pending_foundings()
+    }
+
     fn store_intercept_policy(
         &self,
         draft: InterceptPolicyDraft,
@@ -1098,6 +1172,45 @@ impl Message<ReadRootFounding> for StoreKernel {
     ) -> Self::Reply {
         self.root_founding()
             .map(|founding| RootFoundingLookupReply { founding })
+    }
+}
+
+impl Message<StorePendingFounding> for StoreKernel {
+    type Reply = crate::Result<PendingFoundingReply>;
+
+    async fn handle(
+        &mut self,
+        message: StorePendingFounding,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_pending_founding(message.pending)
+            .map(|pending| PendingFoundingReply { pending })
+    }
+}
+
+impl Message<ReadPendingFounding> for StoreKernel {
+    type Reply = crate::Result<PendingFoundingLookupReply>;
+
+    async fn handle(
+        &mut self,
+        message: ReadPendingFounding,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.pending_founding(&message.anchor)
+            .map(|pending| PendingFoundingLookupReply { pending })
+    }
+}
+
+impl Message<ReadPendingFoundings> for StoreKernel {
+    type Reply = crate::Result<PendingFoundingsReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadPendingFoundings,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.pending_foundings()
+            .map(|pendings| PendingFoundingsReply { pendings })
     }
 }
 

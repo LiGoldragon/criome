@@ -21,8 +21,8 @@ use signal_criome::{
     ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestOutcome, ParkedRequestQuery,
     ParkedRequestResolution, ParkedRequestSnapshot, ParkedSpiritRequest, ParkedSpiritRequests,
     PolicyOverlapMode, PrincipalName, PrincipalStatus, PublicKeyFingerprint, QuorumRoundIdentifier,
-    QuorumVote, ReplayNonce, SignatureSolicitationRoute, SignatureSubmission,
-    SpiritAuthorizationContext, TimestampNanos,
+    QuorumVote, ReplayNonce, RootAnchorDigest, RootGenesis, SignatureSolicitationRoute,
+    SignatureSubmission, SpiritAuthorizationContext, TimestampNanos,
 };
 
 use crate::Result;
@@ -46,6 +46,7 @@ const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitatio
 const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
 const QUORUM_ROUNDS: TableName = TableName::new("quorum_rounds");
 const ROOT_FOUNDING: TableName = TableName::new("root_founding");
+const PENDING_FOUNDINGS: TableName = TableName::new("pending_foundings");
 const INTERCEPT_POLICIES: TableName = TableName::new("intercept_policies");
 const PARKED_SPIRIT_REQUESTS: TableName = TableName::new("parked_spirit_requests");
 const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot");
@@ -70,6 +71,11 @@ const ROOT_FOUNDING_FAMILY: &str = "criome-root-founding";
 // A node founds at most one root, so the `root_founding` table is a singleton
 // keyed under a constant slot.
 const ROOT_FOUNDING_KEY: &str = "founded";
+// Foundings this node is party to but has not yet founded: peer proposals
+// awaiting an owner accept, and this node's own initiated gathering. Keyed by
+// the founding's self-certifying anchor, so a node can be party to more than one
+// candidate at a time without clobbering the single `root_founding` record.
+const PENDING_FOUNDINGS_FAMILY: &str = "criome-pending-founding";
 const INTERCEPT_POLICIES_FAMILY: &str = "criome-intercept-policy";
 const PARKED_SPIRIT_REQUESTS_FAMILY: &str = "criome-parked-spirit-request";
 const ATTESTATION_NEXT_SLOT_FAMILY: &str = "criome-attestation-slot";
@@ -314,6 +320,44 @@ impl StoredQuorumRound {
         } else {
             self.votes.push(vote);
         }
+    }
+}
+
+/// A founding this node is party to but has not yet founded: a peer's proposal
+/// awaiting an owner accept, or this node's own initiated gathering. The full
+/// `genesis` is retained so an owner can accept by anchor alone, and `initiator`
+/// names the node to return this node's signature to on accept (this node itself
+/// for a locally initiated founding, in which case no signature is conveyed).
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredPendingFounding {
+    anchor: RootAnchorDigest,
+    genesis: RootGenesis,
+    initiator: Identity,
+}
+
+impl StoredPendingFounding {
+    pub fn new(anchor: RootAnchorDigest, genesis: RootGenesis, initiator: Identity) -> Self {
+        Self {
+            anchor,
+            genesis,
+            initiator,
+        }
+    }
+
+    pub fn anchor(&self) -> &RootAnchorDigest {
+        &self.anchor
+    }
+
+    pub fn genesis(&self) -> &RootGenesis {
+        &self.genesis
+    }
+
+    pub fn initiator(&self) -> &Identity {
+        &self.initiator
+    }
+
+    pub fn into_parts(self) -> (RootAnchorDigest, RootGenesis, Identity) {
+        (self.anchor, self.genesis, self.initiator)
     }
 }
 
@@ -620,6 +664,7 @@ pub struct CriomeTables {
     submitted_signatures: TableReference<StoredSignatureSubmission>,
     quorum_rounds: TableReference<StoredQuorumRound>,
     root_founding: TableReference<RootFounding>,
+    pending_foundings: TableReference<StoredPendingFounding>,
     intercept_policies: TableReference<StoredInterceptPolicy>,
     parked_spirit_requests: TableReference<StoredParkedSpiritRequest>,
     attestation_next_slot: TableReference<u64>,
@@ -659,6 +704,10 @@ impl CriomeTables {
             engine.register_table(Self::family_descriptor(QUORUM_ROUNDS, QUORUM_ROUNDS_FAMILY))?;
         let root_founding =
             engine.register_table(Self::family_descriptor(ROOT_FOUNDING, ROOT_FOUNDING_FAMILY))?;
+        let pending_foundings = engine.register_table(Self::family_descriptor(
+            PENDING_FOUNDINGS,
+            PENDING_FOUNDINGS_FAMILY,
+        ))?;
         let intercept_policies = engine.register_table(Self::family_descriptor(
             INTERCEPT_POLICIES,
             INTERCEPT_POLICIES_FAMILY,
@@ -695,6 +744,7 @@ impl CriomeTables {
             submitted_signatures,
             quorum_rounds,
             root_founding,
+            pending_foundings,
             intercept_policies,
             parked_spirit_requests,
             attestation_next_slot,
@@ -898,6 +948,28 @@ impl CriomeTables {
     /// The node's founded root, if it has founded (or is gathering) one.
     pub fn root_founding(&self) -> Result<Option<RootFounding>> {
         self.read_key(self.root_founding, ROOT_FOUNDING_KEY.to_owned())
+    }
+
+    /// Record (or update) a pending founding, keyed by its self-certifying
+    /// anchor.
+    pub fn put_pending_founding(&self, pending: &StoredPendingFounding) -> Result<()> {
+        let key = RootAnchorKey::new(pending.anchor()).into_string();
+        self.upsert(self.pending_foundings, key, pending.clone())?;
+        Ok(())
+    }
+
+    /// The pending founding for `anchor`, if this node is party to one.
+    pub fn pending_founding(
+        &self,
+        anchor: &RootAnchorDigest,
+    ) -> Result<Option<StoredPendingFounding>> {
+        let key = RootAnchorKey::new(anchor).into_string();
+        self.read_key(self.pending_foundings, key)
+    }
+
+    /// Every founding awaiting an owner accept on this node.
+    pub fn pending_foundings(&self) -> Result<Vec<StoredPendingFounding>> {
+        self.read_all(self.pending_foundings)
     }
 
     pub fn put_intercept_policy(
@@ -1517,5 +1589,21 @@ impl QuorumRoundKey {
 
     fn into_string(self) -> String {
         self.round
+    }
+}
+
+struct RootAnchorKey {
+    anchor: String,
+}
+
+impl RootAnchorKey {
+    fn new(anchor: &RootAnchorDigest) -> Self {
+        Self {
+            anchor: anchor.as_str().to_owned(),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.anchor
     }
 }

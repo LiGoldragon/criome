@@ -82,6 +82,21 @@ impl RootFounding {
         })
     }
 
+    /// Rebuild a founded record conveyed whole from the initiator: found the
+    /// genesis, then attach every gathered signature. The caller checks
+    /// [`Self::verify`] before persisting — `adopt` does not itself trust the
+    /// signatures, it only reassembles the record so `verify` can judge it.
+    pub fn adopt(
+        genesis: RootGenesis,
+        signatures: Vec<FoundingSignature>,
+    ) -> Result<Self, FoundingError> {
+        let mut founding = Self::found(genesis)?;
+        for signature in signatures {
+            founding.attach_signature(signature);
+        }
+        Ok(founding)
+    }
+
     pub fn genesis(&self) -> &RootGenesis {
         &self.genesis
     }
