@@ -602,7 +602,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     .expect("register timekeeper")
     .into_reply();
 
-    let contract = Contract::new(Rule::SignedBy(identity.clone()));
+    let contract = Contract::root(Rule::SignedBy(identity.clone()));
     let expected_contract = contract.clone();
     let admitted = root
         .ask(SubmitRequest::new(CriomeRequest::AdmitContract(contract)))
@@ -916,7 +916,7 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
     .into_reply();
 
     let workflow = workflow_digest(b"spirit guardian workflow");
-    let contract = Contract::new(Rule::Workflow(WorkflowGuard {
+    let contract = Contract::root(Rule::Workflow(WorkflowGuard {
         workflow: workflow.clone(),
         executor: Identity::host(("orchestrate").to_string()),
     }));

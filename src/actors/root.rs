@@ -2,26 +2,27 @@ use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use meta_signal_criome::{
     AuthorizationApproval, AuthorizationApprovalDecision, AuthorizationApprovalRecorded,
-    ConfigurationRejectionReason, OperationKind, RequestUnimplemented, UnimplementedReason,
+    ConfigurationRejectionReason, OperationKind, RequestUnimplemented, RootFoundingAcceptance,
+    RootFoundingAccepted, RootFoundingRejectionReason, UnimplementedReason,
 };
 use std::sync::Arc;
 
 use signal_criome::{
-    AttestedMoment, AttestedMomentProposition, AuthorizationAttestationRequest, AuthorizationDenial,
-    AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluated,
-    AuthorizationEvaluation, AuthorizationMode, AuthorizationObservationToken, AuthorizationPending,
-    AuthorizationRequestSlot, AuthorizationStateRecord, AuthorizationStatus,
-    AuthorizedObjectReference, AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey,
-    ContractAdmissionRejected, ContractAdmitted, ContractFound, ContractMissing,
-    CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision, Evidence, Identity,
-    IdentityRegistration, IdentitySubscriptionToken, InterceptPolicyCancellation,
-    InterceptPolicyProposal, KeyPurpose, OperationDigest, ParkedAuthorization,
-    ParkedAuthorizationObservation, ParkedAuthorizationSnapshot, ParkedRequestAnswer,
-    ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest,
-    PolicyMember, QuorumProposal, QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus,
-    QuorumVote, QuorumVoteSolicitation, RejectionReason, RequiredSignatureThreshold, Rule,
-    SignalCallAuthorization, SpiritAuthorizationContext, StampedSignatureEnvelope, TimeSignature,
-    TimestampNanos,
+    AttestedMoment, AttestedMomentProposition, AuthorizationAttestationRequest,
+    AuthorizationDenial, AuthorizationDenialReason, AuthorizationDenialSource,
+    AuthorizationEvaluated, AuthorizationEvaluation, AuthorizationMode,
+    AuthorizationObservationToken, AuthorizationPending, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference,
+    AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected,
+    ContractAdmitted, ContractFound, ContractMissing, CriomeDaemonConfiguration, CriomeReply,
+    CriomeRequest, EvaluationDecision, Evidence, FoundingSignature, Identity, IdentityRegistration,
+    IdentitySubscriptionToken, InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose,
+    OperationDigest, ParkedAuthorization, ParkedAuthorizationObservation,
+    ParkedAuthorizationSnapshot, ParkedRequestAnswer, ParkedRequestDecision,
+    ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest, PolicyMember, QuorumProposal,
+    QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus, QuorumVote, QuorumVoteSolicitation,
+    RejectionReason, RequiredSignatureThreshold, RoundPhase, Rule, SignalCallAuthorization,
+    SpiritAuthorizationContext, StampedSignatureEnvelope, TimeSignature, TimestampNanos,
 };
 
 use crate::actors::{
@@ -29,6 +30,7 @@ use crate::actors::{
     verifier,
 };
 use crate::admission::ClusterRoot;
+use crate::founding::RootFounding;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
 use crate::master_key::{SystemClock, WindowAdmission};
@@ -357,6 +359,9 @@ impl CriomeRoot {
             CriomeRequest::ObserveQuorumRound(query) => {
                 self.observe_quorum_round(query.into_payload()).await
             }
+            CriomeRequest::ObserveNodePublicKey(_observation) => {
+                self.observe_node_public_key().await
+            }
         }
     }
 
@@ -399,6 +404,9 @@ impl CriomeRoot {
             }
             meta_signal_criome::Input::SubmitAuthorizationApproval(approval) => {
                 self.record_authorization_approval(approval).await
+            }
+            meta_signal_criome::Input::AcceptRootFounding(acceptance) => {
+                self.accept_root_founding(acceptance).await
             }
         }
     }
@@ -1229,6 +1237,11 @@ impl CriomeRoot {
     async fn propose_quorum_authorization(&self, proposal: QuorumProposal) -> CriomeReply {
         let QuorumProposal {
             round,
+            // Single-gather round today: the round key is pinned to
+            // `RoundPhase::Request` via `for_operation` below, so the proposal's
+            // phase carries no extra choice yet. The two-round worker (.12/.13)
+            // makes this phase-aware and must reconcile the round-key binding.
+            phase: _,
             contract,
             object,
             window,
@@ -1267,6 +1280,9 @@ impl CriomeRoot {
     async fn solicit_quorum_vote(&self, solicitation: QuorumVoteSolicitation) -> CriomeReply {
         let QuorumVoteSolicitation {
             round,
+            // See `propose_quorum_authorization`: single Request-phase gather
+            // today; the two-round worker threads the phase here.
+            phase: _,
             contract,
             object,
             proposition,
@@ -1391,6 +1407,7 @@ impl CriomeRoot {
         };
         QuorumRoundState {
             round: stored.round().clone(),
+            phase: RoundPhase::Request,
             contract: stored.contract().clone(),
             status,
             gathered,
@@ -1447,6 +1464,7 @@ impl CriomeRoot {
             .map_err(|_error| rejection(RejectionReason::MalformedRequest))?;
         Ok(QuorumVote {
             round: round.clone(),
+            phase: RoundPhase::Request,
             voter: self.node_identity.clone(),
             operation_signature: signatures.operation_signature,
             time_signature: signatures.time_signature,
@@ -1462,6 +1480,7 @@ impl CriomeRoot {
             }
             let solicitation = QuorumVoteSolicitation {
                 round: stored.round().clone(),
+                phase: RoundPhase::Request,
                 contract: stored.contract().clone(),
                 object: stored.object().clone(),
                 proposition: stored.proposition().clone(),
@@ -1480,7 +1499,7 @@ impl CriomeRoot {
         store: &ContractStore,
         contract: &signal_criome::ContractDigest,
     ) -> Option<(RequiredSignatureThreshold, Vec<Identity>)> {
-        let Rule::Threshold(threshold) = store.resolve(contract).ok()?.payload() else {
+        let Rule::Threshold(threshold) = store.resolve(contract).ok()?.rule() else {
             return None;
         };
         let members = threshold
@@ -1527,6 +1546,149 @@ impl CriomeRoot {
             .await
             .ok()?
             .into_round()
+    }
+
+    // ─── Root founding ceremony (observe key → owner accept → persist → seed) ──
+    //
+    // Founding is UNANIMOUS and owner-accepted on the meta socket, with NO
+    // auto-approval: a node's master key emits a `FoundingSignature` ONLY on an
+    // explicit owner accept, and ONLY for the exact self-certifying cohort. The
+    // founded root is persisted with its attached signatures and, on unanimity,
+    // seeds the registry as the trust anchor; on reboot it is verified and adopted
+    // (`on_start`), never re-founded.
+    //
+    // The peer signatures a multi-node cohort needs ride node-to-node over the
+    // EXISTING router voice; `RootFounding::attach_signature` is the accumulation
+    // seam a conveyed peer signature feeds. The live 2-node gather over the voice
+    // is the live-proof worker's bead (.15); today the single-node cohort founds
+    // end-to-end and the unanimity/verification logic is proven at the unit level.
+
+    /// This node's Criome master public key, read from the signer that owns the
+    /// master key. Backs both the public read-op and the founding member match.
+    async fn node_public_key(&self) -> Option<BlsPublicKey> {
+        self.signer
+            .ask(signer::ReadNodePublicKey)
+            .await
+            .ok()
+            .map(|reply| reply.public_key)
+    }
+
+    /// Public-socket read-op: expose this node's Criome master public key so a
+    /// client can enroll it into a founding cohort out-of-band.
+    async fn observe_node_public_key(&self) -> CriomeReply {
+        match self.node_public_key().await {
+            Some(public_key) => CriomeReply::node_public_key(public_key),
+            None => rejection(RejectionReason::MalformedRequest),
+        }
+    }
+
+    /// Owner-only meta-op — the explicit action that founds a root. No
+    /// auto-approval anywhere: the master key signs the founding statement ONLY
+    /// here and ONLY when the presented anchor equals the cohort's self-certifying
+    /// anchor. This node's signature is recorded into the durable founding round;
+    /// on unanimity the registry is seeded from the cohort. A second accept for a
+    /// different anchor — or any accept after founding is unanimous — is refused.
+    async fn accept_root_founding(
+        &self,
+        acceptance: RootFoundingAcceptance,
+    ) -> meta_signal_criome::Output {
+        let RootFoundingAcceptance { anchor, cohort } = acceptance;
+        // A malformed genesis (empty cohort, non-root parent, un-encodable anchor)
+        // is refused before any signing.
+        let candidate = match RootFounding::found(cohort) {
+            Ok(founding) => founding,
+            Err(_) => return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis),
+        };
+        // The owner's stated anchor must equal the cohort's self-certifying
+        // anchor: the node founds ONLY the exact cohort it was handed.
+        if candidate.anchor() != &anchor {
+            return Self::reject_founding(RootFoundingRejectionReason::CohortMismatch);
+        }
+        // A unanimous (founded) root is immutable, and a node commits to one root:
+        // any accept once founded — or for a different anchor — is refused. A
+        // still-gathering record for the SAME anchor is resumed so this node's
+        // signature accumulates alongside any peers' already gathered.
+        let mut founding = match self.stored_root_founding().await {
+            Some(existing) if existing.is_unanimous() => {
+                return Self::reject_founding(RootFoundingRejectionReason::AlreadyFounded);
+            }
+            Some(existing) if existing.anchor() != &anchor => {
+                return Self::reject_founding(RootFoundingRejectionReason::AlreadyFounded);
+            }
+            Some(existing) => existing,
+            None => candidate,
+        };
+        // This node must hold a seat in the cohort by its master key; without one
+        // it has no founding authority over this root.
+        let Some(public_key) = self.node_public_key().await else {
+            return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis);
+        };
+        let Some(member) = founding.member_by_key(&public_key) else {
+            return Self::reject_founding(RootFoundingRejectionReason::ManagerAuthorityRequired);
+        };
+        let signer_identity = member.identity.clone();
+        // The master key signs the founding statement — this node's willing
+        // establishment, minted only because the owner explicitly accepted.
+        let Some(envelope) = self.sign_founding_statement(founding.statement()).await else {
+            return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis);
+        };
+        let signature = FoundingSignature::new(signer_identity, envelope);
+        founding.attach_signature(signature.clone());
+        if self.persist_root_founding(founding.clone()).await.is_err() {
+            return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis);
+        }
+        if founding.is_unanimous() {
+            self.seed_founding_registry(&founding).await;
+        }
+        meta_signal_criome::Output::root_founding_accepted(RootFoundingAccepted::new(
+            anchor, signature,
+        ))
+    }
+
+    fn reject_founding(reason: RootFoundingRejectionReason) -> meta_signal_criome::Output {
+        meta_signal_criome::Output::root_founding_rejected(reason)
+    }
+
+    async fn sign_founding_statement(
+        &self,
+        statement: signal_criome::RootFoundingStatement,
+    ) -> Option<signal_criome::SignatureEnvelope> {
+        self.signer
+            .ask(signer::SignFoundingStatement::new(statement))
+            .await
+            .ok()
+            .map(|reply| reply.envelope)
+    }
+
+    async fn stored_root_founding(&self) -> Option<RootFounding> {
+        self.store
+            .ask(store::ReadRootFounding)
+            .await
+            .ok()?
+            .into_founding()
+    }
+
+    async fn persist_root_founding(&self, founding: RootFounding) -> Result<RootFounding> {
+        let reply = self
+            .store
+            .ask(store::StoreRootFounding::new(founding))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(reply.into_founding())
+    }
+
+    /// Seed the identity registry from the founded cohort: each founding member's
+    /// identity bound to its master key, registered directly (bypassing the
+    /// cluster-root gate, exactly as `on_start` seeds this node's own identity) so
+    /// the founded cohort becomes the registry's trust anchor. Idempotent by
+    /// identity — re-seeding the node's own key is a no-op overwrite.
+    async fn seed_founding_registry(&self, founding: &RootFounding) {
+        for registration in founding.seed_registrations() {
+            let _ = self
+                .store
+                .ask(store::StoreIdentity::new(registration))
+                .await;
+        }
     }
 }
 
@@ -1592,6 +1754,21 @@ impl Actor for CriomeRoot {
                     .map_err(|error| {
                         Error::Startup(format!("register criome identity: {error}"))
                     })?;
+            }
+        }
+        // Reboot founding verification — NEVER re-found. If this node already
+        // founded a root, verify its anchor and its attached founding-quorum
+        // signatures (`RootFounding::verify`) and adopt it by re-seeding the
+        // registry from the founded cohort, closing the "haywire trust on every
+        // boot" hazard: an operational Criome trusts its verified founded anchor,
+        // not a fresh bootstrap. A gathering (not-yet-unanimous) or unverifiable
+        // record is left as-is; the node never spontaneously re-founds.
+        if let Ok(reply) = store.ask(store::ReadRootFounding).await
+            && let Some(founding) = reply.into_founding()
+            && founding.verify()
+        {
+            for registration in founding.seed_registrations() {
+                let _ = store.ask(store::StoreIdentity::new(registration)).await;
             }
         }
         let signer = signer::AttestationSigner::supervise(

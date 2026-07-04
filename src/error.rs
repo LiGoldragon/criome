@@ -65,6 +65,8 @@ pub enum Error {
     QuorumContractNotThreshold,
     #[error("quorum voice delivery failed: {0}")]
     VoiceDelivery(String),
+    #[error("root founding failed: {0}")]
+    RootFounding(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

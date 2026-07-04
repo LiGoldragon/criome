@@ -8,9 +8,9 @@
 
 use signal_criome::{
     AttestedMoment, AttestedMomentDigestError, AttestedMomentProposition, BlsPublicKey,
-    Composition, Contract, ContractAdmissionRejectionReason, ContractDigest, EscalationTarget,
-    EvaluationDecision, EvaluationRejectionReason, Evidence, Identity, ObjectDigest,
-    OperationDigest, PolicyMember, QuorumShortfall, RequiredSignatureThreshold, Rule,
+    Composition, Contract, ContractAdmissionRejectionReason, ContractDigest, ContractParent,
+    EscalationTarget, EvaluationDecision, EvaluationRejectionReason, Evidence, Identity,
+    ObjectDigest, OperationDigest, PolicyMember, QuorumShortfall, RequiredSignatureThreshold, Rule,
     SignatureScheme, Threshold, TimestampNanos, WorkflowGuard,
 };
 
@@ -244,7 +244,7 @@ impl<'a> ContractAdmission<'a> {
     }
 
     fn validate_against(&self, store: &ContractStore) -> Result<(), AdmissionError> {
-        for reference in self.contract.rule().referenced_digests() {
+        for reference in self.referenced_digests() {
             if !store.contains(&reference) {
                 return Err(AdmissionError::rejected(
                     ContractAdmissionRejectionReason::DanglingReference(reference),
@@ -253,15 +253,19 @@ impl<'a> ContractAdmission<'a> {
         }
         self.contract.rule().validate_shape()
     }
-}
 
-trait ContractRule {
-    fn rule(&self) -> &Rule;
-}
-
-impl ContractRule for Contract {
-    fn rule(&self) -> &Rule {
-        self.payload()
+    /// Every `ContractDigest` this contract points at and must resolve against the
+    /// store before admission: the rule's evaluated references PLUS the parent
+    /// link. A `Parent(digest)` is provenance/authority derivation — the judge
+    /// never reads it — but it must still resolve, so a child can only be admitted
+    /// after its parent. `Root` introduces no reference (it is a sentinel, not a
+    /// digest), so a founded root admits with an empty reference set.
+    fn referenced_digests(&self) -> Vec<ContractDigest> {
+        let mut references = self.contract.rule().referenced_digests();
+        if let ContractParent::Parent(parent) = self.contract.parent() {
+            references.push(parent.clone());
+        }
+        references
     }
 }
 

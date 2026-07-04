@@ -14,8 +14,8 @@ use sema_engine::{
 use signal_criome::{
     ActiveInterceptPolicies, ApprovalAuditSource, Attestation, AttestedMomentProposition,
     AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference, BlsPublicKey, Contract,
-    ContractDigest, ExpiryAction, Identity, IdentityReceipt, IdentityRegistration,
+    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference, BlsPublicKey,
+    Contract, ContractDigest, ExpiryAction, Identity, IdentityReceipt, IdentityRegistration,
     IdentityRevocation, InterceptPolicies, InterceptPolicy, InterceptPolicyIdentifier,
     InterceptPolicyProposal, InterceptPolicyWindow, KeyPurpose, ObjectDigest, ParkedRequestAnswer,
     ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestOutcome, ParkedRequestQuery,
@@ -26,8 +26,16 @@ use signal_criome::{
 };
 
 use crate::Result;
+use crate::founding::RootFounding;
 
-const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(4);
+// v5 re-serialises the `contracts` table for the parent-bearing `Contract`
+// (`{ rule, parent }`, was the tuple `Contract(Rule)`) and adds the founding
+// tables. The version is woven into every family's `SchemaHash`, so a store
+// carrying pre-parent (`v4`) rows is REFUSED at open with a family-identity
+// mismatch rather than silently mis-decoded: clean genesis, no re-digest
+// migration. The founding ceremony then writes the first parent-bearing
+// contracts into a fresh namespace. The test VMs hold nothing to preserve.
+const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(5);
 const IDENTITIES: TableName = TableName::new("identities");
 const REVOCATIONS: TableName = TableName::new("revocations");
 const ATTESTATIONS: TableName = TableName::new("attestations");
@@ -37,6 +45,7 @@ const CONTRACTS: TableName = TableName::new("contracts");
 const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitations");
 const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
 const QUORUM_ROUNDS: TableName = TableName::new("quorum_rounds");
+const ROOT_FOUNDING: TableName = TableName::new("root_founding");
 const INTERCEPT_POLICIES: TableName = TableName::new("intercept_policies");
 const PARKED_SPIRIT_REQUESTS: TableName = TableName::new("parked_spirit_requests");
 const ATTESTATION_NEXT_SLOT: TableName = TableName::new("attestation_next_slot");
@@ -57,6 +66,10 @@ const CONTRACTS_FAMILY: &str = "criome-contract";
 const SIGNATURE_SOLICITATIONS_FAMILY: &str = "criome-signature-solicitation";
 const SUBMITTED_SIGNATURES_FAMILY: &str = "criome-submitted-signature";
 const QUORUM_ROUNDS_FAMILY: &str = "criome-quorum-round";
+const ROOT_FOUNDING_FAMILY: &str = "criome-root-founding";
+// A node founds at most one root, so the `root_founding` table is a singleton
+// keyed under a constant slot.
+const ROOT_FOUNDING_KEY: &str = "founded";
 const INTERCEPT_POLICIES_FAMILY: &str = "criome-intercept-policy";
 const PARKED_SPIRIT_REQUESTS_FAMILY: &str = "criome-parked-spirit-request";
 const ATTESTATION_NEXT_SLOT_FAMILY: &str = "criome-attestation-slot";
@@ -606,6 +619,7 @@ pub struct CriomeTables {
     signature_solicitations: TableReference<StoredSignatureSolicitation>,
     submitted_signatures: TableReference<StoredSignatureSubmission>,
     quorum_rounds: TableReference<StoredQuorumRound>,
+    root_founding: TableReference<RootFounding>,
     intercept_policies: TableReference<StoredInterceptPolicy>,
     parked_spirit_requests: TableReference<StoredParkedSpiritRequest>,
     attestation_next_slot: TableReference<u64>,
@@ -643,6 +657,8 @@ impl CriomeTables {
         ))?;
         let quorum_rounds =
             engine.register_table(Self::family_descriptor(QUORUM_ROUNDS, QUORUM_ROUNDS_FAMILY))?;
+        let root_founding =
+            engine.register_table(Self::family_descriptor(ROOT_FOUNDING, ROOT_FOUNDING_FAMILY))?;
         let intercept_policies = engine.register_table(Self::family_descriptor(
             INTERCEPT_POLICIES,
             INTERCEPT_POLICIES_FAMILY,
@@ -678,6 +694,7 @@ impl CriomeTables {
             signature_solicitations,
             submitted_signatures,
             quorum_rounds,
+            root_founding,
             intercept_policies,
             parked_spirit_requests,
             attestation_next_slot,
@@ -862,12 +879,25 @@ impl CriomeTables {
         Ok(())
     }
 
-    pub fn quorum_round(
-        &self,
-        round: &QuorumRoundIdentifier,
-    ) -> Result<Option<StoredQuorumRound>> {
+    pub fn quorum_round(&self, round: &QuorumRoundIdentifier) -> Result<Option<StoredQuorumRound>> {
         let key = QuorumRoundKey::new(round).into_string();
         self.read_key(self.quorum_rounds, key)
+    }
+
+    /// Persist (or update) this node's single founded root — the genesis, its
+    /// anchor, and the founding signatures gathered so far.
+    pub fn put_root_founding(&self, founding: &RootFounding) -> Result<()> {
+        self.upsert(
+            self.root_founding,
+            ROOT_FOUNDING_KEY.to_owned(),
+            founding.clone(),
+        )?;
+        Ok(())
+    }
+
+    /// The node's founded root, if it has founded (or is gathering) one.
+    pub fn root_founding(&self) -> Result<Option<RootFounding>> {
+        self.read_key(self.root_founding, ROOT_FOUNDING_KEY.to_owned())
     }
 
     pub fn put_intercept_policy(

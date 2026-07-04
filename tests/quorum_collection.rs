@@ -38,8 +38,9 @@ use signal_criome::{
     ContractDigest, CriomeReply, CriomeRequest, EvaluationDecision, EvaluationRejectionReason,
     Evidence, Identity, IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest,
     PolicyMember, PrincipalName, PublicKeyFingerprint, QuorumProposal, QuorumRoundIdentifier,
-    QuorumRoundState, QuorumRoundStatus, QuorumVote, ReplayNonce, RequiredSignatureThreshold, Rule,
-    SignRequest, SignatureEnvelope, SignatureScheme, Threshold, TimeWindow, TimestampNanos,
+    QuorumRoundState, QuorumRoundStatus, QuorumVote, ReplayNonce, RequiredSignatureThreshold,
+    RoundPhase, Rule, SignRequest, SignatureEnvelope, SignatureScheme, Threshold, TimeWindow,
+    TimestampNanos,
 };
 
 fn nanos() -> u128 {
@@ -51,10 +52,17 @@ fn nanos() -> u128 {
 
 fn fixture(tag: &str) -> (PathBuf, StoreLocation) {
     let mut dir = std::env::temp_dir();
-    dir.push(format!("criome-quorum-{tag}-{}-{}", std::process::id(), nanos()));
+    dir.push(format!(
+        "criome-quorum-{tag}-{}-{}",
+        std::process::id(),
+        nanos()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create quorum fixture dir");
-    (dir.join("criome.sock"), StoreLocation::new(dir.join("criome.sema")))
+    (
+        dir.join("criome.sock"),
+        StoreLocation::new(dir.join("criome.sema")),
+    )
 }
 
 fn host(name: &str) -> Identity {
@@ -72,7 +80,10 @@ fn serve(daemon: CriomeDaemon) {
 fn wait_for_socket(socket: &Path) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
-        assert!(Instant::now() < deadline, "criome socket never appeared: {socket:?}");
+        assert!(
+            Instant::now() < deadline,
+            "criome socket never appeared: {socket:?}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -179,7 +190,7 @@ fn evaluate(
 }
 
 fn mirror_contract(alpha: &Identity, beta: &Identity) -> Contract {
-    Contract::new(Rule::threshold(Threshold::new(
+    Contract::root(Rule::threshold(Threshold::new(
         RequiredSignatureThreshold::new(2),
         vec![
             PolicyMember::key_member(alpha.clone()),
@@ -213,16 +224,14 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
 
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            beta.clone(),
-            socket_b.clone(),
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(beta.clone(), socket_b.clone()),
+        ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            alpha.clone(),
-            socket_a.clone(),
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
+        ])));
 
     serve(daemon_a);
     serve(daemon_b);
@@ -252,6 +261,7 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
     let opened = propose(
         &socket_a,
         QuorumProposal {
+            phase: RoundPhase::Request,
             round: round.clone(),
             contract: contract_digest.clone(),
             object: object.clone(),
@@ -271,7 +281,11 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
     // gathered 2-of-2 quorum authorizes.
     let authorized = wait_until_authorized(&socket_a, &round);
     assert_eq!(authorized.status, QuorumRoundStatus::Authorized);
-    assert_eq!(authorized.gathered.into_u16(), 2, "both members' votes gathered");
+    assert_eq!(
+        authorized.gathered.into_u16(),
+        2,
+        "both members' votes gathered"
+    );
     let evidence = authorized
         .authorized_evidence
         .expect("an authorized round carries its assembled Evidence");
@@ -330,10 +344,9 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
 
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            beta.clone(),
-            dead_socket,
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(beta.clone(), dead_socket),
+        ])));
     serve(daemon_a);
     wait_for_socket(&socket_a);
 
@@ -343,6 +356,7 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
     let opened = propose(
         &socket_a,
         QuorumProposal {
+            phase: RoundPhase::Request,
             round: round.clone(),
             contract: contract_digest,
             object,
@@ -383,10 +397,9 @@ fn a_forged_member_vote_is_recorded_but_not_counted() {
 
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            beta.clone(),
-            dead_socket,
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(beta.clone(), dead_socket),
+        ])));
     serve(daemon_a);
     wait_for_socket(&socket_a);
 
@@ -396,6 +409,7 @@ fn a_forged_member_vote_is_recorded_but_not_counted() {
     let opened = propose(
         &socket_a,
         QuorumProposal {
+            phase: RoundPhase::Request,
             round: round.clone(),
             contract: contract_digest,
             object: object.clone(),
@@ -407,6 +421,7 @@ fn a_forged_member_vote_is_recorded_but_not_counted() {
 
     // Inject the forged vote for member beta.
     let forged = QuorumVote {
+        phase: RoundPhase::Request,
         round: round.clone(),
         voter: beta.clone(),
         operation_signature: forged_envelope(),
@@ -442,6 +457,7 @@ fn router_voice_frames_a_criome_request_the_working_socket_reads() {
     // codec reads. Round-trip through the daemon's OWN codec to prove the peer
     // criome decodes a router-carried vote unchanged — no router source needed.
     let request = CriomeRequest::submit_quorum_vote(QuorumVote {
+        phase: RoundPhase::Request,
         round: QuorumRoundIdentifier::new("framing-round-1"),
         voter: host("mirror-beta"),
         operation_signature: SignatureEnvelope {

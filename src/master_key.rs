@@ -106,10 +106,12 @@ impl MasterKey {
         BlsPublicKey::new(Hexadecimal::from_bytes(&self.secret.sk_to_pk().to_bytes()).to_string())
     }
 
-    /// A stable fingerprint of the master public key (blake3 hex).
+    /// A stable fingerprint of the master public key (blake3 hex). Delegated to
+    /// [`FingerprintKey`] on the public key so a founding member's fingerprint —
+    /// derived from its wire public key alone — matches the one this node stamps
+    /// on its own identity.
     pub fn fingerprint(&self) -> PublicKeyFingerprint {
-        let digest = blake3::hash(&self.secret.sk_to_pk().to_bytes());
-        PublicKeyFingerprint::new(digest.to_hex().to_string())
+        self.public_key().fingerprint()
     }
 
     /// Sign `message` with the master key, hex-encoding the signature into the
@@ -117,6 +119,27 @@ impl MasterKey {
     pub fn sign(&self, message: &[u8]) -> BlsSignature {
         let signature = self.secret.sign(message, ATTESTATION_DST, &[]);
         BlsSignature::new(Hexadecimal::from_bytes(&signature.to_bytes()).to_string())
+    }
+}
+
+/// Derive a stable fingerprint from a public key. Implemented on the wire
+/// `BlsPublicKey` because the fingerprint is a property of the key itself, so a
+/// node that holds only a peer's public key (a founding member) derives the same
+/// fingerprint that peer stamps on its own identity.
+pub trait FingerprintKey {
+    fn fingerprint(&self) -> PublicKeyFingerprint;
+}
+
+impl FingerprintKey for BlsPublicKey {
+    fn fingerprint(&self) -> PublicKeyFingerprint {
+        // Hash the raw key bytes when the wire form decodes as hexadecimal (the
+        // canonical encoding), matching `MasterKey` which hashes the same raw
+        // bytes; fall back to the literal wire bytes for a non-hex key so a
+        // malformed key still yields a deterministic, distinct fingerprint.
+        let bytes = Hexadecimal::from_str(self.as_str())
+            .map(|hex| hex.0)
+            .unwrap_or_else(|_| self.as_str().as_bytes().to_vec());
+        PublicKeyFingerprint::new(blake3::hash(&bytes).to_hex().to_string())
     }
 }
 

@@ -4,14 +4,15 @@ use kameo::message::{Context, Message};
 use signal_criome::{
     ArchiveAttestationRequest, Attestation, AttestationReceipt, AttestedMoment,
     AttestedMomentProposition, AuditContext, AuthorizationGrant, AuthorizationPolicyClass,
-    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, BlsSignature,
+    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, BlsPublicKey, BlsSignature,
     ChannelGrantAttestationRequest, ContentPurpose, ContentReference, CriomeReply, Identity,
-    OperationDigest, RejectionReason, RequiredSignatureThreshold, SignReceipt, SignRequest,
-    SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme,
-    StampedSignatureEnvelope, TimeWindow, TimestampNanos,
+    OperationDigest, RejectionReason, RequiredSignatureThreshold, RootFoundingStatement,
+    SignReceipt, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
+    SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope, TimeWindow, TimestampNanos,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, store};
+use crate::founding::FoundingStatementBytes;
 use crate::language::{AttestedMomentStatement, OperationStatement};
 use crate::master_key::{AttestationPreimage, MasterKey, SystemClock, WindowAdmission};
 use crate::tables::StoredIdentity;
@@ -77,6 +78,33 @@ pub struct QuorumVoteSignatures {
     pub time_signature: SignatureEnvelope,
 }
 
+/// Read this node's Criome master public key. Exposes the key the public-socket
+/// `ObserveNodePublicKey` read-op returns and that the founding path matches a
+/// node against its seat in a cohort.
+pub struct ReadNodePublicKey;
+
+/// The node's master public key, reply-wrapped because the wire `BlsPublicKey` is
+/// a foreign type and cannot itself derive `kameo::Reply`.
+#[derive(Clone, Debug, kameo::Reply)]
+pub struct NodeMasterPublicKey {
+    pub public_key: BlsPublicKey,
+}
+
+/// Sign a root-founding statement with this node's master key. Unlike a quorum
+/// vote, founding is NOT clock-gated (it is not a time-windowed operation) and
+/// mints no attestation record — the reply is the bare, scheme-tagged envelope
+/// the node contributes to the founding quorum.
+pub struct SignFoundingStatement {
+    statement: RootFoundingStatement,
+}
+
+/// A single node's founding signature envelope, reply-wrapped over the foreign
+/// `SignatureEnvelope`.
+#[derive(Clone, Debug, kameo::Reply)]
+pub struct FoundingStatementSignature {
+    pub envelope: SignatureEnvelope,
+}
+
 struct AuthorizationGrantStatement<'a> {
     grant: &'a AuthorizationGrant,
     expires_at: Option<TimestampNanos>,
@@ -128,6 +156,12 @@ impl SignQuorumVote {
             operation,
             proposition,
         }
+    }
+}
+
+impl SignFoundingStatement {
+    pub fn new(statement: RootFoundingStatement) -> Self {
+        Self { statement }
     }
 }
 
@@ -362,9 +396,10 @@ impl AttestationSigner {
             WindowAdmission::OutsideTimeWindow => return Err(crate::Error::OutsideTimeWindow),
         }
         let provisional_stamp = AttestedMoment::new(proposition.clone(), Vec::new());
-        let operation_bytes = OperationStatement::new(&self.criome_identity, operation, &provisional_stamp)
-            .to_signing_bytes()
-            .map_err(|error| crate::Error::VoteSigning(error.to_string()))?;
+        let operation_bytes =
+            OperationStatement::new(&self.criome_identity, operation, &provisional_stamp)
+                .to_signing_bytes()
+                .map_err(|error| crate::Error::VoteSigning(error.to_string()))?;
         let moment_bytes = AttestedMomentStatement::new(proposition)
             .to_signing_bytes()
             .map_err(|error| crate::Error::VoteSigning(error.to_string()))?;
@@ -379,6 +414,30 @@ impl AttestationSigner {
                 public_key: self.master_key.public_key(),
                 signature: self.master_key.sign(&moment_bytes),
             },
+        })
+    }
+
+    /// This node's Criome master public key.
+    fn node_public_key(&self) -> BlsPublicKey {
+        self.master_key.public_key()
+    }
+
+    /// Sign a root-founding statement as this node's willing establishment of the
+    /// cohort. The master key signs the founding-statement preimage; the envelope
+    /// is scheme-tagged (`Bls12_381MinPk`) with the master public key so a peer
+    /// verifies it against the founding member's key. No clock gate — founding is
+    /// not time-windowed — and no attestation record.
+    fn sign_founding_statement(
+        &self,
+        statement: &RootFoundingStatement,
+    ) -> crate::Result<SignatureEnvelope> {
+        let signing_bytes = statement
+            .signing_bytes()
+            .map_err(|error| crate::Error::RootFounding(error.to_string()))?;
+        Ok(SignatureEnvelope {
+            scheme: SignatureScheme::Bls12_381MinPk,
+            public_key: self.master_key.public_key(),
+            signature: self.master_key.sign(&signing_bytes),
         })
     }
 
@@ -516,6 +575,33 @@ impl Message<SignQuorumVote> for AttestationSigner {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.sign_quorum_vote(&message.operation, &message.proposition)
+    }
+}
+
+impl Message<ReadNodePublicKey> for AttestationSigner {
+    type Reply = NodeMasterPublicKey;
+
+    async fn handle(
+        &mut self,
+        _message: ReadNodePublicKey,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        NodeMasterPublicKey {
+            public_key: self.node_public_key(),
+        }
+    }
+}
+
+impl Message<SignFoundingStatement> for AttestationSigner {
+    type Reply = crate::Result<FoundingStatementSignature>;
+
+    async fn handle(
+        &mut self,
+        message: SignFoundingStatement,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.sign_founding_statement(&message.statement)
+            .map(|envelope| FoundingStatementSignature { envelope })
     }
 }
 

@@ -64,7 +64,7 @@ impl WitnessPolicy {
     }
 
     fn contract() -> Contract {
-        Contract::new(Rule::Threshold(Threshold::new(
+        Contract::root(Rule::Threshold(Threshold::new(
             RequiredSignatureThreshold::new(1),
             vec![PolicyMember::KeyMember(Identity::developer(
                 "spirit-local-signer".to_owned(),

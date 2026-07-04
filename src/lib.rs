@@ -11,6 +11,7 @@ pub mod daemon;
 #[cfg(feature = "nota-text")]
 pub mod deploy_encode;
 pub mod error;
+pub mod founding;
 pub mod language;
 pub mod master_key;
 pub mod tables;

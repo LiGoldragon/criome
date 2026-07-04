@@ -22,9 +22,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use signal_criome::{CriomeRequest, Identity};
-use signal_frame::{
-    ExchangeIdentifier, ExchangeLane, LaneSequence, Reply, SessionEpoch, SubReply,
-};
+use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, Reply, SessionEpoch, SubReply};
 use signal_router::{
     ActorIdentifier, ContractName, ContractOperation, ContractPayloadSize, ForwardedMessagePayload,
     Frame as RouterFrame, FrameBody as RouterFrameBody, Input as RouterInput,

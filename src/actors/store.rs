@@ -10,6 +10,7 @@ use signal_criome::{
     SpiritAuthorizationContext, TimestampNanos,
 };
 
+use crate::founding::RootFounding;
 use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
     AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, InterceptPolicyDraft,
@@ -86,6 +87,12 @@ pub struct StoreQuorumRound {
 pub struct LookupQuorumRound {
     round: QuorumRoundIdentifier,
 }
+
+pub struct StoreRootFounding {
+    founding: RootFounding,
+}
+
+pub struct ReadRootFounding;
 
 pub struct StoreInterceptPolicy {
     draft: InterceptPolicyDraft,
@@ -203,6 +210,16 @@ pub struct StoredQuorumRoundReply {
 #[derive(kameo::Reply)]
 pub struct LookupQuorumRoundReply {
     round: Option<StoredQuorumRound>,
+}
+
+#[derive(kameo::Reply)]
+pub struct RootFoundingReply {
+    founding: RootFounding,
+}
+
+#[derive(kameo::Reply)]
+pub struct RootFoundingLookupReply {
+    founding: Option<RootFounding>,
 }
 
 #[derive(kameo::Reply)]
@@ -403,6 +420,12 @@ impl LookupQuorumRound {
     }
 }
 
+impl StoreRootFounding {
+    pub fn new(founding: RootFounding) -> Self {
+        Self { founding }
+    }
+}
+
 impl StoredQuorumRoundReply {
     pub fn into_round(self) -> StoredQuorumRound {
         self.round
@@ -412,6 +435,18 @@ impl StoredQuorumRoundReply {
 impl LookupQuorumRoundReply {
     pub fn into_round(self) -> Option<StoredQuorumRound> {
         self.round
+    }
+}
+
+impl RootFoundingReply {
+    pub fn into_founding(self) -> RootFounding {
+        self.founding
+    }
+}
+
+impl RootFoundingLookupReply {
+    pub fn into_founding(self) -> Option<RootFounding> {
+        self.founding
     }
 }
 
@@ -763,6 +798,15 @@ impl StoreKernel {
         self.tables.quorum_round(round)
     }
 
+    fn store_root_founding(&self, founding: RootFounding) -> crate::Result<RootFounding> {
+        self.tables.put_root_founding(&founding)?;
+        Ok(founding)
+    }
+
+    fn root_founding(&self) -> crate::Result<Option<RootFounding>> {
+        self.tables.root_founding()
+    }
+
     fn store_intercept_policy(
         &self,
         draft: InterceptPolicyDraft,
@@ -1028,6 +1072,32 @@ impl Message<LookupQuorumRound> for StoreKernel {
     ) -> Self::Reply {
         self.quorum_round(&message.round)
             .map(|round| LookupQuorumRoundReply { round })
+    }
+}
+
+impl Message<StoreRootFounding> for StoreKernel {
+    type Reply = crate::Result<RootFoundingReply>;
+
+    async fn handle(
+        &mut self,
+        message: StoreRootFounding,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_root_founding(message.founding)
+            .map(|founding| RootFoundingReply { founding })
+    }
+}
+
+impl Message<ReadRootFounding> for StoreKernel {
+    type Reply = crate::Result<RootFoundingLookupReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadRootFounding,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.root_founding()
+            .map(|founding| RootFoundingLookupReply { founding })
     }
 }
 

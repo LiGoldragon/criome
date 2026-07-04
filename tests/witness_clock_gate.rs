@@ -38,8 +38,8 @@ use signal_criome::{
     ContentPurpose, ContentReference, Contract, ContractDigest, CriomeReply, CriomeRequest,
     Identity, IdentityRegistration, KeyPurpose, ObjectDigest, PolicyMember, PrincipalName,
     PublicKeyFingerprint, QuorumProposal, QuorumRoundIdentifier, QuorumRoundState,
-    QuorumRoundStatus, RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule, SignRequest,
-    Threshold, TimeWindow, TimestampNanos,
+    QuorumRoundStatus, RejectionReason, ReplayNonce, RequiredSignatureThreshold, RoundPhase, Rule,
+    SignRequest, Threshold, TimeWindow, TimestampNanos,
 };
 
 fn nanos() -> u128 {
@@ -51,7 +51,11 @@ fn nanos() -> u128 {
 
 fn fixture(tag: &str) -> (PathBuf, StoreLocation) {
     let mut dir = std::env::temp_dir();
-    dir.push(format!("criome-clock-{tag}-{}-{}", std::process::id(), nanos()));
+    dir.push(format!(
+        "criome-clock-{tag}-{}-{}",
+        std::process::id(),
+        nanos()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create clock-gate fixture dir");
     (
@@ -149,7 +153,7 @@ fn admit(socket: &Path, contract: Contract) -> ContractDigest {
 }
 
 fn mirror_contract(alpha: &Identity, beta: &Identity) -> Contract {
-    Contract::new(Rule::threshold(Threshold::new(
+    Contract::root(Rule::threshold(Threshold::new(
         RequiredSignatureThreshold::new(2),
         vec![
             PolicyMember::key_member(alpha.clone()),
@@ -197,6 +201,7 @@ fn a_signer_refuses_the_convenient_window_its_clock_is_outside() {
     let reply = ask(
         &socket,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
+            phase: RoundPhase::Request,
             round,
             contract,
             object,
@@ -236,6 +241,7 @@ fn a_signer_signs_the_window_its_clock_is_inside() {
     let reply = ask(
         &socket,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
+            phase: RoundPhase::Request,
             round,
             contract,
             object,
@@ -276,17 +282,15 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            beta.clone(),
-            socket_b.clone(),
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(beta.clone(), socket_b.clone()),
+        ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(9_000))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            alpha.clone(),
-            socket_a.clone(),
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
+        ])));
 
     serve(daemon_a);
     serve(daemon_b);
@@ -306,6 +310,7 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     let opened = match ask(
         &socket_a,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
+            phase: RoundPhase::Request,
             round: round.clone(),
             contract,
             object,
@@ -353,17 +358,15 @@ fn two_peers_whose_clocks_are_inside_the_window_co_sign_to_authorized() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            beta.clone(),
-            socket_b.clone(),
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(beta.clone(), socket_b.clone()),
+        ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(1_800))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![PeerSocketRoute::new(
-            alpha.clone(),
-            socket_a.clone(),
-        )])));
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
+        ])));
 
     serve(daemon_a);
     serve(daemon_b);
@@ -383,6 +386,7 @@ fn two_peers_whose_clocks_are_inside_the_window_co_sign_to_authorized() {
     let opened = match ask(
         &socket_a,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
+            phase: RoundPhase::Request,
             round: round.clone(),
             contract,
             object,

@@ -285,7 +285,7 @@ fn threshold_contract_accepts_only_enough_distinct_admitted_authorities() {
     let operation = operation(b"merge policy");
     let stamp = clock.moment(10, 20);
     let mut store = ContractStore::new();
-    let contract = Contract::new(Rule::Threshold(threshold(
+    let contract = Contract::root(Rule::Threshold(threshold(
         2,
         vec![
             key_member(&operator),
@@ -342,7 +342,7 @@ fn invalid_time_attestation_rejects_before_policy_evaluation() {
     let mut store = ContractStore::new();
     let contract = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(operator.identity())),
+        Contract::root(Rule::SignedBy(operator.identity())),
     );
     let evidence = signed_evidence(operation, stamp, &[&operator]);
 
@@ -395,7 +395,7 @@ fn submajority_time_authority_rejects_attested_moment() {
     let mut store = ContractStore::new();
     let contract = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(operator.identity())),
+        Contract::root(Rule::SignedBy(operator.identity())),
     );
     let evidence = signed_evidence(operation, stamp, &[&operator]);
 
@@ -418,7 +418,7 @@ fn operation_signature_is_bound_to_the_attested_moment() {
     let mut store = ContractStore::new();
     let contract = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(operator.identity())),
+        Contract::root(Rule::SignedBy(operator.identity())),
     );
     let evidence = Evidence::new(
         ComponentKind::Spirit,
@@ -440,7 +440,7 @@ fn operation_signature_is_bound_to_the_attested_moment() {
 fn admission_rejects_duplicate_quorum_members_before_evaluation() {
     let operator = Signer::developer("operator");
     let mut store = ContractStore::new();
-    let contract = Contract::new(Rule::Threshold(threshold(
+    let contract = Contract::root(Rule::Threshold(threshold(
         2,
         vec![key_member(&operator), key_member(&operator)],
     )));
@@ -459,7 +459,7 @@ fn admission_rejects_submajority_thresholds_before_evaluation() {
     let reviewer = Signer::developer("reviewer");
     let maintainer = Signer::developer("maintainer");
     let mut store = ContractStore::new();
-    let contract = Contract::new(Rule::Threshold(threshold(
+    let contract = Contract::root(Rule::Threshold(threshold(
         2,
         vec![
             key_member(&operator),
@@ -480,7 +480,7 @@ fn admission_rejects_submajority_thresholds_before_evaluation() {
 fn admission_rejects_dangling_object_references() {
     let mut store = ContractStore::new();
     let missing = contract_digest(b"missing policy");
-    let contract = Contract::new(Rule::Threshold(threshold(1, vec![object_member(&missing)])));
+    let contract = Contract::root(Rule::Threshold(threshold(1, vec![object_member(&missing)])));
 
     assert_eq!(
         admission_reason(store.admit(contract).expect_err("dangling reference")),
@@ -499,15 +499,15 @@ fn object_members_reference_previously_admitted_contracts_by_digest() {
     let mut store = ContractStore::new();
     let operator_rule = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(operator.identity())),
+        Contract::root(Rule::SignedBy(operator.identity())),
     );
     let designer_rule = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(designer.identity())),
+        Contract::root(Rule::SignedBy(designer.identity())),
     );
     let parent = admitted(
         &mut store,
-        Contract::new(Rule::Threshold(threshold(
+        Contract::root(Rule::Threshold(threshold(
             2,
             vec![object_member(&operator_rule), object_member(&designer_rule)],
         ))),
@@ -534,7 +534,7 @@ fn time_switch_changes_quorum_after_boundary() {
     let mut store = ContractStore::new();
     let digest = admitted(
         &mut store,
-        Contract::new(Rule::TimeSwitch(TimeSwitch {
+        Contract::root(Rule::TimeSwitch(TimeSwitch {
             boundary: moment(100),
             before: threshold(
                 2,
@@ -604,7 +604,7 @@ fn active_after_rule_models_timelock_release() {
     let mut store = ContractStore::new();
     let digest = admitted(
         &mut store,
-        Contract::new(Rule::ActiveAfter(TimedRule {
+        Contract::root(Rule::ActiveAfter(TimedRule {
             boundary: moment(100),
             signed_by: operator.identity(),
         })),
@@ -644,7 +644,7 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
         resolution: resolution.clone(),
         resolver: resolver.identity(),
     };
-    let contract = Contract::new(Rule::Agreement(agreement.clone()));
+    let contract = Contract::root(Rule::Agreement(agreement.clone()));
     let mut store = ContractStore::new();
     let contract_digest = admitted(&mut store, contract);
     let agreement_stamp = clock.moment(10, 20);
@@ -723,7 +723,7 @@ fn agreement_signature_is_bound_to_its_attested_moment() {
     let mut store = ContractStore::new();
     let contract_digest = admitted(
         &mut store,
-        Contract::new(Rule::Agreement(agreement.clone())),
+        Contract::root(Rule::Agreement(agreement.clone())),
     );
     let signed_stamp = clock.moment(10, 20);
     let replayed_stamp = clock.moment(20, 30);
@@ -777,7 +777,7 @@ fn explicit_policy_can_escalate_to_psyche() {
     let registry = registry_with_clock(&clock, &[]);
     let operation = operation(b"ambiguous contract");
     let mut store = ContractStore::new();
-    let digest = admitted(&mut store, Contract::new(Rule::EscalateToPsyche));
+    let digest = admitted(&mut store, Contract::root(Rule::EscalateToPsyche));
 
     assert_eq!(
         store.evaluate(
@@ -798,7 +798,7 @@ fn workflow_rule_escalates_when_matching_receipt_is_absent() {
     let mut store = ContractStore::new();
     let digest = admitted(
         &mut store,
-        Contract::new(Rule::Workflow(WorkflowGuard {
+        Contract::root(Rule::Workflow(WorkflowGuard {
             workflow: workflow.clone(),
             executor: Identity::host("orchestrate".to_owned()),
         })),
@@ -825,7 +825,7 @@ fn workflow_rule_adopts_matching_receipt_outcome() {
     let mut store = ContractStore::new();
     let digest = admitted(
         &mut store,
-        Contract::new(Rule::Workflow(WorkflowGuard {
+        Contract::root(Rule::Workflow(WorkflowGuard {
             workflow: workflow.clone(),
             executor: Identity::host("orchestrate".to_owned()),
         })),
@@ -857,7 +857,7 @@ fn workflow_rule_ignores_receipt_for_other_operation() {
     let mut store = ContractStore::new();
     let digest = admitted(
         &mut store,
-        Contract::new(Rule::Workflow(WorkflowGuard {
+        Contract::root(Rule::Workflow(WorkflowGuard {
             workflow: workflow.clone(),
             executor: Identity::host("orchestrate".to_owned()),
         })),
@@ -891,12 +891,12 @@ fn all_composes_content_addressed_children_and_preserves_escalation() {
     let mut store = ContractStore::new();
     let signed = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(operator.identity())),
+        Contract::root(Rule::SignedBy(operator.identity())),
     );
-    let escalation = admitted(&mut store, Contract::new(Rule::EscalateToPsyche));
+    let escalation = admitted(&mut store, Contract::root(Rule::EscalateToPsyche));
     let parent = admitted(
         &mut store,
-        Contract::new(Rule::All(vec![signed.clone(), escalation])),
+        Contract::root(Rule::All(vec![signed.clone(), escalation])),
     );
 
     assert!(matches!(
@@ -926,14 +926,14 @@ fn any_prefers_authorization_before_escalation() {
     let registry = registry_with_clock(&clock, &[&operator]);
     let operation = operation(b"authorizing any");
     let mut store = ContractStore::new();
-    let escalation = admitted(&mut store, Contract::new(Rule::EscalateToPsyche));
+    let escalation = admitted(&mut store, Contract::root(Rule::EscalateToPsyche));
     let signed = admitted(
         &mut store,
-        Contract::new(Rule::SignedBy(operator.identity())),
+        Contract::root(Rule::SignedBy(operator.identity())),
     );
     let parent = admitted(
         &mut store,
-        Contract::new(Rule::Any(vec![escalation, signed])),
+        Contract::root(Rule::Any(vec![escalation, signed])),
     );
 
     assert_eq!(
@@ -973,9 +973,9 @@ fn missing_contract_is_evaluation_error_not_authorization_denial() {
 
 #[test]
 fn contract_digest_is_content_stable_and_distinguishes_rules() {
-    let first = Contract::new(Rule::SignedBy(Identity::developer("operator".to_owned())));
-    let first_again = Contract::new(Rule::SignedBy(Identity::developer("operator".to_owned())));
-    let second = Contract::new(Rule::SignedBy(Identity::developer("designer".to_owned())));
+    let first = Contract::root(Rule::SignedBy(Identity::developer("operator".to_owned())));
+    let first_again = Contract::root(Rule::SignedBy(Identity::developer("operator".to_owned())));
+    let second = Contract::root(Rule::SignedBy(Identity::developer("designer".to_owned())));
 
     assert_eq!(
         first.digest().expect("first digest"),
