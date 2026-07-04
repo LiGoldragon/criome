@@ -183,6 +183,19 @@ impl RootFounding {
             .all(|signature| self.signature_valid(signature, &statement_bytes))
     }
 
+    /// Whether a conveyed `signature` is fit to attach: its signer is a cohort
+    /// member and its envelope verifies over this founding's statement preimage —
+    /// the same per-signature gate [`Self::signatures_valid`] applies to each
+    /// attached one. The initiator runs this on a peer-returned signature BEFORE
+    /// counting it toward unanimity, so a forged conveyance (any bytes off the
+    /// working socket) is rejected rather than accepted as presence.
+    pub fn conveyed_signature_valid(&self, signature: &FoundingSignature) -> bool {
+        let Ok(statement_bytes) = self.statement().signing_bytes() else {
+            return false;
+        };
+        self.signature_valid(signature, &statement_bytes)
+    }
+
     fn signature_valid(&self, signature: &FoundingSignature, statement_bytes: &[u8]) -> bool {
         let Some(member) = self.member(&signature.signer) else {
             return false;
@@ -330,6 +343,39 @@ mod tests {
             "a signature over other bytes does not verify against the statement"
         );
         assert!(!founding.verify());
+    }
+
+    #[test]
+    fn conveyed_signature_valid_accepts_a_real_signature_and_rejects_a_forgery() {
+        // The per-signature gate the initiator runs on a peer-returned signature
+        // BEFORE attaching it: a genuine member signature is accepted; a well-formed
+        // envelope over other bytes (a forgery) is rejected, so it can never be
+        // counted toward unanimity as bare presence.
+        let alpha = host("alpha");
+        let beta = host("beta");
+        let alpha_key = MasterKey::generate().expect("alpha key");
+        let beta_key = MasterKey::generate().expect("beta key");
+        let cohort = vec![member(&alpha, &alpha_key), member(&beta, &beta_key)];
+        let founding = RootFounding::found(genesis(&cohort, "conveyed")).expect("found");
+
+        let genuine = sign(&founding, &beta, &beta_key);
+        assert!(
+            founding.conveyed_signature_valid(&genuine),
+            "a genuine cohort-member signature over the statement is accepted"
+        );
+
+        let forged = FoundingSignature::new(
+            beta.clone(),
+            SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: beta_key.public_key(),
+                signature: beta_key.sign(b"not the founding statement"),
+            },
+        );
+        assert!(
+            !founding.conveyed_signature_valid(&forged),
+            "a well-formed envelope over other bytes does not verify — rejected before attach"
+        );
     }
 
     #[test]

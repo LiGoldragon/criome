@@ -39,7 +39,9 @@ use crate::founding::RootFounding;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
 use crate::master_key::{SystemClock, WindowAdmission};
-use crate::tables::{StoredPendingFounding, StoredQuorumRound};
+use crate::tables::{
+    StoredCoSignedSuccessor, StoredContractHead, StoredPendingFounding, StoredQuorumRound,
+};
 use crate::voice::{QuorumVoice, SilentVoice};
 use crate::{Error, Result, StoreLocation};
 
@@ -1304,7 +1306,7 @@ impl CriomeRoot {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
-        self.record_co_sign(&contract, &object);
+        self.record_co_sign(&contract, &object).await;
         let mut stored = StoredQuorumRound::open(round.clone(), contract, object, proposition);
         stored.record_vote(self_vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
@@ -1393,7 +1395,7 @@ impl CriomeRoot {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
-        self.record_co_sign(&contract, &object);
+        self.record_co_sign(&contract, &object).await;
         let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
         stored.record_vote(vote.clone());
         let _ = self.persist_quorum_round(stored.clone()).await;
@@ -1457,7 +1459,7 @@ impl CriomeRoot {
                         stamp,
                     })
                     .await;
-                    self.advance_head(stored.contract(), stored.object());
+                    self.advance_head(stored.contract(), stored.object()).await;
                 }
             }
         }
@@ -1595,15 +1597,16 @@ impl CriomeRoot {
     }
 
     /// Round 1 reached a majority on the originator: drive round 2 (Commit). The
-    /// initiator conveys the round-1 evidence — the gathered Request votes — THEN
-    /// the commit solicitation to each peer IN ORDER over the voice, so every
-    /// round-2 signer holds a real round-1 majority to re-judge before it co-signs
-    /// the commit (the ordered conveyance closes the race the best-effort voice
-    /// would otherwise open). The initiator then casts its OWN commit vote — its
-    /// round 1 is Authorized and the clock gate re-checks the window as it signs.
-    /// Round 2 assembles a majority-of-the-total; it need not be a subset of the
-    /// round-1 signers. Real approval lands only when the commit round itself
-    /// reaches a majority (`submit_quorum_vote`). This stops at two rounds — no third.
+    /// initiator casts its OWN commit vote (its round 1 is Authorized and the clock
+    /// gate re-checks the window as it signs), then conveys to each peer IN ORDER
+    /// over the voice: the round-1 evidence — the gathered Request votes — THEN the
+    /// commit solicitation THEN its own commit vote. So every round-2 signer holds
+    /// a real round-1 majority to re-judge before it co-signs, and its commit round
+    /// reaches the SAME majority the initiator gathers — both nodes advance the SAME
+    /// head (the ordered conveyance closes the race the best-effort voice would
+    /// otherwise open). Round 2 assembles a majority-of-the-total; it need not be a
+    /// subset of the round-1 signers. Real approval lands only when the commit round
+    /// itself reaches a majority (`submit_quorum_vote`). Two rounds — no third.
     async fn drive_commit_round(&mut self, request_round: &StoredQuorumRound) {
         let contract = request_round.contract().clone();
         let object = request_round.object().clone();
@@ -1624,9 +1627,33 @@ impl CriomeRoot {
             return;
         }
 
-        // Convey the round-1 evidence (its votes) followed by the commit
-        // solicitation to each peer, ordered so the evidence lands first and the
-        // peer's round-1 round judges Authorized when it verifies the solicitation.
+        // Cast this node's OWN commit vote FIRST, so it can be conveyed to each
+        // peer alongside the solicitation. Its round-1 round is Authorized (it is
+        // the driver), so its independent verification is already satisfied; the
+        // single-successor guard sees the same successor it co-signed in round 1
+        // (idempotent), and the clock gate re-checks the window as it signs. If the
+        // gate refuses, nothing is conveyed — the commit does not proceed at all.
+        if self.check_successor_conflict(&contract, &object).is_some() {
+            return;
+        }
+        let self_vote = match self
+            .cast_quorum_vote(&commit_round, &object, &proposition, RoundPhase::Commit)
+            .await
+        {
+            Ok(vote) => vote,
+            Err(_reply) => return,
+        };
+        self.record_co_sign(&contract, &object).await;
+
+        // Convey the round-1 evidence (its votes), the commit solicitation, and
+        // this node's own commit vote to each peer IN ORDER over the voice: the
+        // evidence lands first (the peer's round-1 round judges Authorized), then
+        // the solicitation (the peer casts its own commit vote), then this node's
+        // commit vote — which brings the peer's commit round to the SAME majority
+        // this node gathers, so the peer advances the SAME head rather than leaving
+        // it stale (a stale peer head refuses the next successor as a false
+        // QuorumConflict and wedges the cluster). The ordered conveyance closes the
+        // race the best-effort voice would otherwise open.
         let commit_solicitation = CriomeRequest::solicit_quorum_vote(QuorumVoteSolicitation {
             round: commit_round.clone(),
             phase: RoundPhase::Commit,
@@ -1645,26 +1672,12 @@ impl CriomeRoot {
                 .map(|vote| CriomeRequest::submit_quorum_vote(vote.clone()))
                 .collect();
             sequence.push(commit_solicitation.clone());
+            sequence.push(CriomeRequest::submit_quorum_vote(self_vote.clone()));
             self.voice.convey_ordered(peer, sequence);
         }
 
-        // The initiator's own commit vote. Its round-1 round is Authorized (it is
-        // the driver), so its independent verification is already satisfied; the
-        // single-successor guard sees the same successor it co-signed in round 1
-        // (idempotent), and the clock gate re-checks the window as it signs.
-        if self.check_successor_conflict(&contract, &object).is_some() {
-            return;
-        }
-        let self_vote = match self
-            .cast_quorum_vote(&commit_round, &object, &proposition, RoundPhase::Commit)
-            .await
-        {
-            Ok(vote) => vote,
-            Err(_reply) => return,
-        };
-        self.record_co_sign(&contract, &object);
-        // Preserve any commit votes a peer already conveyed ahead of this node's own
-        // vote rather than opening a fresh round over them.
+        // Persist this node's own commit vote, preserving any commit votes a peer
+        // conveyed ahead of it rather than opening a fresh round over them.
         let mut stored = existing_commit.unwrap_or_else(|| {
             StoredQuorumRound::open(commit_round, contract, object, proposition)
         });
@@ -1740,29 +1753,108 @@ impl CriomeRoot {
     /// Record `object` as the one successor this node has co-signed for
     /// `contract`'s current head. Idempotent: a later identical co-sign keeps the
     /// first record; a conflicting one is refused earlier by
-    /// [`Self::check_successor_conflict`].
-    fn record_co_sign(
+    /// [`Self::check_successor_conflict`]. The record is also persisted so the
+    /// single-successor veto survives a restart — a node that co-signed S1 from
+    /// this head must not, after a boot that clears the in-memory map, co-sign a
+    /// conflicting S2 from the same head.
+    async fn record_co_sign(
         &mut self,
         contract: &signal_criome::ContractDigest,
         object: &AuthorizedObjectReference,
     ) {
         let head = self.state_head(contract);
-        self.co_signed_successors
-            .entry(Self::state_point_key(contract, &head))
-            .or_insert_with(|| object.clone());
+        let key = Self::state_point_key(contract, &head);
+        if self.co_signed_successors.contains_key(&key) {
+            return;
+        }
+        self.co_signed_successors.insert(key, object.clone());
+        let _ = self
+            .persist_co_signed_successor(StoredCoSignedSuccessor::new(
+                contract.clone(),
+                head,
+                object.clone(),
+            ))
+            .await;
     }
 
     /// Advance this node's head for `contract` to the just-committed successor, so
-    /// a later change is a fresh state-point rather than a conflict.
-    fn advance_head(
+    /// a later change is a fresh state-point rather than a conflict. The head is
+    /// persisted so it survives a restart — otherwise a reboot to genesis would
+    /// mistake the next successor for a conflict from genesis and wedge the cluster.
+    async fn advance_head(
         &mut self,
         contract: &signal_criome::ContractDigest,
         object: &AuthorizedObjectReference,
     ) {
-        self.contract_heads.insert(
-            contract.as_str().to_string(),
-            ContractOperationHead::new(object.digest.as_str().to_string()),
-        );
+        let head = ContractOperationHead::new(object.digest.as_str().to_string());
+        self.contract_heads
+            .insert(contract.as_str().to_string(), head.clone());
+        let _ = self
+            .persist_contract_head(StoredContractHead::new(contract.clone(), head))
+            .await;
+    }
+
+    /// Persist one co-signed-successor ledger row through the store's single-writer
+    /// kernel.
+    async fn persist_co_signed_successor(&self, record: StoredCoSignedSuccessor) -> Result<()> {
+        self.store
+            .ask(store::StoreCoSignedSuccessor::new(record))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Persist one contract-head cursor row through the store's single-writer
+    /// kernel.
+    async fn persist_contract_head(&self, record: StoredContractHead) -> Result<()> {
+        self.store
+            .ask(store::StoreContractHead::new(record))
+            .await
+            .map_err(|error| Error::ActorCall(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Rebuild the in-memory co-signed-successor ledger from its durable rows on
+    /// boot, re-deriving each state-point key so the reconstructed map keys exactly
+    /// as the live one does. The single-successor veto is thereby the same before
+    /// and after a restart.
+    async fn reconstruct_co_signed_successors(
+        store: &ActorRef<store::StoreKernel>,
+    ) -> HashMap<String, AuthorizedObjectReference> {
+        store
+            .ask(store::ReadCoSignedSuccessors)
+            .await
+            .map(store::CoSignedSuccessorsReply::into_records)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|record| {
+                (
+                    Self::state_point_key(record.contract(), record.head()),
+                    record.object().clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Rebuild the in-memory head cursor from its durable rows on boot, so a node
+    /// resumes at the head each commit advanced it to rather than snapping back to
+    /// genesis.
+    async fn reconstruct_contract_heads(
+        store: &ActorRef<store::StoreKernel>,
+    ) -> HashMap<String, ContractOperationHead> {
+        store
+            .ask(store::ReadContractHeads)
+            .await
+            .map(store::ContractHeadsReply::into_records)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|record| {
+                (
+                    record.contract().as_str().to_string(),
+                    record.head().clone(),
+                )
+            })
+            .collect()
     }
 
     /// The `KeyMember` identities and required threshold of an admitted Threshold
@@ -2068,6 +2160,16 @@ impl CriomeRoot {
                 None => return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused),
             },
         };
+        // Verify the conveyed signature against the member's key over the founding
+        // statement BEFORE attaching it. `attach_signature` checks membership only,
+        // and `is_unanimous` counts presence — so without this gate a garbage
+        // `FoundingSignatureReturn` (any bytes a co-resident process or a malicious
+        // cohort peer puts on the working socket) would be accepted and drive a
+        // false unanimity. This mirrors the `verify()` the distributed-root path
+        // already runs before persisting.
+        if !founding.conveyed_signature_valid(&signature) {
+            return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused);
+        }
         // attach_signature refuses a non-member; a member's redelivery updates in
         // place rather than double-counting.
         if !founding.attach_signature(signature) {
@@ -2076,7 +2178,10 @@ impl CriomeRoot {
         if self.persist_root_founding(founding.clone()).await.is_err() {
             return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused);
         }
-        if founding.is_unanimous() {
+        // Gate the seed-and-distribute on every attached signature VERIFYING, not
+        // bare presence: unanimity of validly-signed members, never unanimity of
+        // rows.
+        if founding.is_unanimous() && founding.signatures_valid() {
             self.on_founding_unanimous(&founding).await;
             return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::RootFounded);
         }
@@ -2357,7 +2462,13 @@ impl Actor for CriomeRoot {
         .spawn()
         .await;
 
-        Ok(Self::new(
+        // Rebuild the anti-equivocation ledger and head cursor from durable state
+        // BEFORE the actor takes ownership of the store, so a restarted node resumes
+        // with the same single-successor veto and head it held before the boot.
+        let co_signed_successors = Self::reconstruct_co_signed_successors(&store).await;
+        let contract_heads = Self::reconstruct_contract_heads(&store).await;
+
+        let mut root = Self::new(
             registry,
             signer,
             verifier,
@@ -2368,7 +2479,10 @@ impl Actor for CriomeRoot {
             node_identity,
             voice,
             arguments.clock,
-        ))
+        );
+        root.co_signed_successors = co_signed_successors;
+        root.contract_heads = contract_heads;
+        Ok(root)
     }
 }
 

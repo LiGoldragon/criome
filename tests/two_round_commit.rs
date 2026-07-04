@@ -551,3 +551,98 @@ fn both_rounds_are_window_gated_an_out_of_window_peer_commits_neither() {
         std::thread::sleep(Duration::from_millis(150));
     }
 }
+
+#[test]
+fn two_committed_successors_converge_both_heads() {
+    // HEAD-CONVERGENCE WITNESS (F1): a cluster must authorize more than one change
+    // per contract. After successor S1 commits, BOTH nodes advance to the SAME head
+    // (S1), so a second successor S2 — proposed from that head — commits too. If the
+    // peer's head stayed stale at genesis (the wedge this fixes: the initiator cast
+    // its commit vote locally and never conveyed it, so the peer's commit round
+    // never reached a majority and never advanced), S2 would be refused as a
+    // `QuorumConflict` from genesis and would never commit. The proof is that S1 AND
+    // S2 each reach a 2-of-2 commit majority on BOTH nodes.
+    let alpha = host("tworound-alpha");
+    let beta = host("tworound-beta");
+    let (socket_a, store_a) = fixture("converge-alpha");
+    let (socket_b, store_b) = fixture("converge-beta");
+
+    let daemon_a = CriomeDaemon::new(&socket_a, store_a)
+        .with_node_identity(alpha.clone())
+        .with_clock(pinned_clock(1_500))
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(beta.clone(), socket_b.clone()),
+        ])));
+    let daemon_b = CriomeDaemon::new(&socket_b, store_b)
+        .with_node_identity(beta.clone())
+        .with_clock(pinned_clock(1_800))
+        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+            PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
+        ])));
+
+    serve(daemon_a);
+    serve(daemon_b);
+    wait_for_socket(&socket_a);
+    wait_for_socket(&socket_b);
+
+    let key_a = node_public_key(&socket_a, alpha.clone());
+    let key_b = node_public_key(&socket_b, beta.clone());
+    register_peer(&socket_a, beta.clone(), key_b);
+    register_peer(&socket_b, alpha.clone(), key_a);
+
+    let contract = admit(&socket_a, mirror_contract(&alpha, &beta));
+    let _ = admit(&socket_b, mirror_contract(&alpha, &beta));
+
+    // S1: a successor from genesis. Commit it, and confirm BOTH commit rounds reach
+    // the 2-of-2 majority — the peer's commit round authorizing is the proof it
+    // received the initiator's commit vote and advanced its head to S1.
+    let s1 = successor(b"successor-one-converge");
+    let s1_commit = QuorumRoundIdentifier::for_phase(&s1.digest, RoundPhase::Commit);
+    match propose_request(&socket_a, contract.clone(), s1.clone(), shared_window()) {
+        CriomeReply::QuorumRoundOpened(_) => {}
+        other => panic!("S1 propose must open the Request round, got {other:?}"),
+    }
+    assert_eq!(
+        wait_until_authorized(&socket_a, &s1_commit)
+            .gathered
+            .into_u16(),
+        2,
+        "the initiator committed S1"
+    );
+    assert_eq!(
+        wait_until_authorized(&socket_b, &s1_commit)
+            .gathered
+            .into_u16(),
+        2,
+        "the peer's commit round reached the majority — it advanced its head to S1"
+    );
+
+    // S2: a second successor, proposed AFTER S1 committed, from the S1 head both
+    // nodes now hold. It commits only if BOTH advanced to S1; a stale peer head
+    // would refuse it as a conflict from genesis and it would never authorize.
+    let s2 = successor(b"successor-two-converge");
+    let s2_commit = QuorumRoundIdentifier::for_phase(&s2.digest, RoundPhase::Commit);
+    match propose_request(&socket_a, contract.clone(), s2.clone(), shared_window()) {
+        CriomeReply::QuorumRoundOpened(_) => {}
+        CriomeReply::QuorumConflict(conflict) => panic!(
+            "S2 must not conflict after S1 committed, but the initiator refused it \
+             naming already-co-signed {:?}",
+            conflict.existing_successor.digest
+        ),
+        other => panic!("S2 propose must open the Request round, got {other:?}"),
+    }
+    assert_eq!(
+        wait_until_authorized(&socket_a, &s2_commit)
+            .gathered
+            .into_u16(),
+        2,
+        "the initiator committed the SECOND successor from the new head"
+    );
+    assert_eq!(
+        wait_until_authorized(&socket_b, &s2_commit)
+            .gathered
+            .into_u16(),
+        2,
+        "both nodes committed S2 from the shared S1 head — repeated deploys converge"
+    );
+}

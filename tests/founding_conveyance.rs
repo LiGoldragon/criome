@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criome::daemon::CriomeDaemon;
+use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeMetaClient};
 use criome::voice::{DirectDialQuorumVoice, PeerSocketRoute};
@@ -22,9 +23,11 @@ use meta_signal_criome::{
     RootFoundingObservation, RootFoundingState, RootFoundingStatus,
 };
 use signal_criome::{
-    BlsPublicKey, Contract, CriomeReply, CriomeRequest, FoundingMember, GenesisDomainTag, Identity,
-    IdentityLookup, NodePublicKeyObservation, PolicyMember, ReplayNonce,
-    RequiredSignatureThreshold, RootAnchorDigest, RootGenesis, Rule, Threshold,
+    BlsPublicKey, Contract, CriomeReply, CriomeRequest, FoundingConveyance,
+    FoundingConveyanceOutcome, FoundingMember, FoundingSignature, FoundingSignatureReturn,
+    GenesisDomainTag, Identity, IdentityLookup, NodePublicKeyObservation, PolicyMember,
+    ReplayNonce, RequiredSignatureThreshold, RootAnchorDigest, RootGenesis, Rule,
+    SignatureEnvelope, SignatureScheme, Threshold,
 };
 
 fn nanos() -> u128 {
@@ -258,4 +261,90 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
             "beta is seeded into {socket:?}"
         );
     }
+}
+
+#[test]
+fn a_forged_conveyed_founding_signature_is_rejected_no_false_founding() {
+    // FOUNDING-INTEGRITY WITNESS (F3): the initiator VERIFIES a peer-returned
+    // signature before counting it toward unanimity. Without that gate,
+    // `attach_signature` checks membership only and `is_unanimous` counts presence,
+    // so a garbage `FoundingSignatureReturn` off the group-reachable working socket
+    // would drive a FALSE `Founded` — seeding and distributing a root no cohort
+    // member ever validly signed. Here A holds its own valid signature (one short
+    // of a 2-member unanimity) and a forged return for beta is conveyed: A must
+    // refuse it, stay `Gathering`, and never seed beta.
+    let alpha = host("forged-alpha");
+    let beta = host("forged-beta");
+    let (socket_a, store_a) = fixture("forged-signature-alpha");
+    let meta_a = meta_socket_for(&socket_a);
+
+    // A real BLS key we control, placed in the cohort as beta's founding key. The
+    // forged return therefore passes the membership/scheme/key checks and reaches
+    // the BLS-verify gate — the exact gate this fix restores.
+    let beta_key = MasterKey::generate().expect("beta key");
+
+    // A runs alone (the default silent voice conveys nothing); we inject the forged
+    // return directly onto A's working socket, standing in for a co-resident or
+    // malicious sender.
+    let daemon_a = CriomeDaemon::new(&socket_a, store_a).with_node_identity(alpha.clone());
+    serve(daemon_a);
+    wait_for_socket(&socket_a);
+    wait_for_socket(&meta_a);
+
+    let key_a = node_public_key(&socket_a);
+    let genesis = cohort(&alpha, &beta, &key_a, &beta_key.public_key());
+    let anchor = genesis.anchor().expect("cohort anchor");
+
+    match meta(
+        &meta_a,
+        MetaInput::InitiateRootFounding(RootFoundingInitiation::new(genesis.clone())),
+    ) {
+        MetaOutput::RootFoundingStatus(_) => {}
+        other => panic!("initiate must report status, got {other:?}"),
+    }
+    accept(&meta_a, &anchor, &genesis);
+    assert_eq!(
+        observe_status(&meta_a).state,
+        RootFoundingState::Gathering,
+        "A's own lone valid signature is one short of the 2-member unanimity"
+    );
+
+    // beta's real cohort key, but a signature over bytes that are NOT the founding
+    // statement — a well-formed envelope that does not verify.
+    let forged = FoundingSignatureReturn {
+        anchor: anchor.clone(),
+        signature: FoundingSignature::new(
+            beta.clone(),
+            SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: beta_key.public_key(),
+                signature: beta_key.sign(b"not the founding statement"),
+            },
+        ),
+    };
+    let reply = CriomeClient::new(&socket_a)
+        .send(CriomeRequest::convey_founding(
+            FoundingConveyance::Signature(forged),
+        ))
+        .expect("convey forged founding signature");
+    match reply {
+        CriomeReply::FoundingConveyed(receipt) => assert_eq!(
+            receipt.outcome,
+            FoundingConveyanceOutcome::Refused,
+            "a forged conveyed signature is refused, never accumulated toward unanimity"
+        ),
+        other => panic!("expected FoundingConveyed(Refused), got {other:?}"),
+    }
+
+    // No false unanimity, no seeding: A is still Gathering and beta was never
+    // registered from a founding that never validly completed.
+    assert_eq!(
+        observe_status(&meta_a).state,
+        RootFoundingState::Gathering,
+        "the forged signature did NOT push A into a false Founded state"
+    );
+    assert!(
+        !identity_registered(&socket_a, &beta),
+        "no seeding: beta is absent from A's registry — the forged root was never adopted"
+    );
 }

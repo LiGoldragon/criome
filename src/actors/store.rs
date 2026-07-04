@@ -14,9 +14,10 @@ use crate::founding::RootFounding;
 use crate::language::{AdmissionError, ContractStore};
 use crate::tables::{
     AuthorizationReplayIdentity, AuthorizationStateDraft, CriomeTables, InterceptPolicyDraft,
-    StoreLocation, StoredAttestation, StoredAuthorizationState, StoredContract, StoredIdentity,
-    StoredInterceptPolicy, StoredParkedSpiritRequest, StoredPendingFounding, StoredQuorumRound,
-    StoredRevocation, StoredSignatureSolicitation, StoredSignatureSubmission,
+    StoreLocation, StoredAttestation, StoredAuthorizationState, StoredCoSignedSuccessor,
+    StoredContract, StoredContractHead, StoredIdentity, StoredInterceptPolicy,
+    StoredParkedSpiritRequest, StoredPendingFounding, StoredQuorumRound, StoredRevocation,
+    StoredSignatureSolicitation, StoredSignatureSubmission,
 };
 
 pub struct StoreKernel {
@@ -87,6 +88,18 @@ pub struct StoreQuorumRound {
 pub struct LookupQuorumRound {
     round: QuorumRoundIdentifier,
 }
+
+pub struct StoreCoSignedSuccessor {
+    record: StoredCoSignedSuccessor,
+}
+
+pub struct ReadCoSignedSuccessors;
+
+pub struct StoreContractHead {
+    record: StoredContractHead,
+}
+
+pub struct ReadContractHeads;
 
 pub struct StoreRootFounding {
     founding: RootFounding,
@@ -220,6 +233,16 @@ pub struct StoredQuorumRoundReply {
 #[derive(kameo::Reply)]
 pub struct LookupQuorumRoundReply {
     round: Option<StoredQuorumRound>,
+}
+
+#[derive(kameo::Reply)]
+pub struct CoSignedSuccessorsReply {
+    records: Vec<StoredCoSignedSuccessor>,
+}
+
+#[derive(kameo::Reply)]
+pub struct ContractHeadsReply {
+    records: Vec<StoredContractHead>,
 }
 
 #[derive(kameo::Reply)]
@@ -442,6 +465,30 @@ impl StoreQuorumRound {
 impl LookupQuorumRound {
     pub fn new(round: QuorumRoundIdentifier) -> Self {
         Self { round }
+    }
+}
+
+impl StoreCoSignedSuccessor {
+    pub fn new(record: StoredCoSignedSuccessor) -> Self {
+        Self { record }
+    }
+}
+
+impl StoreContractHead {
+    pub fn new(record: StoredContractHead) -> Self {
+        Self { record }
+    }
+}
+
+impl CoSignedSuccessorsReply {
+    pub fn into_records(self) -> Vec<StoredCoSignedSuccessor> {
+        self.records
+    }
+}
+
+impl ContractHeadsReply {
+    pub fn into_records(self) -> Vec<StoredContractHead> {
+        self.records
     }
 }
 
@@ -853,6 +900,22 @@ impl StoreKernel {
         self.tables.quorum_round(round)
     }
 
+    fn store_co_signed_successor(&self, record: StoredCoSignedSuccessor) -> crate::Result<()> {
+        self.tables.put_co_signed_successor(&record)
+    }
+
+    fn co_signed_successors(&self) -> crate::Result<Vec<StoredCoSignedSuccessor>> {
+        self.tables.co_signed_successors()
+    }
+
+    fn store_contract_head(&self, record: StoredContractHead) -> crate::Result<()> {
+        self.tables.put_contract_head(&record)
+    }
+
+    fn contract_heads(&self) -> crate::Result<Vec<StoredContractHead>> {
+        self.tables.contract_heads()
+    }
+
     fn store_root_founding(&self, founding: RootFounding) -> crate::Result<RootFounding> {
         self.tables.put_root_founding(&founding)?;
         Ok(founding)
@@ -1146,6 +1209,56 @@ impl Message<LookupQuorumRound> for StoreKernel {
     ) -> Self::Reply {
         self.quorum_round(&message.round)
             .map(|round| LookupQuorumRoundReply { round })
+    }
+}
+
+impl Message<StoreCoSignedSuccessor> for StoreKernel {
+    type Reply = crate::Result<()>;
+
+    async fn handle(
+        &mut self,
+        message: StoreCoSignedSuccessor,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_co_signed_successor(message.record)
+    }
+}
+
+impl Message<ReadCoSignedSuccessors> for StoreKernel {
+    type Reply = crate::Result<CoSignedSuccessorsReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadCoSignedSuccessors,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.co_signed_successors()
+            .map(|records| CoSignedSuccessorsReply { records })
+    }
+}
+
+impl Message<StoreContractHead> for StoreKernel {
+    type Reply = crate::Result<()>;
+
+    async fn handle(
+        &mut self,
+        message: StoreContractHead,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.store_contract_head(message.record)
+    }
+}
+
+impl Message<ReadContractHeads> for StoreKernel {
+    type Reply = crate::Result<ContractHeadsReply>;
+
+    async fn handle(
+        &mut self,
+        _message: ReadContractHeads,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.contract_heads()
+            .map(|records| ContractHeadsReply { records })
     }
 }
 

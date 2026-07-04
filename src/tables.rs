@@ -15,14 +15,15 @@ use signal_criome::{
     ActiveInterceptPolicies, ApprovalAuditSource, Attestation, AttestedMomentProposition,
     AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant, AuthorizationRequestSlot,
     AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference, BlsPublicKey,
-    Contract, ContractDigest, ExpiryAction, Identity, IdentityReceipt, IdentityRegistration,
-    IdentityRevocation, InterceptPolicies, InterceptPolicy, InterceptPolicyIdentifier,
-    InterceptPolicyProposal, InterceptPolicyWindow, KeyPurpose, ObjectDigest, ParkedRequestAnswer,
-    ParkedRequestDecision, ParkedRequestIdentifier, ParkedRequestOutcome, ParkedRequestQuery,
-    ParkedRequestResolution, ParkedRequestSnapshot, ParkedSpiritRequest, ParkedSpiritRequests,
-    PolicyOverlapMode, PrincipalName, PrincipalStatus, PublicKeyFingerprint, QuorumRoundIdentifier,
-    QuorumVote, ReplayNonce, RootAnchorDigest, RootGenesis, SignatureSolicitationRoute,
-    SignatureSubmission, SpiritAuthorizationContext, TimestampNanos,
+    Contract, ContractDigest, ContractOperationHead, ExpiryAction, Identity, IdentityReceipt,
+    IdentityRegistration, IdentityRevocation, InterceptPolicies, InterceptPolicy,
+    InterceptPolicyIdentifier, InterceptPolicyProposal, InterceptPolicyWindow, KeyPurpose,
+    ObjectDigest, ParkedRequestAnswer, ParkedRequestDecision, ParkedRequestIdentifier,
+    ParkedRequestOutcome, ParkedRequestQuery, ParkedRequestResolution, ParkedRequestSnapshot,
+    ParkedSpiritRequest, ParkedSpiritRequests, PolicyOverlapMode, PrincipalName, PrincipalStatus,
+    PublicKeyFingerprint, QuorumRoundIdentifier, QuorumVote, ReplayNonce, RootAnchorDigest,
+    RootGenesis, SignatureSolicitationRoute, SignatureSubmission, SpiritAuthorizationContext,
+    TimestampNanos,
 };
 
 use crate::Result;
@@ -45,6 +46,8 @@ const CONTRACTS: TableName = TableName::new("contracts");
 const SIGNATURE_SOLICITATIONS: TableName = TableName::new("signature_solicitations");
 const SUBMITTED_SIGNATURES: TableName = TableName::new("submitted_signatures");
 const QUORUM_ROUNDS: TableName = TableName::new("quorum_rounds");
+const CO_SIGNED_SUCCESSORS: TableName = TableName::new("co_signed_successors");
+const CONTRACT_HEADS: TableName = TableName::new("contract_heads");
 const ROOT_FOUNDING: TableName = TableName::new("root_founding");
 const PENDING_FOUNDINGS: TableName = TableName::new("pending_foundings");
 const INTERCEPT_POLICIES: TableName = TableName::new("intercept_policies");
@@ -67,6 +70,14 @@ const CONTRACTS_FAMILY: &str = "criome-contract";
 const SIGNATURE_SOLICITATIONS_FAMILY: &str = "criome-signature-solicitation";
 const SUBMITTED_SIGNATURES_FAMILY: &str = "criome-submitted-signature";
 const QUORUM_ROUNDS_FAMILY: &str = "criome-quorum-round";
+// This node's durable anti-equivocation ledger: the one successor it co-signed
+// per `(contract, head)` state-point, and each contract's committed head. Both
+// are the persistent projection of an in-memory map so the single-successor veto
+// and the head cursor survive a restart (a cleared map would let a node co-sign a
+// conflicting successor across the boot, or refuse a valid one as a stale-head
+// conflict). Own family/hash, additive like `pending_foundings`.
+const CO_SIGNED_SUCCESSORS_FAMILY: &str = "criome-co-signed-successor";
+const CONTRACT_HEADS_FAMILY: &str = "criome-contract-head";
 const ROOT_FOUNDING_FAMILY: &str = "criome-root-founding";
 // A node founds at most one root, so the `root_founding` table is a singleton
 // keyed under a constant slot.
@@ -320,6 +331,71 @@ impl StoredQuorumRound {
         } else {
             self.votes.push(vote);
         }
+    }
+}
+
+/// This node's durable record of the one successor it co-signed for a
+/// `(contract, head)` state-point — the persistent projection of the in-memory
+/// anti-equivocation ledger. Persisting it means a node that co-signed successor
+/// S1 from head H cannot, after a restart that clears the in-memory map, co-sign a
+/// conflicting S2 from the same H: the single-successor veto survives the boot.
+/// `head` rides alongside `object` so the loader rebuilds the exact state-point
+/// key without parsing it back out of the stored key string.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredCoSignedSuccessor {
+    contract: ContractDigest,
+    head: ContractOperationHead,
+    object: AuthorizedObjectReference,
+}
+
+impl StoredCoSignedSuccessor {
+    pub fn new(
+        contract: ContractDigest,
+        head: ContractOperationHead,
+        object: AuthorizedObjectReference,
+    ) -> Self {
+        Self {
+            contract,
+            head,
+            object,
+        }
+    }
+
+    pub fn contract(&self) -> &ContractDigest {
+        &self.contract
+    }
+
+    pub fn head(&self) -> &ContractOperationHead {
+        &self.head
+    }
+
+    pub fn object(&self) -> &AuthorizedObjectReference {
+        &self.object
+    }
+}
+
+/// This node's durable view of a contract's current committed head — the
+/// persistent projection of the in-memory head cursor. Persisting it means the
+/// head a commit advanced to survives a restart, so a successor from that head is
+/// not later mistaken for a conflicting successor from genesis (which would wedge
+/// the cluster exactly as a stale peer head does at runtime).
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredContractHead {
+    contract: ContractDigest,
+    head: ContractOperationHead,
+}
+
+impl StoredContractHead {
+    pub fn new(contract: ContractDigest, head: ContractOperationHead) -> Self {
+        Self { contract, head }
+    }
+
+    pub fn contract(&self) -> &ContractDigest {
+        &self.contract
+    }
+
+    pub fn head(&self) -> &ContractOperationHead {
+        &self.head
     }
 }
 
@@ -663,6 +739,8 @@ pub struct CriomeTables {
     signature_solicitations: TableReference<StoredSignatureSolicitation>,
     submitted_signatures: TableReference<StoredSignatureSubmission>,
     quorum_rounds: TableReference<StoredQuorumRound>,
+    co_signed_successors: TableReference<StoredCoSignedSuccessor>,
+    contract_heads: TableReference<StoredContractHead>,
     root_founding: TableReference<RootFounding>,
     pending_foundings: TableReference<StoredPendingFounding>,
     intercept_policies: TableReference<StoredInterceptPolicy>,
@@ -702,6 +780,14 @@ impl CriomeTables {
         ))?;
         let quorum_rounds =
             engine.register_table(Self::family_descriptor(QUORUM_ROUNDS, QUORUM_ROUNDS_FAMILY))?;
+        let co_signed_successors = engine.register_table(Self::family_descriptor(
+            CO_SIGNED_SUCCESSORS,
+            CO_SIGNED_SUCCESSORS_FAMILY,
+        ))?;
+        let contract_heads = engine.register_table(Self::family_descriptor(
+            CONTRACT_HEADS,
+            CONTRACT_HEADS_FAMILY,
+        ))?;
         let root_founding =
             engine.register_table(Self::family_descriptor(ROOT_FOUNDING, ROOT_FOUNDING_FAMILY))?;
         let pending_foundings = engine.register_table(Self::family_descriptor(
@@ -743,6 +829,8 @@ impl CriomeTables {
             signature_solicitations,
             submitted_signatures,
             quorum_rounds,
+            co_signed_successors,
+            contract_heads,
             root_founding,
             pending_foundings,
             intercept_policies,
@@ -932,6 +1020,35 @@ impl CriomeTables {
     pub fn quorum_round(&self, round: &QuorumRoundIdentifier) -> Result<Option<StoredQuorumRound>> {
         let key = QuorumRoundKey::new(round).into_string();
         self.read_key(self.quorum_rounds, key)
+    }
+
+    /// Record the one successor this node co-signed for a `(contract, head)`
+    /// state-point. Keyed by that state-point, so a later identical co-sign upserts
+    /// the same row and a conflicting one is refused upstream before it reaches
+    /// here.
+    pub fn put_co_signed_successor(&self, record: &StoredCoSignedSuccessor) -> Result<()> {
+        let key = StatePointKey::new(record.contract(), record.head()).into_string();
+        self.upsert(self.co_signed_successors, key, record.clone())?;
+        Ok(())
+    }
+
+    /// Every co-signed successor this node has recorded — the durable ledger the
+    /// root rebuilds its in-memory anti-equivocation map from on boot.
+    pub fn co_signed_successors(&self) -> Result<Vec<StoredCoSignedSuccessor>> {
+        self.read_all(self.co_signed_successors)
+    }
+
+    /// Record a contract's current committed head, keyed by the contract.
+    pub fn put_contract_head(&self, record: &StoredContractHead) -> Result<()> {
+        let key = ContractDigestKey::new(record.contract()).into_string();
+        self.upsert(self.contract_heads, key, record.clone())?;
+        Ok(())
+    }
+
+    /// Every contract head this node has advanced — the durable cursor the root
+    /// rebuilds its in-memory head map from on boot.
+    pub fn contract_heads(&self) -> Result<Vec<StoredContractHead>> {
+        self.read_all(self.contract_heads)
     }
 
     /// Persist (or update) this node's single founded root — the genesis, its
@@ -1589,6 +1706,25 @@ impl QuorumRoundKey {
 
     fn into_string(self) -> String {
         self.round
+    }
+}
+
+/// The `(contract, head)` state-point key a co-signed successor is stored under —
+/// the same `contract@head` shape the root's in-memory ledger keys on, so the two
+/// stay in step.
+struct StatePointKey {
+    key: String,
+}
+
+impl StatePointKey {
+    fn new(contract: &ContractDigest, head: &ContractOperationHead) -> Self {
+        Self {
+            key: format!("{}@{}", contract.as_str(), head.as_str()),
+        }
+    }
+
+    fn into_string(self) -> String {
+        self.key
     }
 }
 
