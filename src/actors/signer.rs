@@ -262,22 +262,41 @@ impl AttestationSigner {
         }
     }
 
+    /// This node's Criome host ID as a signing identity: `Host(<master public
+    /// key>)`. It is the fabric identity by which a peer's criome verifies this
+    /// node's session proofs and forward attestations (primary-79z1.18) — the
+    /// master public key itself, distinct from the OS-name `node_identity` this
+    /// criome uses for founding and quorum.
+    fn own_criome_host_id(&self) -> Identity {
+        Identity::host(self.master_key.public_key().as_str().to_string())
+    }
+
     async fn sign(&self, request: SignRequest) -> CriomeReply {
-        // Gate: only a known, active identity may request an attestation. criome
-        // then signs as itself with its master key (self-owned policy); the
-        // requester and the kernel-vouched caller live in the audit context.
-        if self
-            .active_public_key(request.signer.clone())
-            .await
-            .is_none()
-        {
-            return rejection(RejectionReason::UnknownIdentity);
-        }
+        // The identity the attestation is minted under. A node may always attest
+        // as its own Criome host ID (it holds the master key), so that request is
+        // authorized without a registry lookup and signed as that host ID — this
+        // is how the router stamps the pubkey fabric identity, verified by a
+        // peer's criome by that same key. Every other requester must be a known,
+        // active identity, and the attestation is signed as this criome's own
+        // node identity (self-owned policy); the requester and the kernel-vouched
+        // caller live in the audit context.
+        let signer = if request.signer == self.own_criome_host_id() {
+            request.signer.clone()
+        } else {
+            if self
+                .active_public_key(request.signer.clone())
+                .await
+                .is_none()
+            {
+                return rejection(RejectionReason::UnknownIdentity);
+            }
+            self.criome_identity.clone()
+        };
         let issued_at = self.clock.timestamp();
         let expires_at = request.expires_at();
         let mut attestation = Attestation::new(
             request.content,
-            self.criome_identity.clone(),
+            signer,
             SignatureEnvelope {
                 scheme: SignatureScheme::Bls12_381MinPk,
                 public_key: self.master_key.public_key(),
