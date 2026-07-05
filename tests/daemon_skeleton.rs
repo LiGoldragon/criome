@@ -17,7 +17,7 @@ use criome::transport::{CriomeClient, CriomeFrameCodec, CriomeMetaClient};
 use kameo::actor::Spawn;
 use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 #[cfg(feature = "nota-text")]
-use nota_next::NotaEncode;
+use nota::NotaEncode;
 use signal_criome::{
     ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
@@ -1614,6 +1614,98 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
         !grant.signatures()[0].envelope.signature.as_str().is_empty(),
         "client approval signs the grant through criome"
     );
+
+    daemon.shutdown().expect("shutdown daemon");
+}
+
+#[test]
+fn authorization_submit_stream_pushes_approval_update() {
+    let workspace = fixture_path("authorization-submit-push");
+    let socket = workspace.join("criome.sock");
+    let meta_socket = workspace.join("criome-meta.sock");
+    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let daemon = CriomeDaemon::new(&socket, store.clone())
+        .with_meta_socket(&meta_socket)
+        .bind()
+        .expect("bind daemon");
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next_meta()
+                .expect("serve client approval configure")
+        });
+        let configuration = CriomeDaemonConfiguration::new(
+            socket.display().to_string(),
+            store.as_path().display().to_string(),
+        )
+        .with_meta_socket_path(meta_socket.display().to_string())
+        .with_authorization_mode(signal_criome::AuthorizationMode::ClientApproval);
+        let reply = CriomeMetaClient::new(&meta_socket)
+            .send(meta_signal_criome::Input::Configure(configuration))
+            .expect("submit client approval configure");
+        assert_eq!(
+            server.join().expect("join client approval configure"),
+            reply
+        );
+    });
+
+    let authorization =
+        signal_call_authorization_with_nonce(b"push-approved-signal-call", "push-grant-nonce");
+    let request_digest = authorization.request_digest.clone();
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            daemon
+                .serve_next_streaming()
+                .expect("serve authorization submit stream")
+        });
+        let mut session = CriomeClient::new(&socket)
+            .authorize_signal_call(authorization.clone())
+            .expect("submit authorization and open request stream");
+        session
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("set stream timeout");
+        let request_slot = session.token().payload().clone();
+        let snapshot_states = session.snapshot().states();
+        assert_eq!(snapshot_states.len(), 1);
+        assert_eq!(snapshot_states[0].status, AuthorizationStatus::Parked);
+        assert_eq!(snapshot_states[0].request_slot, request_slot);
+        assert_eq!(snapshot_states[0].request_digest, request_digest);
+        assert_eq!(
+            snapshot_states[0].signal_authorization(),
+            Some(&authorization)
+        );
+
+        let approved = send_meta_request(
+            &daemon,
+            &meta_socket,
+            meta_signal_criome::Input::SubmitAuthorizationApproval(AuthorizationApproval {
+                request_slot: request_slot.clone(),
+                decision: AuthorizationApprovalDecision::Approve,
+            }),
+        );
+        let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
+            panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
+        };
+        assert_eq!(approved.request_slot, request_slot);
+        assert_eq!(approved.decision, AuthorizationApprovalDecision::Approve);
+
+        let update = session.next_update().expect("read pushed approval update");
+        assert_eq!(update.status, AuthorizationStatus::Granted);
+        assert_eq!(update.request_slot, request_slot);
+        assert_eq!(update.request_digest, request_digest);
+        assert_eq!(update.signal_authorization(), Some(&authorization));
+        assert!(
+            update.grant().is_some(),
+            "pushed approval update carries the signed grant"
+        );
+        assert_eq!(
+            server.join().expect("join authorization submit stream"),
+            None
+        );
+    });
 
     daemon.shutdown().expect("shutdown daemon");
 }

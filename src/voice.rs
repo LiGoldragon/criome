@@ -17,18 +17,10 @@
 //!   - [`SilentVoice`] is the unarmed default: proposals still self-vote, but no
 //!     solicitation leaves the node.
 
-use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use signal_criome::{CriomeRequest, Identity};
-use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, Reply, SessionEpoch, SubReply};
-use signal_router::{
-    ActorIdentifier, ContractName, ContractOperation, ContractPayloadSize, ForwardedMessagePayload,
-    Frame as RouterFrame, FrameBody as RouterFrameBody, Input as RouterInput,
-    Integer as RouterInteger, Output as RouterOutput, RoutedContractObject,
-};
-use triad_runtime::{FrameBody as LengthPrefixedFrameBody, LengthPrefixedCodec};
+use signal_router::ActorIdentifier;
 
 use crate::transport::{CriomeClient, CriomeFrameCodec};
 use crate::{Error, Result};
@@ -180,65 +172,12 @@ impl RouterQuorumVoice {
         Ok(framed.split_off(4))
     }
 
-    fn payload(
-        &self,
-        destination: ActorIdentifier,
-        request: CriomeRequest,
-    ) -> Result<ForwardedMessagePayload> {
-        let operation_label = format!("{:?}", request.route());
-        let octets = Self::request_octets(request)?;
-        let routed_object = RoutedContractObject::new(
-            ContractName::new(CRIOME_CONTRACT_NAME),
-            ContractOperation::new(operation_label.clone()),
-            ContractPayloadSize::new(octets.len() as RouterInteger),
-            octets.into_iter().map(RouterInteger::from).collect(),
-        );
-        Ok(ForwardedMessagePayload::new(
-            self.source_actor.clone(),
-            destination,
-            operation_label,
-            Vec::new(),
-            vec![routed_object],
-        ))
-    }
-
-    fn submit(router_socket: &std::path::Path, payload: ForwardedMessagePayload) -> Result<()> {
-        let mut stream = UnixStream::connect(router_socket)?;
-        let exchange = ExchangeIdentifier::new(
-            SessionEpoch::new(0),
-            ExchangeLane::Connector,
-            LaneSequence::first(),
-        );
-        let request_octets = RouterInput::submit_routed_objects(payload)
-            .into_frame(exchange)
-            .encode()
-            .map_err(|source| Error::VoiceDelivery(source.to_string()))?;
-        let codec = LengthPrefixedCodec::default();
-        codec
-            .write_body(&mut stream, &LengthPrefixedFrameBody::new(request_octets))
-            .map_err(|source| Error::VoiceDelivery(source.to_string()))?;
-        stream.flush()?;
-        let reply_body = codec
-            .read_body(&mut stream)
-            .map_err(|source| Error::VoiceDelivery(source.to_string()))?;
-        let reply_frame = RouterFrame::decode(reply_body.bytes())
-            .map_err(|source| Error::VoiceDelivery(source.to_string()))?;
-        Self::accepted(reply_frame)
-    }
-
-    fn accepted(frame: RouterFrame) -> Result<()> {
-        match frame.into_body() {
-            RouterFrameBody::Reply { reply, .. } => match reply {
-                Reply::Accepted { per_operation, .. } => match per_operation.into_head() {
-                    SubReply::Ok(RouterOutput::RoutedObjectsAccepted(_)) => Ok(()),
-                    other => Err(Error::VoiceDelivery(format!("unexpected reply: {other:?}"))),
-                },
-                Reply::Rejected { reason } => {
-                    Err(Error::VoiceDelivery(format!("router refused: {reason}")))
-                }
-            },
-            other => Err(Error::VoiceDelivery(format!("unexpected frame: {other:?}"))),
-        }
+    fn submit(&self, destination: ActorIdentifier, request: CriomeRequest) -> Result<()> {
+        let _ = (&self.router_socket, &self.source_actor, destination);
+        let _octets = Self::request_octets(request)?;
+        Err(Error::VoiceDelivery(format!(
+            "{CRIOME_CONTRACT_NAME} router conveyance waits for the clean signal-router routed-object constructor"
+        )))
     }
 }
 
@@ -247,28 +186,15 @@ impl QuorumVoice for RouterQuorumVoice {
         let Some(destination) = self.destination_for(recipient) else {
             return;
         };
-        let Ok(payload) = self.payload(destination, request) else {
-            return;
-        };
-        let router_socket = self.router_socket.clone();
-        std::thread::spawn(move || {
-            let _ = Self::submit(&router_socket, payload);
-        });
+        let _ = self.submit(destination, request);
     }
 
     fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>) {
         let Some(destination) = self.destination_for(recipient) else {
             return;
         };
-        let payloads: Vec<ForwardedMessagePayload> = requests
-            .into_iter()
-            .filter_map(|request| self.payload(destination.clone(), request).ok())
-            .collect();
-        let router_socket = self.router_socket.clone();
-        std::thread::spawn(move || {
-            for payload in payloads {
-                let _ = Self::submit(&router_socket, payload);
-            }
-        });
+        for request in requests {
+            let _ = self.submit(destination.clone(), request);
+        }
     }
 }

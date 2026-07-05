@@ -16,11 +16,13 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[cfg(feature = "nota-text")]
     #[error("nota: {0}")]
-    Nota(#[from] nota_next::NotaDecodeError),
+    Nota(#[from] nota::NotaDecodeError),
     #[error("sema: {0}")]
     Sema(#[from] sema_engine::Error),
     #[error("signal frame: {0}")]
     SignalFrame(#[from] signal_frame::FrameError),
+    #[error("control signal frame: {0}")]
+    ControlSignalFrame(#[from] control_signal_frame::FrameError),
     #[error("argument: {0}")]
     Argument(#[from] triad_runtime::ArgumentError),
     #[error("configuration archive decode failed")]
@@ -67,6 +69,8 @@ pub enum Error {
     VoiceDelivery(String),
     #[error("root founding failed: {0}")]
     RootFounding(String),
+    #[error("meta socket connection refused: peer uid {uid} is not the owning uid {owner_uid}")]
+    MetaSocketUnauthorized { uid: u32, owner_uid: u32 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

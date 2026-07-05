@@ -28,7 +28,7 @@ use meta_signal_criome::{
     Input as MetaInput, Output as MetaOutput, RootFoundingAcceptance, RootFoundingInitiation,
     RootFoundingObservation, RootFoundingStatus,
 };
-use nota_next::{NotaEncode, NotaSource};
+use nota::{NotaEncode, NotaSource};
 use signal_criome::{
     CriomeReply, CriomeRequest, NodePublicKeyObservation, ObjectDigest, RootAnchorDigest,
     RootGenesis,
@@ -52,7 +52,7 @@ enum OperatorError {
         source: std::io::Error,
     },
     #[error("parse cohort NOTA: {0}")]
-    CohortParse(nota_next::NotaDecodeError),
+    CohortParse(nota::NotaDecodeError),
     #[error("unexpected reply: {0}")]
     UnexpectedReply(String),
     #[error("no pending founding for anchor {0}")]

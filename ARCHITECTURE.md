@@ -63,10 +63,11 @@ authorization decisions, and privilege elevations.*
   ChannelGrantAttestation from `mind`).
 - **Routed authorization is the Lojix integration path.**
   `lojix-daemon` submits the exact canonical `signal-lojix`
-  request digest to its local `criome-daemon`. Criome routes
-  signature solicitations, records pending/granted/denied state,
-  checks expiry and replay, and issues an authorization envelope
-  whose permission comes from signatures over the exact request.
+  request digest to its local `criome-daemon` and waits on the
+  submit-open request stream. Criome routes signature solicitations,
+  records pending/granted/denied state, checks expiry and replay, and
+  issues an authorization envelope whose permission comes from
+  signatures over the exact request.
   Lojix owns deployment coordination after the envelope grants the
   requested scope.
 - **Signature scheme**: **BLS12-381 from day one**, via
@@ -191,10 +192,12 @@ authorization decisions, and privilege elevations.*
 - **`AuthorizationGrant` carries the satisfied policy.** Scope, the
   signatures collected, and the threshold expression that says why
   those signatures are sufficient.
-- **Pending authorization is observable.** `ObserveAuthorization`
-  pushes pending → granted/denied/expired state. Lojix effects wait
-  for `AuthorizationGranted` over the request's exact digest, not by
-  polling.
+- **Pending authorization is pushed.** `AuthorizeSignalCall` opens a
+  request-scoped lifecycle stream for the submitted request: current
+  snapshot first, then pending → granted/denied/expired updates.
+  `ObserveAuthorization` remains available when a caller already holds
+  a slot. Lojix effects wait for `AuthorizationGranted` over the
+  request's exact digest, not by polling.
 
 ## Security model — Unix-user as boundary
 
@@ -229,6 +232,19 @@ cannot write the meta socket. The encrypted meta session is
 defense-in-depth for the cases where a different UID observes bytes
 without owning the socket: bind-time races, runtime-directory
 mistakes, symlink races, or partial-frame protocol bugs.
+
+**`SO_PEERCRED` makes the owner boundary kernel-enforced, not
+path-secrecy-only.** On every accepted meta connection the daemon
+reads the peer's kernel credentials (`MetaSocketAuthority`, via
+`rustix::net::sockopt::socket_peercred`) and serves only the Unix
+user that owns the bound meta socket inode; any other UID is refused
+before the first meta request is read. This closes exactly the gaps
+the `0600` mode alone cannot: if the socket mode is ever loosened, or
+a bind-time / runtime-directory / symlink race exposes the socket to
+a different UID, the kernel-supplied peer UID still gates the policy
+plane. A refused peer is logged and dropped without stopping the
+serve loop, so a non-owner cannot wedge the daemon by dialling the
+meta socket.
 
 The `meta-signal-criome` session starts with an ECDH exchange, derives
 a symmetric session key through HKDF, then carries AEAD-encrypted
@@ -599,8 +615,8 @@ The headline boundaries:
 | `mind` | `AttestChannelGrant`, `AttestAuthorization` | Mind requests attestations before forwarding decisions to router. |
 | `router` | `SubscribeIdentityUpdates`, `VerifyAttestation` | Router caches identity registry; verifies attestations before installing channels or delivering attested messages. |
 | `persona` engine manager | `AttestAuthorization` (with `PrivilegeElevation` context) | Engine manager signs cross-engine route approvals and privilege-elevation verdicts. |
-| `lojix-cli` | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
-| `lojix-daemon` | `AuthorizeSignalCall`, `ObserveAuthorization`, `VerifyAuthorization` | Daemon submits an exact `signal-lojix` request digest, waits for pending signature state or an authorization grant, and verifies grants before local deploy effects. |
+| Lojix | `AttestArchive`, `VerifyAttestation` | Build pipeline signs archive fingerprints; deploy pipeline verifies before activation. |
+| Signal-requesting daemon | `AuthorizeSignalCall`, `VerifyAuthorization`; `ObserveAuthorization` only when it already holds a slot | The requester submits an exact Signal request digest, receives the submit-open lifecycle stream until terminal grant/rejection/expiry/closure, and verifies grants before local effects. |
 | `criome` CLI (meta) | `meta-signal-criome` | The authority Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
 | `tui-criome` (meta, long-running) | `meta-signal-criome` | The authority's long-running interactive client. Same contract as the CLI, but stays connected to receive approval-request push events and answer them. Not a separate triad daemon. |
 | Peer criome daemons | `signal-criome` (contract-quorum, §6.2) | Receive `SolicitQuorumVote`, independently re-validate and cast vote #2, and convey `SubmitQuorumVote` back — across the router's opaque routed-object carriage (the voice) or a direct peer-socket dial. The 1-of-1 `RouteSignatureRequest` / `SubmitSignature` signal-call skeleton is a separate surface. |
@@ -642,16 +658,17 @@ constraints:
 - Channel grants without a valid attestation do not
   install in router.
 - Archive deployments without a valid attestation abort
-  in lojix-cli.
-- Lojix deploy effects do not begin until `AuthorizeSignalCall`
-  returns `AuthorizationGranted` for the exact request digest and
-  requested scope.
+  in Lojix before effects begin.
+- Lojix deploy effects do not begin until the `AuthorizeSignalCall`
+  request-scoped stream returns `AuthorizationGranted` for the exact
+  request digest and requested scope.
 - **Authorization is constituted by signatures-over-the-exact-digest
   that satisfy criome's policy.** Policy alone does not grant;
   signatures alone are not enough without policy that names them as
   sufficient.
-- Pending authorization is a first-class state. It is
-  observed through `ObserveAuthorization`, not by polling.
+- Pending authorization is a first-class state. The submitting caller
+  receives it on the `AuthorizeSignalCall` lifecycle stream; other
+  authorized observers may use `ObserveAuthorization`. No caller polls.
 - An authorization grant for request A cannot authorize
   request B; `VerifyAuthorization` checks the typed
   digest match.
@@ -664,7 +681,12 @@ constraints:
   table mutation, or escalation-approval replies.
 - **The daemon's meta socket is mode 0600, owned by the daemon's
   Unix user.** A witness test asserts the socket's mode and owner
-  match the configured user at daemon ready.
+  match the configured user at daemon ready. Beyond the file mode,
+  the daemon reads `SO_PEERCRED` on every accepted meta connection
+  and serves only the socket-owning UID; a non-owner peer is refused
+  before its first meta request and dropped without stalling the
+  serve loop. Unit tests exercise both the owning-UID admit and the
+  non-owner refusal over a socket pair.
 - **Meta-session traffic is encrypted.** Passphrase submission,
   master-key operations, policy mutation, peer-route mutation, and
   escalation-approval replies travel inside the future
@@ -884,7 +906,7 @@ dependency solely for the router-mediated voice.
 Cargo dependencies after the rewrite: `signal-frame`,
 `signal-criome`, `signal-router` (the quorum voice only),
 `kameo`, `sema-engine`, `tokio`, `thiserror`,
-`triad-runtime`, `rkyv`, `blst`, `blake3`, `nota-next`.
+`triad-runtime`, `rkyv`, `blst`, `blake3`, `nota`.
 **Drops** the retired `signal` and `ractor` dependencies.
 
 Current implementation status:
@@ -945,7 +967,8 @@ Current implementation status:
 - `AuthorizationCoordinator` is present as a data-bearing Kameo
   actor. It asks `StoreKernel` to mint durable authorization request
   slots, records `AuthorizeSignalCall` as durable signing-state,
-  exposes that state through `ObserveAuthorization`, stores
+  exposes that state through the submit-open lifecycle stream and the
+  compatibility `ObserveAuthorization` surface, stores
   signature solicitations/submissions, records signer denials, and
   rejects `VerifyAuthorization` when the grant digest does not match
   the requested digest. **Authorization expiry and replay guard are

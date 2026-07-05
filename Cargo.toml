@@ -54,7 +54,7 @@ required-features = ["cluster-witness"]
 
 [features]
 default = []
-nota-text = ["dep:nota-next", "signal-criome/nota-text", "meta-signal-criome/nota-text", "signal-frame/nota-text"]
+nota-text = ["dep:nota", "signal-criome/nota-text", "meta-signal-criome/nota-text", "signal-frame/nota-text"]
 # The criome-cluster test harness binaries (the authorization witness and its
 # daemon-config encoder) — designer report 704, Stage A. Excluded from
 # production builds; the NixOS cluster test enables it.
@@ -64,16 +64,18 @@ cluster-witness = []
 blake3       = "1"
 blst         = "0.3"
 kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
-nota-next    = { package = "nota", git = "https://github.com/LiGoldragon/nota-next.git", branch = "main", optional = true }
-meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "main" }
+nota    = { package = "nota", git = "https://github.com/LiGoldragon/nota.git", branch = "main", optional = true }
+meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "drop-next" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+rustix       = { version = "1", features = ["net"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
-signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
-signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
-signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
+signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "drop-next" }
+control-signal-frame = { package = "signal-frame", git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main", default-features = false }
+signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "drop-next" }
+signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "drop-next" }
 thiserror    = "2"
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
+triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "drop-next" }
 
 [dev-dependencies]
 tempfile = "3"
