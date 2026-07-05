@@ -21,8 +21,8 @@ use std::path::PathBuf;
 
 use signal_criome::{CriomeRequest, Identity};
 use signal_router::{
-    ActorIdentifier, ContractName, ContractOperation, ContractPayloadSize,
-    ForwardedMessagePayload, Input as RouterInput, Output as RouterOutput, RoutedContractObject,
+    ActorIdentifier, ContractName, ContractOperation, ContractPayloadSize, ForwardedMessagePayload,
+    Input as RouterInput, Output as RouterOutput, RoutedContractObject,
 };
 
 use crate::router_client::RouterClient;
@@ -33,6 +33,21 @@ use crate::{Error, Result};
 /// octets payload-blind; the name is an attestation/audit label naming the
 /// contract the octets belong to.
 const CRIOME_CONTRACT_NAME: &str = "signal-criome";
+
+/// Which concrete voice is armed — a closed identification of the selected
+/// conveyance path, not a flag: exactly one variant names the transport
+/// instead of a boolean per implementation. `CriomeDaemon::from_configuration`
+/// selection is asserted against this, and it doubles as the transport label
+/// the daemon can log at startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuorumVoiceKind {
+    /// Unarmed: proposals self-vote, but no solicitation leaves the node.
+    Silent,
+    /// Direct peer-dial: the single-host, multi-user deployment mode.
+    DirectDial,
+    /// Router-mediated: the cross-node (network) transport.
+    Router,
+}
 
 /// A conveyance from a local criome to a peer member's criome. Implementations
 /// deliver `request` to `recipient` asynchronously and best-effort; `convey`
@@ -47,6 +62,9 @@ pub trait QuorumVoice: Send + Sync {
     /// commit solicitation that re-judges it, so the ordering-dependent exchange is
     /// race-free over the otherwise best-effort voice.
     fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>);
+
+    /// Which concrete voice this is. See [`QuorumVoiceKind`].
+    fn kind(&self) -> QuorumVoiceKind;
 }
 
 /// The unarmed voice: a criome with no configured peers. An M-of-1 contract
@@ -57,6 +75,10 @@ impl QuorumVoice for SilentVoice {
     fn convey(&self, _recipient: &Identity, _request: CriomeRequest) {}
 
     fn convey_ordered(&self, _recipient: &Identity, _requests: Vec<CriomeRequest>) {}
+
+    fn kind(&self) -> QuorumVoiceKind {
+        QuorumVoiceKind::Silent
+    }
 }
 
 /// One peer member mapped to the criome working socket that reaches it.
@@ -115,6 +137,10 @@ impl QuorumVoice for DirectDialQuorumVoice {
             }
         });
     }
+
+    fn kind(&self) -> QuorumVoiceKind {
+        QuorumVoiceKind::DirectDial
+    }
 }
 
 /// One peer member mapped to the router destination-actor name the local router
@@ -128,6 +154,16 @@ pub struct PeerActorRoute {
 impl PeerActorRoute {
     pub fn new(peer: Identity, destination: ActorIdentifier) -> Self {
         Self { peer, destination }
+    }
+
+    /// Build a route-table entry from its `CriomeDaemonConfiguration` wire
+    /// twin (`signal_criome::PeerActorRoute`), converting the router
+    /// destination-actor identifier into `signal_router`'s own type.
+    pub fn from_configuration(route: &signal_criome::PeerActorRoute) -> Self {
+        Self::new(
+            route.peer().clone(),
+            ActorIdentifier::new(route.destination().as_str()),
+        )
     }
 }
 
@@ -152,6 +188,24 @@ impl RouterQuorumVoice {
             source_actor,
             routes,
         }
+    }
+
+    /// Build the router-mediated voice from its `CriomeDaemonConfiguration`
+    /// wire twin (`signal_criome::RouterVoiceConfiguration`): the local
+    /// router socket to originate over, the source actor this daemon
+    /// originates as, and the peer route table. This is what
+    /// `CriomeDaemon::from_configuration` arms when `router_voice` is
+    /// configured, in place of the unarmed `SilentVoice` default.
+    pub fn from_configuration(configuration: &signal_criome::RouterVoiceConfiguration) -> Self {
+        Self::new(
+            configuration.router_socket_path().as_str(),
+            ActorIdentifier::new(configuration.source_actor().as_str()),
+            configuration
+                .peer_routes()
+                .iter()
+                .map(PeerActorRoute::from_configuration)
+                .collect(),
+        )
     }
 
     fn destination_for(&self, recipient: &Identity) -> Option<ActorIdentifier> {
@@ -232,5 +286,9 @@ impl QuorumVoice for RouterQuorumVoice {
         for request in requests {
             let _ = self.submit(destination.clone(), request);
         }
+    }
+
+    fn kind(&self) -> QuorumVoiceKind {
+        QuorumVoiceKind::Router
     }
 }

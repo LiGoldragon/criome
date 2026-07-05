@@ -27,8 +27,8 @@
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use criome::daemon::CriomeDaemon;

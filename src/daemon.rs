@@ -20,7 +20,7 @@ use crate::actors::root::{
 use crate::master_key::SystemClock;
 use crate::tables::StoreLocation;
 use crate::transport::{CriomeFrameCodec, CriomeMetaFrameCodec};
-use crate::voice::{QuorumVoice, SilentVoice};
+use crate::voice::{QuorumVoice, RouterQuorumVoice, SilentVoice};
 use crate::{Error, Result};
 
 #[derive(Clone)]
@@ -68,6 +68,10 @@ impl CriomeDaemon {
             .node_identity()
             .cloned()
             .unwrap_or_else(RootArguments::default_node_identity);
+        let voice: Arc<dyn QuorumVoice> = match configuration.router_voice() {
+            Some(router_voice) => Arc::new(RouterQuorumVoice::from_configuration(router_voice)),
+            None => Arc::new(SilentVoice),
+        };
         Self {
             socket,
             meta_socket,
@@ -75,7 +79,7 @@ impl CriomeDaemon {
             cluster_root: configuration.cluster_root().cloned(),
             authorization_mode: *configuration.authorization_mode(),
             node_identity,
-            voice: Arc::new(SilentVoice),
+            voice,
             clock: SystemClock::system(),
         }
     }
@@ -616,5 +620,51 @@ mod meta_socket_authority_tests {
             authority.authorize(&near),
             Err(Error::MetaSocketUnauthorized { .. })
         ));
+    }
+}
+
+/// `from_configuration` voice selection (primary-79z1.21, Slice C: the
+/// non-silent production voice). A configured `RouterVoiceConfiguration` must
+/// arm `RouterQuorumVoice`; an unconfigured daemon must stay on the unarmed
+/// `SilentVoice` default.
+#[cfg(test)]
+mod voice_selection_tests {
+    use super::*;
+    use crate::voice::QuorumVoiceKind;
+    use signal_criome::{ActorIdentifier, PeerActorRoute, RouterVoiceConfiguration};
+
+    fn base_configuration() -> CriomeDaemonConfiguration {
+        CriomeDaemonConfiguration::new(
+            "/tmp/criome-voice-selection-test.sock",
+            "/tmp/criome-voice-selection-test.sema",
+        )
+    }
+
+    fn router_voice_configuration() -> RouterVoiceConfiguration {
+        RouterVoiceConfiguration::new(
+            "/tmp/criome-voice-selection-test-router.sock",
+            ActorIdentifier::new("criome-a-outbox"),
+            vec![PeerActorRoute::new(
+                RootArguments::default_node_identity(),
+                ActorIdentifier::new("criome-b-inbox"),
+            )],
+        )
+    }
+
+    /// No `router_voice` configured (single-node / unconfigured host) stays
+    /// on the unarmed `SilentVoice` default.
+    #[test]
+    fn unconfigured_daemon_stays_silent() {
+        let daemon = CriomeDaemon::from_configuration(base_configuration());
+        assert_eq!(daemon.voice.kind(), QuorumVoiceKind::Silent);
+    }
+
+    /// A configured `RouterVoiceConfiguration` arms `RouterQuorumVoice` in its
+    /// place.
+    #[test]
+    fn configured_daemon_arms_the_router_voice() {
+        let configuration = base_configuration().with_router_voice(router_voice_configuration());
+        let daemon = CriomeDaemon::from_configuration(configuration);
+        assert_eq!(daemon.voice.kind(), QuorumVoiceKind::Router);
     }
 }
