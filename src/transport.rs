@@ -4,10 +4,6 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use control_signal_frame::{
-    NonEmpty as ControlNonEmpty, Reply as ControlReply, RequestPayload as ControlRequestPayload,
-    SubReply as ControlSubReply,
-};
 use meta_signal_criome::{Frame as CriomeMetaFrame, FrameBody as CriomeMetaFrameBody};
 use signal_criome::{
     AuthorizationObservation, AuthorizationObservationSnapshot, AuthorizationObservationToken,
@@ -26,14 +22,6 @@ fn synthetic_exchange() -> ExchangeIdentifier {
         SessionEpoch::new(0),
         ExchangeLane::Connector,
         LaneSequence::first(),
-    )
-}
-
-fn synthetic_control_exchange() -> control_signal_frame::ExchangeIdentifier {
-    control_signal_frame::ExchangeIdentifier::new(
-        control_signal_frame::SessionEpoch::new(0),
-        control_signal_frame::ExchangeLane::Connector,
-        control_signal_frame::LaneSequence::first(),
     )
 }
 
@@ -208,7 +196,7 @@ impl CriomeMetaFrameCodec {
         request: meta_signal_criome::Input,
     ) -> Result<()> {
         let frame = CriomeMetaFrame::new(CriomeMetaFrameBody::Request {
-            exchange: synthetic_control_exchange(),
+            exchange: synthetic_exchange(),
             request: request.into_request(),
         });
         self.write_frame(writer, frame)
@@ -217,13 +205,13 @@ impl CriomeMetaFrameCodec {
     pub fn read_reply(&self, reader: &mut impl Read) -> Result<meta_signal_criome::Output> {
         match self.read_frame(reader)?.into_body() {
             CriomeMetaFrameBody::Reply { reply, .. } => match reply {
-                ControlReply::Accepted { per_operation, .. } => match per_operation.into_head() {
-                    ControlSubReply::Ok(payload) => Ok(payload),
+                Reply::Accepted { per_operation, .. } => match per_operation.into_head() {
+                    SubReply::Ok(payload) => Ok(payload),
                     other => Err(Error::UnexpectedSignalFrame {
                         got: format!("{other:?}"),
                     }),
                 },
-                ControlReply::Rejected { reason } => Err(Error::UnexpectedSignalFrame {
+                Reply::Rejected { reason } => Err(Error::UnexpectedSignalFrame {
                     got: format!("rejected: {reason}"),
                 }),
             },
@@ -239,8 +227,8 @@ impl CriomeMetaFrameCodec {
         reply: meta_signal_criome::Output,
     ) -> Result<()> {
         let frame = CriomeMetaFrame::new(CriomeMetaFrameBody::Reply {
-            exchange: synthetic_control_exchange(),
-            reply: ControlReply::committed(ControlNonEmpty::single(ControlSubReply::Ok(reply))),
+            exchange: synthetic_exchange(),
+            reply: Reply::committed(NonEmpty::single(SubReply::Ok(reply))),
         });
         self.write_frame(writer, frame)
     }

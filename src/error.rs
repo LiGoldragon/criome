@@ -21,8 +21,6 @@ pub enum Error {
     Sema(#[from] sema_engine::Error),
     #[error("signal frame: {0}")]
     SignalFrame(#[from] signal_frame::FrameError),
-    #[error("control signal frame: {0}")]
-    ControlSignalFrame(#[from] control_signal_frame::FrameError),
     #[error("argument: {0}")]
     Argument(#[from] triad_runtime::ArgumentError),
     #[error("configuration archive decode failed")]

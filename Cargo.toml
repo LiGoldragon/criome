@@ -70,7 +70,6 @@ rkyv         = { version = "0.8", default-features = false, features = ["std", "
 rustix       = { version = "1", features = ["net"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
-control-signal-frame = { package = "signal-frame", git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main", default-features = false }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
 signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
 thiserror    = "2"
