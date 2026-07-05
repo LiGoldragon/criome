@@ -602,7 +602,7 @@ tests/*.rs                 round-trip + architectural-truth tests
 
 Cargo dependencies after the rewrite: `signal-frame`,
 `signal-criome`, `kameo`, `sema-engine`, `tokio`, `thiserror`,
-`triad-runtime`, `rkyv`, `blst`, `blake3`, `nota-next`.
+`triad-runtime`, `rkyv`, `blst`, `blake3`, `nota`.
 **Drops** the retired `signal` and `ractor` dependencies.
 
 Current implementation status:
