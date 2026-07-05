@@ -65,17 +65,17 @@ blake3       = "1"
 blst         = "0.3"
 kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
 nota    = { package = "nota", git = "https://github.com/LiGoldragon/nota.git", branch = "main", optional = true }
-meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "drop-next" }
+meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "main" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 rustix       = { version = "1", features = ["net"] }
 sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
-signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "drop-next" }
+signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
 control-signal-frame = { package = "signal-frame", git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main", default-features = false }
-signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "drop-next" }
-signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "drop-next" }
+signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
+signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
 thiserror    = "2"
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "drop-next" }
+triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
 
 [dev-dependencies]
 tempfile = "3"
