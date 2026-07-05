@@ -623,11 +623,12 @@ fn serve_stub_router_always_refusing(
                 .expect("decode the SubmitRoutedObjects working-socket frame")
                 .into_body()
             {
-                RouterFrameBody::Request { exchange, request } => match request.payloads.into_head()
-                {
-                    RouterInput::SubmitRoutedObjects(submission) => (exchange, submission),
-                    other => panic!("expected SubmitRoutedObjects, got {other:?}"),
-                },
+                RouterFrameBody::Request { exchange, request } => {
+                    match request.payloads.into_head() {
+                        RouterInput::SubmitRoutedObjects(submission) => (exchange, submission),
+                        other => panic!("expected SubmitRoutedObjects, got {other:?}"),
+                    }
+                }
                 other => panic!("expected a working-socket Request frame, got {other:?}"),
             };
 

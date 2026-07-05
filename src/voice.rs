@@ -171,6 +171,7 @@ impl PeerActorRoute {
 /// is wrapped as one `RoutedContractObject` and handed to the local router as a
 /// `SubmitRoutedObjects` origination; the router carries it opaquely to the peer
 /// node and delivers the octets to the peer criome's working socket unchanged.
+#[derive(Clone)]
 pub struct RouterQuorumVoice {
     router_socket: PathBuf,
     source_actor: ActorIdentifier,
@@ -276,33 +277,49 @@ impl QuorumVoice for RouterQuorumVoice {
         let Some(destination) = self.destination_for(recipient) else {
             return;
         };
-        // M2 (primary-79z1.22): the trait keeps `convey` fire-and-forget (an
-        // unreachable peer must still leave the round `Gathering` rather than
-        // failing it), but a refusal on the founding path — e.g.
-        // `RoutedObjectsRefused(MirrorDisabled)` — used to vanish with no
-        // diagnostic. Loud-log it instead of discarding it; the mirror gate
-        // itself stays exactly as-is (that decoupling is a later design call).
-        if let Err(error) = self.submit(destination, request) {
-            eprintln!(
-                "criome router-voice conveyance to {recipient:?} was refused and NOT delivered: {error}"
-            );
-        }
+        // Fire-and-forget by trait contract, delivered on its OWN thread like
+        // [`DirectDialQuorumVoice`]. This is load-bearing, not incidental: a
+        // synchronous `submit` here blocks the `CriomeRoot` handler that called
+        // `convey`, and the router round-trip re-enters that same root during a
+        // multi-node founding's accept/distribute steps (initiator distributes
+        // the finished root back to the peer whose signature it is processing) —
+        // a deadlock the direct-dial voice never had (primary-79z1.23). Spawning
+        // keeps `convey` non-blocking; the M2 loud-log of a refusal
+        // (primary-79z1.22) still fires, now from the spawned thread.
+        let voice = self.clone();
+        let recipient = recipient.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = voice.submit(destination, request) {
+                eprintln!(
+                    "criome router-voice conveyance to {recipient:?} was refused and NOT delivered: {error}"
+                );
+            }
+        });
     }
 
     fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>) {
         let Some(destination) = self.destination_for(recipient) else {
             return;
         };
-        let total = requests.len();
-        for (index, request) in requests.into_iter().enumerate() {
-            if let Err(error) = self.submit(destination.clone(), request) {
-                eprintln!(
-                    "criome router-voice ordered conveyance to {recipient:?} was refused and NOT delivered at step {}/{total}: {error}; the remaining ordering-dependent steps in this sequence are not sent",
-                    index + 1,
-                );
-                break;
+        // One thread carries the whole ordering-dependent sequence IN ORDER (the
+        // two-round commit's round-1 evidence then the commit solicitation), so
+        // `convey_ordered` stays non-blocking while the first refusal still stops
+        // the rest of the sequence (primary-79z1.22) — the same re-entrancy-safe
+        // shape as `convey` above (primary-79z1.23).
+        let voice = self.clone();
+        let recipient = recipient.clone();
+        std::thread::spawn(move || {
+            let total = requests.len();
+            for (index, request) in requests.into_iter().enumerate() {
+                if let Err(error) = voice.submit(destination.clone(), request) {
+                    eprintln!(
+                        "criome router-voice ordered conveyance to {recipient:?} was refused and NOT delivered at step {}/{total}: {error}; the remaining ordering-dependent steps in this sequence are not sent",
+                        index + 1,
+                    );
+                    break;
+                }
             }
-        }
+        });
     }
 
     fn kind(&self) -> QuorumVoiceKind {
