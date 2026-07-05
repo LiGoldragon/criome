@@ -276,15 +276,32 @@ impl QuorumVoice for RouterQuorumVoice {
         let Some(destination) = self.destination_for(recipient) else {
             return;
         };
-        let _ = self.submit(destination, request);
+        // M2 (primary-79z1.22): the trait keeps `convey` fire-and-forget (an
+        // unreachable peer must still leave the round `Gathering` rather than
+        // failing it), but a refusal on the founding path — e.g.
+        // `RoutedObjectsRefused(MirrorDisabled)` — used to vanish with no
+        // diagnostic. Loud-log it instead of discarding it; the mirror gate
+        // itself stays exactly as-is (that decoupling is a later design call).
+        if let Err(error) = self.submit(destination, request) {
+            eprintln!(
+                "criome router-voice conveyance to {recipient:?} was refused and NOT delivered: {error}"
+            );
+        }
     }
 
     fn convey_ordered(&self, recipient: &Identity, requests: Vec<CriomeRequest>) {
         let Some(destination) = self.destination_for(recipient) else {
             return;
         };
-        for request in requests {
-            let _ = self.submit(destination.clone(), request);
+        let total = requests.len();
+        for (index, request) in requests.into_iter().enumerate() {
+            if let Err(error) = self.submit(destination.clone(), request) {
+                eprintln!(
+                    "criome router-voice ordered conveyance to {recipient:?} was refused and NOT delivered at step {}/{total}: {error}; the remaining ordering-dependent steps in this sequence are not sent",
+                    index + 1,
+                );
+                break;
+            }
         }
     }
 

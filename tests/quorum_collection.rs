@@ -34,7 +34,9 @@ use std::time::{Duration, Instant};
 use criome::daemon::CriomeDaemon;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
-use criome::voice::{DirectDialQuorumVoice, PeerActorRoute, PeerSocketRoute, RouterQuorumVoice};
+use criome::voice::{
+    DirectDialQuorumVoice, PeerActorRoute, PeerSocketRoute, QuorumVoice, RouterQuorumVoice,
+};
 use signal_criome::{
     AuditContext, AuthorizationEvaluation, AuthorizedObjectKind, AuthorizedObjectReference,
     BlsPublicKey, BlsSignature, ComponentKind, ContentPurpose, ContentReference, Contract,
@@ -587,6 +589,81 @@ fn serve_stub_router(
     receiver
 }
 
+/// Like [`serve_stub_router`], but serves every connection it receives — not
+/// just one — always refusing with `reason` and forwarding each decoded
+/// request onto the returned channel before replying. Used to prove how many
+/// steps of an ordered conveyance actually reached the wire (M2,
+/// primary-79z1.22): `convey_ordered` must stop firing the rest of an
+/// ordering-dependent sequence once an earlier step is refused, so a correct
+/// fix produces exactly one decoded request here, never the whole sequence.
+fn serve_stub_router_always_refusing(
+    socket: PathBuf,
+    reason: RouterForwardRefusalReason,
+) -> Receiver<CriomeRequest> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let listener = UnixListener::bind(&socket).expect("bind stub router working socket");
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                break;
+            };
+
+            let mut prefix = [0_u8; 4];
+            if stream.read_exact(&mut prefix).is_err() {
+                continue;
+            }
+            let length = u32::from_be_bytes(prefix) as usize;
+            let mut framed = prefix.to_vec();
+            framed.resize(4 + length, 0);
+            if stream.read_exact(&mut framed[4..]).is_err() {
+                continue;
+            }
+
+            let (exchange, submission) = match RouterFrame::decode_length_prefixed(&framed)
+                .expect("decode the SubmitRoutedObjects working-socket frame")
+                .into_body()
+            {
+                RouterFrameBody::Request { exchange, request } => match request.payloads.into_head()
+                {
+                    RouterInput::SubmitRoutedObjects(submission) => (exchange, submission),
+                    other => panic!("expected SubmitRoutedObjects, got {other:?}"),
+                },
+                other => panic!("expected a working-socket Request frame, got {other:?}"),
+            };
+
+            let object = submission
+                .routed_objects()
+                .first()
+                .expect("submission carries the one criome routed object")
+                .clone();
+            let mut body: Vec<u8> = object
+                .payload_octets()
+                .iter()
+                .map(|byte| *byte as u8)
+                .collect();
+            let mut delivered = (body.len() as u32).to_be_bytes().to_vec();
+            delivered.append(&mut body);
+            let mut reader = delivered.as_slice();
+            let decoded = CriomeFrameCodec::default()
+                .read_request(&mut reader)
+                .expect("the router-carried octets decode as a criome working-socket frame");
+            let _ = sender.send(decoded);
+
+            let output = RouterOutput::routed_objects_refused(ForwardRefusalReason::new(reason));
+            let reply = RouterFrame::new(RouterFrameBody::Reply {
+                exchange,
+                reply: Reply::committed(NonEmpty::single(SubReply::Ok(output))),
+            });
+            let bytes = reply
+                .encode_length_prefixed()
+                .expect("encode the router reply frame");
+            let _ = stream.write_all(&bytes);
+            let _ = stream.flush();
+        }
+    });
+    receiver
+}
+
 #[test]
 fn router_quorum_voice_submits_through_the_router_working_socket_and_is_accepted() {
     // The full origination path: `RouterQuorumVoice::submit` frames the
@@ -657,6 +734,86 @@ fn router_quorum_voice_maps_a_router_refusal_to_a_delivery_error() {
         .recv_timeout(Duration::from_secs(5))
         .expect("the stub router still decoded the routed criome request before refusing");
     assert_eq!(decoded, request);
+}
+
+#[test]
+fn router_quorum_voice_convey_still_attempts_delivery_and_does_not_panic_on_refusal() {
+    // M2 (primary-79z1.22): `convey` stays fire-and-forget by trait contract —
+    // an unreachable peer must still leave the round `Gathering` rather than
+    // aborting it — but a router refusal on the founding path must no longer
+    // vanish with `let _ = self.submit(...)`. This proves going through the
+    // `QuorumVoice` trait object still lands the delivery attempt on the wire
+    // (no regression to the fire-and-forget behavior) and does not panic now
+    // that the refusal is loud-logged instead of silently discarded.
+    let peer = host("router-peer");
+    let source_actor = ActorIdentifier::new("criome-alpha");
+    let destination_actor = ActorIdentifier::new("criome-beta");
+    let (router_socket, _store) = fixture("router-stub-convey-refuse");
+
+    let received = serve_stub_router(
+        router_socket.clone(),
+        Err(RouterForwardRefusalReason::MirrorDisabled),
+    );
+    wait_for_socket(&router_socket);
+
+    let voice: Arc<dyn QuorumVoice> = Arc::new(RouterQuorumVoice::new(
+        router_socket,
+        source_actor,
+        vec![PeerActorRoute::new(peer.clone(), destination_actor)],
+    ));
+
+    let request = founding_signature_conveyance(peer.clone());
+    voice.convey(&peer, request.clone());
+
+    let decoded = received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("convey still attempts delivery even though the router refuses it");
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn router_quorum_voice_convey_ordered_stops_after_the_first_refusal() {
+    // The two-round commit driver relies on the ordering: sending a LATER
+    // step (e.g. the commit solicitation) after an EARLIER step (the round-1
+    // evidence) failed to deliver would race a peer that never received the
+    // evidence the later step depends on. `convey_ordered` must stop at the
+    // first refusal rather than keep firing the rest of the sequence
+    // regardless — the "propagate it where the signature allows" half of the
+    // M2 fix (primary-79z1.22): the `()` trait signature carries nothing back
+    // to the caller, but the failure still governs the REST of this call.
+    let peer = host("router-peer");
+    let source_actor = ActorIdentifier::new("criome-alpha");
+    let destination_actor = ActorIdentifier::new("criome-beta");
+    let (router_socket, _store) = fixture("router-stub-convey-ordered-refuse");
+
+    let received = serve_stub_router_always_refusing(
+        router_socket.clone(),
+        RouterForwardRefusalReason::MirrorDisabled,
+    );
+    wait_for_socket(&router_socket);
+
+    let voice: Arc<dyn QuorumVoice> = Arc::new(RouterQuorumVoice::new(
+        router_socket,
+        source_actor,
+        vec![PeerActorRoute::new(peer.clone(), destination_actor)],
+    ));
+
+    let sequence = vec![
+        founding_signature_conveyance(peer.clone()),
+        founding_signature_conveyance(peer.clone()),
+        founding_signature_conveyance(peer.clone()),
+    ];
+    voice.convey_ordered(&peer, sequence);
+
+    // Exactly one step reaches the stub router: the first refusal must stop
+    // the rest of the ordering-dependent sequence from being sent at all.
+    received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the first step of the sequence is still attempted");
+    assert!(
+        received.recv_timeout(Duration::from_millis(300)).is_err(),
+        "no further steps should be sent once an earlier one is refused"
+    );
 }
 
 fn wait_until_authorized(socket: &Path, round: &QuorumRoundIdentifier) -> QuorumRoundState {
