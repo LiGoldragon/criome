@@ -14,6 +14,7 @@ pub mod error;
 pub mod founding;
 pub mod language;
 pub mod master_key;
+pub mod router_client;
 pub mod tables;
 #[cfg(feature = "nota-text")]
 pub mod text;

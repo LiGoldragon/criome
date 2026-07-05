@@ -20,8 +20,12 @@
 use std::path::PathBuf;
 
 use signal_criome::{CriomeRequest, Identity};
-use signal_router::ActorIdentifier;
+use signal_router::{
+    ActorIdentifier, ContractName, ContractOperation, ContractPayloadSize,
+    ForwardedMessagePayload, Input as RouterInput, Output as RouterOutput, RoutedContractObject,
+};
 
+use crate::router_client::RouterClient;
 use crate::transport::{CriomeClient, CriomeFrameCodec};
 use crate::{Error, Result};
 
@@ -172,12 +176,44 @@ impl RouterQuorumVoice {
         Ok(framed.split_off(4))
     }
 
-    fn submit(&self, destination: ActorIdentifier, request: CriomeRequest) -> Result<()> {
-        let _ = (&self.router_socket, &self.source_actor, destination);
-        let _octets = Self::request_octets(request)?;
-        Err(Error::VoiceDelivery(format!(
-            "{CRIOME_CONTRACT_NAME} router conveyance waits for the clean signal-router routed-object constructor"
-        )))
+    /// Hand `request` to the local router as a `SubmitRoutedObjects`
+    /// origination addressed to `destination`, and map the router's reply
+    /// back to a voice delivery result. `pub` (rather than the trait's
+    /// fire-and-forget `convey`/`convey_ordered`) so the origination round
+    /// trip — the routed octets decoding back to the same `CriomeRequest`,
+    /// and the accept/refuse mapping — is directly testable.
+    pub fn submit(&self, destination: ActorIdentifier, request: CriomeRequest) -> Result<()> {
+        let operation = format!("{:?}", request.route());
+        let octets = Self::request_octets(request)?;
+        let payload_size = u64::try_from(octets.len()).map_err(|_| {
+            Error::VoiceDelivery(format!(
+                "{CRIOME_CONTRACT_NAME} conveyance payload exceeds the routed-object size type"
+            ))
+        })?;
+        let object = RoutedContractObject::new(
+            ContractName::new(CRIOME_CONTRACT_NAME),
+            ContractOperation::new(operation),
+            ContractPayloadSize::new(payload_size),
+            octets.into_iter().map(u64::from).collect(),
+        );
+        let payload = ForwardedMessagePayload::new(
+            self.source_actor.clone(),
+            destination,
+            String::new(),
+            Vec::new(),
+            vec![object],
+        );
+        let client = RouterClient::new(self.router_socket.clone());
+        match client.send(RouterInput::submit_routed_objects(payload))? {
+            RouterOutput::RoutedObjectsAccepted(_) => Ok(()),
+            RouterOutput::RoutedObjectsRefused(refusal) => Err(Error::VoiceDelivery(format!(
+                "{CRIOME_CONTRACT_NAME} router conveyance refused: {:?}",
+                refusal.into_payload().into_payload()
+            ))),
+            other => Err(Error::UnexpectedSignalFrame {
+                got: format!("{other:?}"),
+            }),
+        }
     }
 }
 

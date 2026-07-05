@@ -24,23 +24,32 @@
 //! A second scenario proves the "unreachable peer ⇒ waits" rule: with the peer
 //! never bound, the round stays `Gathering` and never becomes valid.
 
+use std::io::{Read as _, Write as _};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criome::daemon::CriomeDaemon;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
-use criome::voice::{DirectDialQuorumVoice, PeerSocketRoute, RouterQuorumVoice};
+use criome::voice::{DirectDialQuorumVoice, PeerActorRoute, PeerSocketRoute, RouterQuorumVoice};
 use signal_criome::{
     AuditContext, AuthorizationEvaluation, AuthorizedObjectKind, AuthorizedObjectReference,
     BlsPublicKey, BlsSignature, ComponentKind, ContentPurpose, ContentReference, Contract,
     ContractDigest, CriomeReply, CriomeRequest, EvaluationDecision, EvaluationRejectionReason,
-    Evidence, Identity, IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest,
-    PolicyMember, PrincipalName, PublicKeyFingerprint, QuorumProposal, QuorumRoundIdentifier,
-    QuorumRoundState, QuorumRoundStatus, QuorumVote, ReplayNonce, RequiredSignatureThreshold,
+    Evidence, FoundingConveyance, FoundingSignature, FoundingSignatureReturn, Identity,
+    IdentityRegistration, KeyPurpose, ObjectDigest, OperationDigest, PolicyMember, PrincipalName,
+    PublicKeyFingerprint, QuorumProposal, QuorumRoundIdentifier, QuorumRoundState,
+    QuorumRoundStatus, QuorumVote, ReplayNonce, RequiredSignatureThreshold, RootAnchorDigest,
     RoundPhase, Rule, SignRequest, SignatureEnvelope, SignatureScheme, Threshold, TimeWindow,
     TimestampNanos,
+};
+use signal_frame::{NonEmpty, Reply, SubReply};
+use signal_router::{
+    ActorIdentifier, ForwardRefusalReason, Frame as RouterFrame, FrameBody as RouterFrameBody,
+    Input as RouterInput, MessageSlot, Output as RouterOutput, RouterForwardRefusalReason,
 };
 
 fn nanos() -> u128 {
@@ -485,6 +494,169 @@ fn router_voice_frames_a_criome_request_the_working_socket_reads() {
         decoded, request,
         "a router-carried criome vote must decode byte-for-byte on the peer's working socket"
     );
+}
+
+/// A `FoundingConveyance` carrying a peer's signature return — the shape
+/// `RouterQuorumVoice::submit` conveys cross-node once a founding is under
+/// way. Content is a fixture; the round-trip proof does not depend on it
+/// being a live founding's real signature.
+fn founding_signature_conveyance(voter: Identity) -> CriomeRequest {
+    CriomeRequest::convey_founding(FoundingConveyance::Signature(FoundingSignatureReturn {
+        anchor: RootAnchorDigest::new(ObjectDigest::from_bytes(b"router-origination-anchor")),
+        signature: FoundingSignature {
+            signer: voter,
+            envelope: SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: BlsPublicKey::new("origination-key"),
+                signature: BlsSignature::new("origination-signature"),
+            },
+        },
+    }))
+}
+
+/// A minimal stand-in for `router::apply_routed_object_submission`'s wire
+/// surface — the router's real working-socket handler
+/// (`router::daemon::RouterEngine::handle_working_connection`) without any
+/// router runtime. It decodes exactly what `RouterClient::send` writes,
+/// reports the routed criome octets decoded back into a `CriomeRequest` (the
+/// round-trip proof) over `sender`, and replies with `outcome` — `Ok` mirrors
+/// `RoutedObjectsAccepted`, `Err` mirrors `RoutedObjectsRefused`.
+fn serve_stub_router(
+    socket: PathBuf,
+    outcome: std::result::Result<(), RouterForwardRefusalReason>,
+) -> Receiver<CriomeRequest> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let listener = UnixListener::bind(&socket).expect("bind stub router working socket");
+        let (mut stream, _) = listener.accept().expect("accept the criome connection");
+
+        let mut prefix = [0_u8; 4];
+        stream.read_exact(&mut prefix).expect("read length prefix");
+        let length = u32::from_be_bytes(prefix) as usize;
+        let mut framed = prefix.to_vec();
+        framed.resize(4 + length, 0);
+        stream
+            .read_exact(&mut framed[4..])
+            .expect("read frame body");
+
+        let (exchange, submission) = match RouterFrame::decode_length_prefixed(&framed)
+            .expect("decode the SubmitRoutedObjects working-socket frame")
+            .into_body()
+        {
+            RouterFrameBody::Request { exchange, request } => match request.payloads.into_head() {
+                RouterInput::SubmitRoutedObjects(submission) => (exchange, submission),
+                other => panic!("expected SubmitRoutedObjects, got {other:?}"),
+            },
+            other => panic!("expected a working-socket Request frame, got {other:?}"),
+        };
+
+        let object = submission
+            .routed_objects()
+            .first()
+            .expect("submission carries the one criome routed object")
+            .clone();
+        assert_eq!(object.contract_name.payload(), "signal-criome");
+
+        let mut body: Vec<u8> = object
+            .payload_octets()
+            .iter()
+            .map(|byte| *byte as u8)
+            .collect();
+        let mut delivered = (body.len() as u32).to_be_bytes().to_vec();
+        delivered.append(&mut body);
+        let mut reader = delivered.as_slice();
+        let decoded = CriomeFrameCodec::default()
+            .read_request(&mut reader)
+            .expect("the router-carried octets decode as a criome working-socket frame");
+        sender.send(decoded).expect("report the decoded request");
+
+        let output = match outcome {
+            Ok(()) => RouterOutput::routed_objects_accepted(MessageSlot::new(1)),
+            Err(reason) => RouterOutput::routed_objects_refused(ForwardRefusalReason::new(reason)),
+        };
+        let reply = RouterFrame::new(RouterFrameBody::Reply {
+            exchange,
+            reply: Reply::committed(NonEmpty::single(SubReply::Ok(output))),
+        });
+        let bytes = reply
+            .encode_length_prefixed()
+            .expect("encode the router reply frame");
+        stream.write_all(&bytes).expect("write the router reply");
+        stream.flush().expect("flush the router reply");
+    });
+    receiver
+}
+
+#[test]
+fn router_quorum_voice_submits_through_the_router_working_socket_and_is_accepted() {
+    // The full origination path: `RouterQuorumVoice::submit` frames the
+    // request, wraps it as a `RoutedContractObject`, hands it to a
+    // `SubmitRoutedObjects` origination, and dials the local router's working
+    // socket over the new `RouterClient`. The stub router proves the carried
+    // octets decode to the SAME criome request on the far side, and the
+    // `RoutedObjectsAccepted` reply maps to `Ok(())`.
+    let peer = host("router-peer");
+    let source_actor = ActorIdentifier::new("criome-alpha");
+    let destination_actor = ActorIdentifier::new("criome-beta");
+    let (router_socket, _store) = fixture("router-stub-accept");
+
+    let received = serve_stub_router(router_socket.clone(), Ok(()));
+    wait_for_socket(&router_socket);
+
+    let voice = RouterQuorumVoice::new(
+        router_socket,
+        source_actor,
+        vec![PeerActorRoute::new(peer.clone(), destination_actor.clone())],
+    );
+
+    let request = founding_signature_conveyance(peer);
+    voice
+        .submit(destination_actor, request.clone())
+        .expect("the stub router accepts the origination");
+
+    let decoded = received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the stub router decoded the routed criome request");
+    assert_eq!(
+        decoded, request,
+        "the octets the router carries must decode to the SAME criome request byte-for-byte"
+    );
+}
+
+#[test]
+fn router_quorum_voice_maps_a_router_refusal_to_a_delivery_error() {
+    // Same origination path, but the stub router refuses. The refusal must
+    // surface as an `Err`, not a swallowed success, and must name the reason.
+    let peer = host("router-peer");
+    let source_actor = ActorIdentifier::new("criome-alpha");
+    let destination_actor = ActorIdentifier::new("criome-beta");
+    let (router_socket, _store) = fixture("router-stub-refuse");
+
+    let received = serve_stub_router(
+        router_socket.clone(),
+        Err(RouterForwardRefusalReason::MirrorDisabled),
+    );
+    wait_for_socket(&router_socket);
+
+    let voice = RouterQuorumVoice::new(
+        router_socket,
+        source_actor,
+        vec![PeerActorRoute::new(peer.clone(), destination_actor.clone())],
+    );
+
+    let request = founding_signature_conveyance(peer);
+    let error = voice
+        .submit(destination_actor, request.clone())
+        .expect_err("a router refusal must surface as a delivery error, not a silent success");
+    assert!(
+        format!("{error}").contains("MirrorDisabled"),
+        "the refusal reason must be visible in the mapped error: {error}"
+    );
+
+    let decoded = received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the stub router still decoded the routed criome request before refusing");
+    assert_eq!(decoded, request);
 }
 
 fn wait_until_authorized(socket: &Path, round: &QuorumRoundIdentifier) -> QuorumRoundState {
