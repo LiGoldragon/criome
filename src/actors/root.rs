@@ -2634,6 +2634,11 @@ impl CriomeRoot {
     /// cluster-root gate, exactly as `on_start` seeds this node's own identity) so
     /// the founded cohort becomes the registry's trust anchor. Idempotent by
     /// identity — re-seeding the node's own key is a no-op overwrite.
+    ///
+    /// Adoption also admits the founded ROOT CONTRACT into the contract store
+    /// on every member, so quorum rounds over the founded contract resolve
+    /// their member set locally — a solicited peer independently re-validates
+    /// against ITS OWN admitted contract, never the originator's say-so.
     async fn seed_founding_registry(&self, founding: &RootFounding) {
         for registration in founding.seed_registrations() {
             let _ = self
@@ -2641,6 +2646,12 @@ impl CriomeRoot {
                 .ask(store::StoreIdentity::new(registration))
                 .await;
         }
+        let _ = self
+            .store
+            .ask(store::StoreContract::new(
+                founding.genesis().root_contract.clone(),
+            ))
+            .await;
     }
 
     // ─── Cross-node founding conveyance (proposal → signatures → founded) ─────
@@ -2989,6 +3000,14 @@ impl Actor for CriomeRoot {
             for registration in founding.seed_registrations() {
                 let _ = store.ask(store::StoreIdentity::new(registration)).await;
             }
+            // Reboot adoption re-admits the founded root contract alongside
+            // the registry seed, the same shape `seed_founding_registry`
+            // applies at founding time.
+            let _ = store
+                .ask(store::StoreContract::new(
+                    founding.genesis().root_contract.clone(),
+                ))
+                .await;
         }
         let signer = signer::AttestationSigner::supervise(
             &actor_reference,
