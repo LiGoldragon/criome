@@ -1,23 +1,23 @@
 //! THE CROSS-NODE FOUNDING WITNESS: two nodes assemble a UNANIMOUS root across
-//! the router voice, end-to-end. The initiator conveys a founding proposal to the
+//! the router submission path, end-to-end. The initiator conveys a founding proposal to the
 //! peer, each owner explicitly accepts on their own meta socket (no
 //! auto-approval), the peer's signature is conveyed back to the initiator, and on
 //! unanimity the finished root is distributed to both nodes — which each verify,
 //! persist, and adopt the SAME anchor by seeding their registries.
 //!
 //! This is the in-process, direct-dial analogue of the live 2-node proof
-//! (primary-79z1.15): the `DirectDialQuorumVoice` carries the conveyance to each
-//! peer's working socket, exactly as the router voice does across nodes.
+//! (primary-79z1.15): the `DirectDialConveyance` carries the conveyance to each
+//! peer's working socket, exactly as the router submission path does across nodes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use criome::conveyance::{DirectDialConveyance, PeerSocketRoute};
 use criome::daemon::CriomeDaemon;
 use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeMetaClient};
-use criome::voice::{DirectDialQuorumVoice, PeerSocketRoute};
 use meta_signal_criome::{
     Input as MetaInput, Output as MetaOutput, RootFoundingAcceptance, RootFoundingInitiation,
     RootFoundingObservation, RootFoundingState, RootFoundingStatus,
@@ -174,16 +174,16 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
     let meta_a = meta_socket_for(&socket_a);
     let meta_b = meta_socket_for(&socket_b);
 
-    // Each node dials the OTHER'S working socket over the direct-dial voice —
+    // Each node dials the OTHER'S working socket over the direct-dial conveyance —
     // exactly the carriage the founding conveyance rides.
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 
@@ -219,7 +219,7 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
         other => panic!("initiate must report status, got {other:?}"),
     }
 
-    // The proposal reaches B over the voice: it appears in B's pending queue,
+    // The proposal reaches B over the conveyance: it appears in B's pending queue,
     // awaiting B's owner accept.
     wait_until("the proposal to reach B's pending queue", || {
         observe_status(&meta_b)
@@ -283,7 +283,7 @@ fn a_forged_conveyed_founding_signature_is_rejected_no_false_founding() {
     // the BLS-verify gate — the exact gate this fix restores.
     let beta_key = MasterKey::generate().expect("beta key");
 
-    // A runs alone (the default silent voice conveys nothing); we inject the forged
+    // A runs alone (the default silent conveyance conveys nothing); we inject the forged
     // return directly onto A's working socket, standing in for a co-resident or
     // malicious sender.
     let daemon_a = CriomeDaemon::new(&socket_a, store_a).with_node_identity(alpha.clone());

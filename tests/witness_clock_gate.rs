@@ -28,11 +28,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use criome::conveyance::{DirectDialConveyance, PeerSocketRoute};
 use criome::daemon::CriomeDaemon;
 use criome::master_key::SystemClock;
 use criome::tables::StoreLocation;
 use criome::transport::CriomeClient;
-use criome::voice::{DirectDialQuorumVoice, PeerSocketRoute};
 use signal_criome::{
     AuditContext, AuthorizedObjectKind, AuthorizedObjectReference, BlsPublicKey, ComponentKind,
     ContentPurpose, ContentReference, Contract, ContractDigest, CriomeReply, CriomeRequest,
@@ -269,7 +269,7 @@ fn a_signer_signs_the_window_its_clock_is_inside() {
 #[test]
 fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     // The peer re-check: node A (clock inside the window) proposes and self-signs,
-    // then solicits node B across the voice. B's own clock is OUTSIDE the window,
+    // then solicits node B across the conveyance. B's own clock is OUTSIDE the window,
     // so B refuses to co-sign — even though A's clock was inside. The round can
     // therefore never reach the 2-of-2 majority: an honest peer gates on its OWN
     // clock, defeating a convenient window a proposer's clock happened to fit.
@@ -282,13 +282,13 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(9_000))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 
@@ -323,7 +323,7 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     assert_eq!(opened.status, QuorumRoundStatus::Gathering);
     assert_eq!(opened.gathered.into_u16(), 1);
 
-    // B is solicited across the voice but refuses on its own clock. The round must
+    // B is solicited across the conveyance but refuses on its own clock. The round must
     // stay WITHHELD — it never gathers B's vote, never authorizes.
     let deadline = Instant::now() + Duration::from_millis(1_500);
     while Instant::now() < deadline {
@@ -358,13 +358,13 @@ fn two_peers_whose_clocks_are_inside_the_window_co_sign_to_authorized() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(1_800))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 

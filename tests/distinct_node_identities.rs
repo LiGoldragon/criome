@@ -55,7 +55,7 @@ async fn start_node(name: &str, node_identity: Identity) -> kameo::actor::ActorR
         cluster_root: None,
         authorization_mode: signal_criome::AuthorizationMode::Quorum,
         node_identity,
-        voice: std::sync::Arc::new(criome::voice::SilentVoice),
+        conveyance: std::sync::Arc::new(criome::conveyance::NoConveyance),
         clock: criome::master_key::SystemClock::system(),
     })
     .await

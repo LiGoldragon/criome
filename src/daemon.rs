@@ -17,10 +17,10 @@ use crate::actors::root::{
     Arguments as RootArguments, AuthorizationObservationOpened, CriomeRoot,
     OpenAuthorizationObservation, SubmitMetaRequest, SubmitRequest,
 };
+use crate::conveyance::{NoConveyance, PeerConveyance, RouterSubmission};
 use crate::master_key::SystemClock;
 use crate::tables::StoreLocation;
 use crate::transport::{CriomeFrameCodec, CriomeMetaFrameCodec};
-use crate::voice::{QuorumVoice, RouterQuorumVoice, SilentVoice};
 use crate::{Error, Result};
 
 #[derive(Clone)]
@@ -31,7 +31,7 @@ pub struct CriomeDaemon {
     cluster_root: Option<BlsPublicKey>,
     authorization_mode: AuthorizationMode,
     node_identity: Identity,
-    voice: Arc<dyn QuorumVoice>,
+    conveyance: Arc<dyn PeerConveyance>,
     clock: SystemClock,
 }
 
@@ -53,7 +53,7 @@ impl CriomeDaemon {
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
             node_identity: RootArguments::default_node_identity(),
-            voice: Arc::new(SilentVoice),
+            conveyance: Arc::new(NoConveyance),
             clock: SystemClock::system(),
         }
     }
@@ -68,9 +68,11 @@ impl CriomeDaemon {
             .node_identity()
             .cloned()
             .unwrap_or_else(RootArguments::default_node_identity);
-        let voice: Arc<dyn QuorumVoice> = match configuration.router_voice() {
-            Some(router_voice) => Arc::new(RouterQuorumVoice::from_configuration(router_voice)),
-            None => Arc::new(SilentVoice),
+        let conveyance: Arc<dyn PeerConveyance> = match configuration.router_submission() {
+            Some(router_submission) => {
+                Arc::new(RouterSubmission::from_configuration(router_submission))
+            }
+            None => Arc::new(NoConveyance),
         };
         Self {
             socket,
@@ -79,7 +81,7 @@ impl CriomeDaemon {
             cluster_root: configuration.cluster_root().cloned(),
             authorization_mode: *configuration.authorization_mode(),
             node_identity,
-            voice,
+            conveyance,
             clock: SystemClock::system(),
         }
     }
@@ -113,10 +115,10 @@ impl CriomeDaemon {
         self
     }
 
-    /// Arm this node's quorum voice — how it conveys solicitations and votes to
+    /// Arm this node's peer conveyance — how it conveys solicitations and votes to
     /// peer members. Unset, the node self-votes but originates no solicitation.
-    pub fn with_quorum_voice(mut self, voice: Arc<dyn QuorumVoice>) -> Self {
-        self.voice = voice;
+    pub fn with_peer_conveyance(mut self, conveyance: Arc<dyn PeerConveyance>) -> Self {
+        self.conveyance = conveyance;
         self
     }
 
@@ -161,7 +163,7 @@ impl CriomeDaemon {
             cluster_root: self.cluster_root,
             authorization_mode: self.authorization_mode,
             node_identity: self.node_identity,
-            voice: self.voice,
+            conveyance: self.conveyance,
             clock: self.clock,
         }))?;
         Ok(BoundCriomeDaemon {
@@ -623,26 +625,26 @@ mod meta_socket_authority_tests {
     }
 }
 
-/// `from_configuration` voice selection (primary-79z1.21, Slice C: the
-/// non-silent production voice). A configured `RouterVoiceConfiguration` must
-/// arm `RouterQuorumVoice`; an unconfigured daemon must stay on the unarmed
-/// `SilentVoice` default.
+/// `from_configuration` conveyance selection (primary-79z1.21, Slice C: the
+/// non-silent production conveyance). A configured `RouterSubmissionConfiguration` must
+/// arm `RouterSubmission`; an unconfigured daemon must stay on the unarmed
+/// `NoConveyance` default.
 #[cfg(test)]
-mod voice_selection_tests {
+mod conveyance_selection_tests {
     use super::*;
-    use crate::voice::QuorumVoiceKind;
-    use signal_criome::{ActorIdentifier, PeerActorRoute, RouterVoiceConfiguration};
+    use crate::conveyance::PeerConveyanceKind;
+    use signal_criome::{ActorIdentifier, PeerActorRoute, RouterSubmissionConfiguration};
 
     fn base_configuration() -> CriomeDaemonConfiguration {
         CriomeDaemonConfiguration::new(
-            "/tmp/criome-voice-selection-test.sock",
-            "/tmp/criome-voice-selection-test.sema",
+            "/tmp/criome-conveyance-selection-test.sock",
+            "/tmp/criome-conveyance-selection-test.sema",
         )
     }
 
-    fn router_voice_configuration() -> RouterVoiceConfiguration {
-        RouterVoiceConfiguration::new(
-            "/tmp/criome-voice-selection-test-router.sock",
+    fn router_submission_configuration() -> RouterSubmissionConfiguration {
+        RouterSubmissionConfiguration::new(
+            "/tmp/criome-conveyance-selection-test-router.sock",
             ActorIdentifier::new("criome-a-outbox"),
             vec![PeerActorRoute::new(
                 RootArguments::default_node_identity(),
@@ -651,20 +653,21 @@ mod voice_selection_tests {
         )
     }
 
-    /// No `router_voice` configured (single-node / unconfigured host) stays
-    /// on the unarmed `SilentVoice` default.
+    /// No `router_submission` configured (single-node / unconfigured host) stays
+    /// on the unarmed `NoConveyance` default.
     #[test]
     fn unconfigured_daemon_stays_silent() {
         let daemon = CriomeDaemon::from_configuration(base_configuration());
-        assert_eq!(daemon.voice.kind(), QuorumVoiceKind::Silent);
+        assert_eq!(daemon.conveyance.kind(), PeerConveyanceKind::None);
     }
 
-    /// A configured `RouterVoiceConfiguration` arms `RouterQuorumVoice` in its
+    /// A configured `RouterSubmissionConfiguration` arms `RouterSubmission` in its
     /// place.
     #[test]
-    fn configured_daemon_arms_the_router_voice() {
-        let configuration = base_configuration().with_router_voice(router_voice_configuration());
+    fn configured_daemon_selects_router_submission() {
+        let configuration =
+            base_configuration().with_router_submission(router_submission_configuration());
         let daemon = CriomeDaemon::from_configuration(configuration);
-        assert_eq!(daemon.voice.kind(), QuorumVoiceKind::Router);
+        assert_eq!(daemon.conveyance.kind(), PeerConveyanceKind::Router);
     }
 }

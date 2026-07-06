@@ -36,6 +36,7 @@ use crate::actors::{
     verifier,
 };
 use crate::admission::ClusterRoot;
+use crate::conveyance::{NoConveyance, PeerConveyance};
 use crate::founding::RootFounding;
 use crate::language::{ContractStore, EvaluationError, KeyRegistry};
 use crate::master_key::MasterKey;
@@ -43,7 +44,6 @@ use crate::master_key::{SystemClock, WindowAdmission};
 use crate::tables::{
     StoredCoSignedSuccessor, StoredContractHead, StoredPendingFounding, StoredQuorumRound,
 };
-use crate::voice::{QuorumVoice, SilentVoice};
 use crate::{Error, Result, StoreLocation};
 
 pub struct CriomeRoot {
@@ -60,7 +60,7 @@ pub struct CriomeRoot {
     /// master key is registered under, so a peer's registry verifies its votes.
     node_identity: Identity,
     /// How this node conveys solicitations and votes to peer members' criomes.
-    voice: Arc<dyn QuorumVoice>,
+    conveyance: Arc<dyn PeerConveyance>,
     /// This node's own clock, consulted by the peer witness-clock re-check so a
     /// solicited peer independently refuses a window its clock is not inside —
     /// the same gate the signer enforces before time-signing.
@@ -91,9 +91,9 @@ pub struct Arguments {
     /// node a distinct identity so peers cross-verify by registered key.
     pub node_identity: Identity,
     /// How this node conveys quorum solicitations and votes to peer members.
-    /// Defaults to the unarmed [`SilentVoice`]; a deployment supplies a
-    /// router-mediated or direct-dial voice.
-    pub voice: Arc<dyn QuorumVoice>,
+    /// Defaults to the unarmed [`NoConveyance`]; a deployment supplies a
+    /// router-mediated or direct-dial conveyance.
+    pub conveyance: Arc<dyn PeerConveyance>,
     /// This node's clock. The peer witness-clock re-check reads it, and the same
     /// clock is handed to the signer; a pinned clock makes the gate deterministic
     /// under test. Defaults to the real wall clock.
@@ -141,15 +141,15 @@ impl Arguments {
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
             node_identity: Self::default_node_identity(),
-            voice: Arc::new(SilentVoice),
+            conveyance: Arc::new(NoConveyance),
             clock: SystemClock::system(),
         }
     }
 
-    /// Arm this node's quorum voice (router-mediated or direct-dial). Absent, the
+    /// Arm this node's peer conveyance (router-mediated or direct-dial). Absent, the
     /// node self-votes but originates no solicitation.
-    pub fn with_voice(mut self, voice: Arc<dyn QuorumVoice>) -> Self {
-        self.voice = voice;
+    pub fn with_peer_conveyance(mut self, conveyance: Arc<dyn PeerConveyance>) -> Self {
+        self.conveyance = conveyance;
         self
     }
 
@@ -245,7 +245,7 @@ impl CriomeRoot {
         store: ActorRef<store::StoreKernel>,
         authorization_mode: AuthorizationMode,
         node_identity: Identity,
-        voice: Arc<dyn QuorumVoice>,
+        conveyance: Arc<dyn PeerConveyance>,
         clock: SystemClock,
     ) -> Self {
         let (authorization_updates, _updates) = broadcast::channel(128);
@@ -260,7 +260,7 @@ impl CriomeRoot {
             configuration_generation: 0,
             authorization_updates,
             node_identity,
-            voice,
+            conveyance,
             clock,
             originated_request_rounds: HashSet::new(),
             co_signed_successors: HashMap::new(),
@@ -1315,7 +1315,7 @@ impl CriomeRoot {
     //
     // The genuinely new consensus core. An originating node proposes an
     // operation under an admitted Threshold contract, casts its own BLS vote,
-    // solicits each peer member's vote across the voice, collects the stamped
+    // solicits each peer member's vote across the conveyance, collects the stamped
     // signatures into a durable round, and feeds the assembled Evidence to the
     // EXISTING majority-judge (`ContractStore::evaluate`, reused unchanged). A
     // round is WITHHELD (`Gathering`) until the judge returns `Authorized`; an
@@ -1389,7 +1389,7 @@ impl CriomeRoot {
 
     /// Peer vote. Independently re-validate the solicitation (contract admitted
     /// here, this node is a member), cast this node's vote, convey it back to the
-    /// originator across the voice, and record it locally for idempotent redial.
+    /// originator across the conveyance, and record it locally for idempotent redial.
     async fn solicit_quorum_vote(&mut self, solicitation: QuorumVoteSolicitation) -> CriomeReply {
         let QuorumVoteSolicitation {
             round,
@@ -1470,7 +1470,7 @@ impl CriomeRoot {
         let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
         stored.record_vote(vote.clone());
         let _ = self.persist_quorum_round(stored.clone()).await;
-        self.voice
+        self.conveyance
             .convey(&originator, CriomeRequest::submit_quorum_vote(vote));
         CriomeReply::QuorumVoteSolicited(self.round_state(&stored).await)
     }
@@ -1647,7 +1647,7 @@ impl CriomeRoot {
     }
 
     /// Solicit every peer member (contract members other than this node) across
-    /// the voice in the given `phase`. Best-effort: an unreachable peer leaves the
+    /// the conveyance in the given `phase`. Best-effort: an unreachable peer leaves the
     /// round pending.
     fn solicit_peers(&self, stored: &StoredQuorumRound, phase: RoundPhase) {
         for peer in stored.proposition().authorities() {
@@ -1662,7 +1662,7 @@ impl CriomeRoot {
                 proposition: stored.proposition().clone(),
                 originator: self.node_identity.clone(),
             };
-            self.voice
+            self.conveyance
                 .convey(peer, CriomeRequest::solicit_quorum_vote(solicitation));
         }
     }
@@ -1670,11 +1670,11 @@ impl CriomeRoot {
     /// Round 1 reached a majority on the originator: drive round 2 (Commit). The
     /// initiator casts its OWN commit vote (its round 1 is Authorized and the clock
     /// gate re-checks the window as it signs), then conveys to each peer IN ORDER
-    /// over the voice: the round-1 evidence — the gathered Request votes — THEN the
+    /// over the conveyance: the round-1 evidence — the gathered Request votes — THEN the
     /// commit solicitation THEN its own commit vote. So every round-2 signer holds
     /// a real round-1 majority to re-judge before it co-signs, and its commit round
     /// reaches the SAME majority the initiator gathers — both nodes advance the SAME
-    /// head (the ordered conveyance closes the race the best-effort voice would
+    /// head (the ordered conveyance closes the race the best-effort conveyance would
     /// otherwise open). Round 2 assembles a majority-of-the-total; it need not be a
     /// subset of the round-1 signers. Real approval lands only when the commit round
     /// itself reaches a majority (`submit_quorum_vote`). Two rounds — no third.
@@ -1724,14 +1724,14 @@ impl CriomeRoot {
         };
 
         // Convey the round-1 evidence (its votes), the commit solicitation, and
-        // this node's own commit vote to each peer IN ORDER over the voice: the
+        // this node's own commit vote to each peer IN ORDER over the conveyance: the
         // evidence lands first (the peer's round-1 round judges Authorized), then
         // the solicitation (the peer casts its own commit vote), then this node's
         // commit vote — which brings the peer's commit round to the SAME majority
         // this node gathers, so the peer advances the SAME head rather than leaving
         // it stale (a stale peer head refuses the next successor as a false
         // QuorumConflict and wedges the cluster). The ordered conveyance closes the
-        // race the best-effort voice would otherwise open.
+        // race the best-effort conveyance would otherwise open.
         let commit_solicitation = CriomeRequest::solicit_quorum_vote(QuorumVoteSolicitation {
             round: commit_round.clone(),
             phase: RoundPhase::Commit,
@@ -1751,7 +1751,7 @@ impl CriomeRoot {
                 .collect();
             sequence.push(commit_solicitation.clone());
             sequence.push(CriomeRequest::submit_quorum_vote(self_vote.clone()));
-            self.voice.convey_ordered(peer, sequence);
+            self.conveyance.convey_ordered(peer, sequence);
         }
 
         // Persist this node's own commit vote, preserving any commit votes a peer
@@ -2014,8 +2014,8 @@ impl CriomeRoot {
     // (`on_start`), never re-founded.
     //
     // The peer signatures a multi-node cohort needs ride node-to-node over the
-    // EXISTING router voice; `RootFounding::attach_signature` is the accumulation
-    // seam a conveyed peer signature feeds. The live 2-node gather over the voice
+    // EXISTING router conveyance; `RootFounding::attach_signature` is the accumulation
+    // seam a conveyed peer signature feeds. The live 2-node gather over the conveyance
     // is the live-proof worker's bead (.15); today the single-node cohort founds
     // end-to-end and the unanimity/verification logic is proven at the unit level.
 
@@ -2101,7 +2101,7 @@ impl CriomeRoot {
         if let Some(pending) = self.pending_founding(&anchor).await
             && pending.initiator() != &self.node_identity
         {
-            self.voice.convey(
+            self.conveyance.convey(
                 pending.initiator(),
                 CriomeRequest::convey_founding(FoundingConveyance::Signature(
                     FoundingSignatureReturn {
@@ -2171,7 +2171,7 @@ impl CriomeRoot {
     // ─── Cross-node founding conveyance (proposal → signatures → founded) ─────
     //
     // The wire that lets a multi-node cohort assemble a UNANIMOUS root across
-    // peers' working sockets, riding the SAME router voice the quorum path uses
+    // peers' working sockets, riding the SAME router conveyance the quorum path uses
     // (no new lane). A founding moves in three conveyances between cohort
     // criomes: the initiator conveys a Proposal to each peer; each peer's owner
     // accepts and its criome conveys that Signature back; when the initiator has
@@ -2321,7 +2321,7 @@ impl CriomeRoot {
     }
 
     /// Convey the finished unanimous root to every cohort member other than this
-    /// node, over the same best-effort voice.
+    /// node, over the same best-effort conveyance.
     fn distribute_founded(&self, founding: &RootFounding) {
         let founded = FoundedRoot {
             genesis: founding.genesis().clone(),
@@ -2331,7 +2331,7 @@ impl CriomeRoot {
             if member.identity == self.node_identity {
                 continue;
             }
-            self.voice.convey(
+            self.conveyance.convey(
                 &member.identity,
                 CriomeRequest::convey_founding(FoundingConveyance::Founded(founded.clone())),
             );
@@ -2342,7 +2342,7 @@ impl CriomeRoot {
     /// cohort, record this node's own gathering as pending (initiator = self, so a
     /// peer signature arriving before this owner accepts can resume it and the
     /// accept-by-anchor resolves the cohort here), and convey a Proposal to each
-    /// peer over the voice. No signing yet — founding stays owner-accepted with no
+    /// peer over the conveyance. No signing yet — founding stays owner-accepted with no
     /// auto-approval, so the operator must still explicitly accept on this node.
     async fn initiate_root_founding(
         &self,
@@ -2365,7 +2365,7 @@ impl CriomeRoot {
             if member.identity == self.node_identity {
                 continue;
             }
-            self.voice.convey(
+            self.conveyance.convey(
                 &member.identity,
                 CriomeRequest::convey_founding(FoundingConveyance::Proposal(FoundingProposal {
                     genesis: founding.genesis().clone(),
@@ -2448,7 +2448,7 @@ impl Actor for CriomeRoot {
         let master_key = MasterKey::load_or_generate(&master_key_path)?;
         let criome_identity = arguments.node_identity;
         let node_identity = criome_identity.clone();
-        let voice = arguments.voice;
+        let conveyance = arguments.conveyance;
         let cluster_root = arguments.cluster_root.map(ClusterRoot::new);
 
         let store = store::StoreKernel::supervise(&actor_reference, arguments.store)
@@ -2567,7 +2567,7 @@ impl Actor for CriomeRoot {
             store,
             arguments.authorization_mode,
             node_identity,
-            voice,
+            conveyance,
             arguments.clock,
         );
         root.co_signed_successors = co_signed_successors;

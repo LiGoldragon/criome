@@ -530,7 +530,7 @@ or nothing, never last-writer-wins.
 The quorum *judge* was already built and wired (`ContractStore::evaluate`,
 `Threshold::decide`, `Evidence::has_valid_signature_from` — real per-signer BLS
 against admitted keys, fail-closed). What this slice adds is the *collection
-driver* that gathers the votes across the voice and feeds them to that judge.
+driver* that gathers the votes across the conveyance and feeds them to that judge.
 The driver lives on `CriomeRoot` and is exercised over the `signal-criome`
 contract-quorum ops (`ProposeQuorumAuthorization`, `SolicitQuorumVote`,
 `SubmitQuorumVote`, `ObserveQuorumRound`); it is deliberately distinct from the
@@ -544,15 +544,15 @@ The round, for an operation authorized under an admitted `Threshold` contract:
    over the `OperationStatement` plus a time-signature over the moment — and
    opens a durable round (the `quorum_rounds` table). One vote is one short of a
    2-of-2 majority, so the round is `Gathering`.
-2. **Gather (across the voice).** The criome hands a `SolicitQuorumVote` package
-   to its voice — the router's opaque routed-object carriage (a `signal-criome`
+2. **Gather (across the conveyance).** The criome hands a `SolicitQuorumVote` package
+   to its conveyance — the router's opaque routed-object carriage (a `signal-criome`
    request wrapped as a `RoutedContractObject`), or a direct peer-socket dial for
    the single-host multi-user mode. If the peer is unreachable the package does
    not arrive; the round simply **waits**, still `Gathering`. Nothing commits.
 3. **Peer vote (witness-clock gated).** The peer criome independently
    re-validates the solicitation (contract admitted here, this node is a member,
    the moment names the full member set), casts its own vote over the *same*
-   moment proposition, and conveys the `SubmitQuorumVote` back across the voice.
+   moment proposition, and conveys the `SubmitQuorumVote` back across the conveyance.
    Each signer time-signs only when its OWN clock places the present inside the
    window (`SystemClock::admits_window`), so a signature witnesses "now is inside
    this window", not merely agreement on a window value — a proposer's convenient
@@ -619,8 +619,8 @@ The headline boundaries:
 | Signal-requesting daemon | `AuthorizeSignalCall`, `VerifyAuthorization`; `ObserveAuthorization` only when it already holds a slot | The requester submits an exact Signal request digest, receives the submit-open lifecycle stream until terminal grant/rejection/expiry/closure, and verifies grants before local effects. |
 | `criome` CLI (meta) | `meta-signal-criome` | The authority Unix user's one-shot client. Submits passphrase, configures policy, registers peers, approves escalation prompts. |
 | `tui-criome` (meta, long-running) | `meta-signal-criome` | The authority's long-running interactive client. Same contract as the CLI, but stays connected to receive approval-request push events and answer them. Not a separate triad daemon. |
-| Peer criome daemons | `signal-criome` (contract-quorum, §6.2) | Receive `SolicitQuorumVote`, independently re-validate and cast vote #2, and convey `SubmitQuorumVote` back — across the router's opaque routed-object carriage (the voice) or a direct peer-socket dial. The 1-of-1 `RouteSignatureRequest` / `SubmitSignature` signal-call skeleton is a separate surface. |
-| `router` (as the voice) | `signal-router` `SubmitRoutedObjects` | criome originates a solicitation/vote as one `RoutedContractObject` to its local router, which carries it opaquely to the peer node and delivers the octets to the peer criome's working socket unchanged. No router source knows criome's payload. |
+| Peer criome daemons | `signal-criome` (contract-quorum, §6.2) | Receive `SolicitQuorumVote`, independently re-validate and cast vote #2, and convey `SubmitQuorumVote` back — across the router's opaque routed-object carriage (the conveyance) or a direct peer-socket dial. The 1-of-1 `RouteSignatureRequest` / `SubmitSignature` signal-call skeleton is a separate surface. |
+| `router` (as the conveyance) | `signal-router` `SubmitRoutedObjects` | criome originates a solicitation/vote as one `RoutedContractObject` to its local router, which carries it opaquely to the peer node and delivers the octets to the peer criome's working socket unchanged. No router source knows criome's payload. |
 | ClaviFaber | `RegisterIdentity` (via `signal-clavifaber` feed) | Per-host publications register hosts in criome's identity registry. |
 | Future audit-policy engine | `AttestAuthorization` (with audit verdict context) | Signed audit verdicts gate prompt delivery. |
 
@@ -889,7 +889,7 @@ src/actors/store.rs        StoreKernel + criome.sema tables
 src/tables.rs              component-local sema-engine table facade
 src/text.rs                Nexus/NOTA projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
-src/voice.rs               quorum voice (router-mediated / direct-dial / silent)
+src/conveyance.rs          peer conveyance (router-mediated / direct-dial / none)
 src/command.rs             CLI client process-boundary logic
 src/daemon.rs              Unix-socket daemon wrapper around CriomeRoot
 tests/quorum_collection.rs two-daemon 2-of-2 gather + withhold witness
@@ -901,10 +901,10 @@ The quorum-collection driver (§6.2) lives on `CriomeRoot`
 `submit_quorum_vote` / `observe_quorum_round`), signs votes in
 `AttestationSigner::sign_quorum_vote`, and persists each round in the
 durable `quorum_rounds` table (`StoredQuorumRound`). `signal-router` is a
-dependency solely for the router-mediated voice.
+dependency solely for the router-mediated conveyance.
 
 Cargo dependencies after the rewrite: `signal-frame`,
-`signal-criome`, `signal-router` (the quorum voice only),
+`signal-criome`, `signal-router` (the peer conveyance only),
 `kameo`, `sema-engine`, `tokio`, `thiserror`,
 `triad-runtime`, `rkyv`, `blst`, `blake3`, `nota`.
 **Drops** the retired `signal` and `ractor` dependencies.

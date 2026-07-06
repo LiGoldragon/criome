@@ -1,19 +1,19 @@
 //! THE QUORUM-COLLECTION WITNESS: two independent criome daemons gather a real
-//! 2-of-2 BLS quorum across the voice, withhold the change until a true majority
+//! 2-of-2 BLS quorum across the conveyance, withhold the change until a true majority
 //! co-sign, and refuse a below-majority Evidence fail-closed.
 //!
 //! This is the security heart of the persistent Spirit mirror. Each daemon is a
 //! genuinely separate party: its own store, its own `blst` master key, its own
 //! `Host(...)` signing identity, cross-trusting only via keys mutually registered
 //! into the peer's registry (the same shape `distinct_node_identities` proves for
-//! attestation). The gather runs OVER a real Unix-socket voice
-//! ([`DirectDialQuorumVoice`], the single-host multi-user transport):
+//! attestation). The gather runs OVER a real Unix-socket conveyance
+//! ([`DirectDialConveyance`], the single-host multi-user transport):
 //!
 //!   - A proposes an operation under the admitted 2-of-2 Threshold contract and
 //!     casts its own BLS vote (operation signature + moment time-signature). One
 //!     vote is one short of the 2-of-2 majority, so the round is WITHHELD
 //!     (`Gathering`) — A's own change is not valid on its own say-so.
-//!   - A solicits B across the voice; B independently re-validates, casts vote #2,
+//!   - A solicits B across the conveyance; B independently re-validates, casts vote #2,
 //!     and conveys it back. A assembles the Evidence and the EXISTING majority
 //!     judge (`ContractStore::evaluate`) returns `Authorized` — 2-of-2 gathered.
 //!   - That Evidence is judge-valid: fed back through `EvaluateAuthorization` it
@@ -31,12 +31,12 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use criome::conveyance::{
+    DirectDialConveyance, PeerActorRoute, PeerConveyance, PeerSocketRoute, RouterSubmission,
+};
 use criome::daemon::CriomeDaemon;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec};
-use criome::voice::{
-    DirectDialQuorumVoice, PeerActorRoute, PeerSocketRoute, QuorumVoice, RouterQuorumVoice,
-};
 use signal_criome::{
     AuditContext, AuthorizationEvaluation, AuthorizedObjectKind, AuthorizedObjectReference,
     BlsPublicKey, BlsSignature, ComponentKind, ContentPurpose, ContentReference, Contract,
@@ -235,12 +235,12 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
 
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 
@@ -288,7 +288,7 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
     assert_eq!(opened.required.into_u16(), 2);
     assert!(opened.authorized_evidence.is_none());
 
-    // The solicitation crosses the voice, B votes, the vote comes back, and the
+    // The solicitation crosses the conveyance, B votes, the vote comes back, and the
     // gathered 2-of-2 quorum authorizes.
     let authorized = wait_until_authorized(&socket_a, &round);
     assert_eq!(authorized.status, QuorumRoundStatus::Authorized);
@@ -350,12 +350,12 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
     let beta = host("mirror-beta");
 
     let (socket_a, store_a) = fixture("lonely-alpha");
-    // A peer socket path that is never bound — the voice cannot reach it.
+    // A peer socket path that is never bound — the conveyance cannot reach it.
     let (dead_socket, _dead_store) = fixture("dead-beta");
 
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), dead_socket),
         ])));
     serve(daemon_a);
@@ -408,7 +408,7 @@ fn a_forged_member_vote_is_recorded_but_not_counted() {
 
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), dead_socket),
         ])));
     serve(daemon_a);
@@ -461,7 +461,7 @@ fn a_forged_member_vote_is_recorded_but_not_counted() {
 }
 
 #[test]
-fn router_voice_frames_a_criome_request_the_working_socket_reads() {
+fn router_submission_frames_a_criome_request_the_working_socket_reads() {
     // The router carries the routed object's octets opaquely and re-prefixes them
     // with its own length before delivering [len][octets] to the peer criome
     // working socket. So the octets must be exactly the frame body the criome
@@ -483,7 +483,7 @@ fn router_voice_frames_a_criome_request_the_working_socket_reads() {
         },
     });
 
-    let octets = RouterQuorumVoice::request_octets(request.clone()).expect("frame the request");
+    let octets = RouterSubmission::request_octets(request.clone()).expect("frame the request");
     // Simulate the router's length-prefix framing (triad LengthPrefixedCodec: u32 BE).
     let mut delivered = (octets.len() as u32).to_be_bytes().to_vec();
     delivered.extend(octets);
@@ -499,7 +499,7 @@ fn router_voice_frames_a_criome_request_the_working_socket_reads() {
 }
 
 /// A `FoundingConveyance` carrying a peer's signature return — the shape
-/// `RouterQuorumVoice::submit` conveys cross-node once a founding is under
+/// `RouterSubmission::submit` conveys cross-node once a founding is under
 /// way. Content is a fixture; the round-trip proof does not depend on it
 /// being a live founding's real signature.
 fn founding_signature_conveyance(voter: Identity) -> CriomeRequest {
@@ -666,8 +666,8 @@ fn serve_stub_router_always_refusing(
 }
 
 #[test]
-fn router_quorum_voice_submits_through_the_router_working_socket_and_is_accepted() {
-    // The full origination path: `RouterQuorumVoice::submit` frames the
+fn router_submission_submits_through_the_router_working_socket_and_is_accepted() {
+    // The full origination path: `RouterSubmission::submit` frames the
     // request, wraps it as a `RoutedContractObject`, hands it to a
     // `SubmitRoutedObjects` origination, and dials the local router's working
     // socket over the new `RouterClient`. The stub router proves the carried
@@ -681,14 +681,14 @@ fn router_quorum_voice_submits_through_the_router_working_socket_and_is_accepted
     let received = serve_stub_router(router_socket.clone(), Ok(()));
     wait_for_socket(&router_socket);
 
-    let voice = RouterQuorumVoice::new(
+    let conveyance = RouterSubmission::new(
         router_socket,
         source_actor,
         vec![PeerActorRoute::new(peer.clone(), destination_actor.clone())],
     );
 
     let request = founding_signature_conveyance(peer);
-    voice
+    conveyance
         .submit(destination_actor, request.clone())
         .expect("the stub router accepts the origination");
 
@@ -702,7 +702,7 @@ fn router_quorum_voice_submits_through_the_router_working_socket_and_is_accepted
 }
 
 #[test]
-fn router_quorum_voice_maps_a_router_refusal_to_a_delivery_error() {
+fn router_submission_maps_a_router_refusal_to_a_delivery_error() {
     // Same origination path, but the stub router refuses. The refusal must
     // surface as an `Err`, not a swallowed success, and must name the reason.
     let peer = host("router-peer");
@@ -716,14 +716,14 @@ fn router_quorum_voice_maps_a_router_refusal_to_a_delivery_error() {
     );
     wait_for_socket(&router_socket);
 
-    let voice = RouterQuorumVoice::new(
+    let conveyance = RouterSubmission::new(
         router_socket,
         source_actor,
         vec![PeerActorRoute::new(peer.clone(), destination_actor.clone())],
     );
 
     let request = founding_signature_conveyance(peer);
-    let error = voice
+    let error = conveyance
         .submit(destination_actor, request.clone())
         .expect_err("a router refusal must surface as a delivery error, not a silent success");
     assert!(
@@ -738,12 +738,12 @@ fn router_quorum_voice_maps_a_router_refusal_to_a_delivery_error() {
 }
 
 #[test]
-fn router_quorum_voice_convey_still_attempts_delivery_and_does_not_panic_on_refusal() {
+fn router_submission_convey_still_attempts_delivery_and_does_not_panic_on_refusal() {
     // M2 (primary-79z1.22): `convey` stays fire-and-forget by trait contract —
     // an unreachable peer must still leave the round `Gathering` rather than
     // aborting it — but a router refusal on the founding path must no longer
     // vanish with `let _ = self.submit(...)`. This proves going through the
-    // `QuorumVoice` trait object still lands the delivery attempt on the wire
+    // `PeerConveyance` trait object still lands the delivery attempt on the wire
     // (no regression to the fire-and-forget behavior) and does not panic now
     // that the refusal is loud-logged instead of silently discarded.
     let peer = host("router-peer");
@@ -757,14 +757,14 @@ fn router_quorum_voice_convey_still_attempts_delivery_and_does_not_panic_on_refu
     );
     wait_for_socket(&router_socket);
 
-    let voice: Arc<dyn QuorumVoice> = Arc::new(RouterQuorumVoice::new(
+    let conveyance: Arc<dyn PeerConveyance> = Arc::new(RouterSubmission::new(
         router_socket,
         source_actor,
         vec![PeerActorRoute::new(peer.clone(), destination_actor)],
     ));
 
     let request = founding_signature_conveyance(peer.clone());
-    voice.convey(&peer, request.clone());
+    conveyance.convey(&peer, request.clone());
 
     let decoded = received
         .recv_timeout(Duration::from_secs(5))
@@ -773,7 +773,7 @@ fn router_quorum_voice_convey_still_attempts_delivery_and_does_not_panic_on_refu
 }
 
 #[test]
-fn router_quorum_voice_convey_ordered_stops_after_the_first_refusal() {
+fn router_submission_convey_ordered_stops_after_the_first_refusal() {
     // The two-round commit driver relies on the ordering: sending a LATER
     // step (e.g. the commit solicitation) after an EARLIER step (the round-1
     // evidence) failed to deliver would race a peer that never received the
@@ -793,7 +793,7 @@ fn router_quorum_voice_convey_ordered_stops_after_the_first_refusal() {
     );
     wait_for_socket(&router_socket);
 
-    let voice: Arc<dyn QuorumVoice> = Arc::new(RouterQuorumVoice::new(
+    let conveyance: Arc<dyn PeerConveyance> = Arc::new(RouterSubmission::new(
         router_socket,
         source_actor,
         vec![PeerActorRoute::new(peer.clone(), destination_actor)],
@@ -804,7 +804,7 @@ fn router_quorum_voice_convey_ordered_stops_after_the_first_refusal() {
         founding_signature_conveyance(peer.clone()),
         founding_signature_conveyance(peer.clone()),
     ];
-    voice.convey_ordered(&peer, sequence);
+    conveyance.convey_ordered(&peer, sequence);
 
     // Exactly one step reaches the stub router: the first refusal must stop
     // the rest of the ordering-dependent sequence from being sent at all.

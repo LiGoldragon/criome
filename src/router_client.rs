@@ -1,7 +1,7 @@
 //! The router working-socket client — criome's origination-side twin of
 //! [`crate::transport::CriomeClient`].
 //!
-//! `RouterQuorumVoice` dials its own local router's working socket over this
+//! `RouterSubmission` dials its own local router's working socket over this
 //! client to hand off a `signal-router` `SubmitRoutedObjects` origination and
 //! read back the router's accept/refuse reply. The wire shape mirrors what
 //! `router::daemon::RouterEngine::handle_working_connection` reads on the

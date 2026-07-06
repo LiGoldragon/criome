@@ -63,8 +63,8 @@ pub enum Error {
     OutsideTimeWindow,
     #[error("quorum round is not governed by a threshold contract")]
     QuorumContractNotThreshold,
-    #[error("quorum voice delivery failed: {0}")]
-    VoiceDelivery(String),
+    #[error("peer conveyance delivery failed: {0}")]
+    PeerDelivery(String),
     #[error("root founding failed: {0}")]
     RootFounding(String),
     #[error("meta socket connection refused: peer uid {uid} is not the owning uid {owner_uid}")]

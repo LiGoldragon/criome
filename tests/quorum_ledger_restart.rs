@@ -14,9 +14,9 @@
 use std::sync::Arc;
 
 use criome::actors::root::{Arguments as RootArguments, CriomeRoot, SubmitRequest};
+use criome::conveyance::NoConveyance;
 use criome::master_key::SystemClock;
 use criome::tables::StoreLocation;
-use criome::voice::SilentVoice;
 use kameo::actor::ActorRef;
 use signal_criome::{
     AuthorizationMode, AuthorizedObjectKind, AuthorizedObjectReference, ComponentKind, Contract,
@@ -86,7 +86,7 @@ async fn start(store: StoreLocation, identity: Identity) -> ActorRef<CriomeRoot>
         cluster_root: None,
         authorization_mode: AuthorizationMode::Quorum,
         node_identity: identity,
-        voice: Arc::new(SilentVoice),
+        conveyance: Arc::new(NoConveyance),
         clock: SystemClock::pinned(TimestampNanos::new(1_500)),
     })
     .await

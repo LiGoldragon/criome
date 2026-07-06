@@ -28,11 +28,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use criome::conveyance::{DirectDialConveyance, PeerSocketRoute};
 use criome::daemon::CriomeDaemon;
 use criome::master_key::SystemClock;
 use criome::tables::StoreLocation;
 use criome::transport::CriomeClient;
-use criome::voice::{DirectDialQuorumVoice, PeerSocketRoute};
 use signal_criome::{
     AttestedMomentProposition, AuditContext, AuthorizedObjectKind, AuthorizedObjectReference,
     BlsPublicKey, BlsSignature, ComponentKind, ContentPurpose, ContentReference, Contract,
@@ -250,13 +250,13 @@ fn found_then_two_round_commit_authorizes_on_round_two() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(1_800))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 
@@ -500,13 +500,13 @@ fn both_rounds_are_window_gated_an_out_of_window_peer_commits_neither() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(9_000))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 
@@ -570,13 +570,13 @@ fn two_committed_successors_converge_both_heads() {
     let daemon_a = CriomeDaemon::new(&socket_a, store_a)
         .with_node_identity(alpha.clone())
         .with_clock(pinned_clock(1_500))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(beta.clone(), socket_b.clone()),
         ])));
     let daemon_b = CriomeDaemon::new(&socket_b, store_b)
         .with_node_identity(beta.clone())
         .with_clock(pinned_clock(1_800))
-        .with_quorum_voice(Arc::new(DirectDialQuorumVoice::new(vec![
+        .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
             PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
         ])));
 
