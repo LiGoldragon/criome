@@ -340,6 +340,7 @@ impl CriomeClient {
                 path: self.socket.clone(),
             });
         }
+        let submitted_digest = authorization.object.digest.clone();
         let stream = UnixStream::connect(&self.socket)?;
         let mut stream = BufReader::new(stream);
         self.codec.write_request(
@@ -352,13 +353,22 @@ impl CriomeClient {
                 got: format!("{reply:?}"),
             });
         };
-        let Some(state) = snapshot.states().first() else {
+        // The session token is the slot criome assigned to THIS submission.
+        // Filter the snapshot by the submitted digest rather than blindly
+        // taking the first record, so a snapshot that ever carried foreign
+        // records could not bind the session to another request's slot.
+        let Some(request_slot) = snapshot
+            .states()
+            .iter()
+            .find(|state| state.request_digest == submitted_digest)
+            .map(|state| state.request_slot.clone())
+        else {
             return Err(Error::UnexpectedSignalFrame {
                 got: format!("{snapshot:?}"),
             });
         };
         Ok(CriomeAuthorizationObservationSession {
-            token: AuthorizationObservationToken::new(state.request_slot.clone()),
+            token: AuthorizationObservationToken::new(request_slot),
             snapshot,
             stream,
             codec: self.codec,

@@ -19,6 +19,7 @@ use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 #[cfg(feature = "nota-text")]
 use nota::NotaEncode;
 use signal_criome::{
+    AuthorizedObjectReference,
     ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
     AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
@@ -171,14 +172,19 @@ fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
 
 fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallAuthorization {
     SignalCallAuthorization::new(
-        ObjectDigest::from_bytes(seed),
-        contract_name(),
-        contract_operation_head(),
-        authorization_scope(),
+        authorized_object(seed),
         Identity::developer(("operator").to_string()),
         ReplayNonce::new((nonce).to_string()),
         None,
     )
+}
+
+fn authorized_object(seed: &[u8]) -> AuthorizedObjectReference {
+    AuthorizedObjectReference {
+        component: ComponentKind::Lojix,
+        digest: ObjectDigest::from_bytes(seed),
+        kind: AuthorizedObjectKind::Operation,
+    }
 }
 
 fn signature_envelope() -> SignatureEnvelope {
@@ -224,10 +230,7 @@ fn workflow_provenance_digest(seed: &[u8]) -> WorkflowProvenanceDigest {
 fn authorization_grant(seed: &[u8]) -> AuthorizationGrant {
     AuthorizationGrant::new(
         AuthorizationRequestSlot::new(("authorization-grant-slot").to_string()),
-        ObjectDigest::from_bytes(seed),
-        contract_name(),
-        contract_operation_head(),
-        authorization_scope(),
+        authorized_object(seed),
         AuthorizationPolicySatisfaction::new(
             AuthorizationPolicyClass::SimpleSelfSigned,
             RequiredSignatureThreshold::new(1),
@@ -276,6 +279,13 @@ fn expired_authorization(reply: CriomeReply) -> AuthorizationExpired {
     expired
 }
 
+fn unavailable_authorization(reply: CriomeReply) -> signal_criome::AuthorizationUnavailable {
+    let CriomeReply::AuthorizationUnavailable(unavailable) = reply else {
+        panic!("expected AuthorizationUnavailable, got {reply:?}");
+    };
+    unavailable
+}
+
 #[tokio::test]
 async fn criome_root_starts_data_bearing_kameo_children() {
     let root = CriomeRoot::start(RootArguments::new(store_location("topology")))
@@ -316,13 +326,18 @@ async fn sign_with_unregistered_identity_returns_rejection() {
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
 
+/// Quorum mode on an UNFOUNDED node refuses loudly with a terminal
+/// `Unavailable` (settled): founding is rare and precedes system liveness, so
+/// a node whose gate asks for cluster authorization while its criome is
+/// unfounded is misconfigured and must not hold silently. The refused state
+/// is durable and observable, fail-closed.
 #[tokio::test]
-async fn authorize_signal_call_records_observable_signing_state() {
+async fn quorum_mode_on_an_unfounded_node_refuses_unavailable() {
     let root = CriomeRoot::start(RootArguments::new(store_location("authorization-pending")))
         .await
         .expect("start criome root");
     let authorization = signal_call_authorization(b"authorize observable request");
-    let request_digest = authorization.request_digest.clone();
+    let request_digest = authorization.request_digest().clone();
 
     let reply = root
         .ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
@@ -331,13 +346,11 @@ async fn authorize_signal_call_records_observable_signing_state() {
         .await
         .expect("submit authorization request")
         .into_reply();
-    let pending = pending_authorization(reply);
-    assert_eq!(pending.request_digest, request_digest);
-    assert!(pending.missing_authorities().is_empty());
+    let unavailable = unavailable_authorization(reply);
 
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
-            AuthorizationObservation::new(pending.request_slot.clone()),
+            AuthorizationObservation::new(unavailable.request_slot.clone()),
         )))
         .await
         .expect("observe authorization")
@@ -346,9 +359,13 @@ async fn authorize_signal_call_records_observable_signing_state() {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
     assert_eq!(snapshot.states().len(), 1);
-    assert_eq!(snapshot.states()[0].request_slot, pending.request_slot);
+    assert_eq!(snapshot.states()[0].request_slot, unavailable.request_slot);
     assert_eq!(snapshot.states()[0].request_digest, request_digest);
-    assert_eq!(snapshot.states()[0].status, AuthorizationStatus::Signing);
+    assert_eq!(
+        snapshot.states()[0].status,
+        AuthorizationStatus::Unavailable,
+        "unfounded Quorum mode is a terminal Unavailable, never a silent park"
+    );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -360,9 +377,9 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
         .expect("start criome root");
     let authorization =
         signal_call_authorization_with_nonce(b"same authorization request", "first-nonce");
-    let request_digest = authorization.request_digest.clone();
+    let request_digest = authorization.request_digest().clone();
 
-    let first = pending_authorization(
+    let first = unavailable_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
             authorization.clone(),
         )))
@@ -370,13 +387,10 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
         .expect("submit first authorization")
         .into_reply(),
     );
-    let second = pending_authorization(
+    let second = unavailable_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
             SignalCallAuthorization::new(
-                authorization.request_digest.clone(),
-                authorization.contract.clone(),
-                authorization.operation.clone(),
-                authorization.scope.clone(),
+                authorization.object.clone(),
                 authorization.requester.clone(),
                 ReplayNonce::new(("second-nonce").to_string()),
                 authorization.expires_at(),
@@ -387,8 +401,7 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
         .into_reply(),
     );
 
-    assert_eq!(first.request_digest, request_digest);
-    assert_eq!(second.request_digest, request_digest);
+    let _ = request_digest;
     assert_ne!(first.request_slot, second.request_slot);
     assert_ne!(first.request_slot.as_str(), request_digest.as_str());
     assert_ne!(second.request_slot.as_str(), request_digest.as_str());
@@ -402,15 +415,12 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
         .await
         .expect("start criome root");
     let authorization = SignalCallAuthorization::new(
-        ObjectDigest::from_bytes(b"expired authorization request"),
-        contract_name(),
-        contract_operation_head(),
-        authorization_scope(),
+        authorized_object(b"expired authorization request"),
         Identity::developer(("operator").to_string()),
         ReplayNonce::new(("expired-nonce").to_string()),
         Some(TimestampNanos::new(0)),
     );
-    let request_digest = authorization.request_digest.clone();
+    let request_digest = authorization.request_digest().clone();
 
     let expired = expired_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
@@ -457,7 +467,7 @@ async fn authorization_replay_nonce_rejects_changed_digest_reuse() {
         .await
         .expect("submit first authorization")
         .into_reply();
-    let _pending = pending_authorization(first_reply);
+    let _first = unavailable_authorization(first_reply);
 
     let second_reply = root
         .ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
@@ -1017,6 +1027,7 @@ async fn parked_authorization_snapshot_sorts_slots_numerically() {
         store: store_location("parked-numeric-order"),
         cluster_root: None,
         authorization_mode: signal_criome::AuthorizationMode::ClientApproval,
+        quorum_window: RootArguments::DEFAULT_QUORUM_WINDOW,
         node_identity: RootArguments::default_node_identity(),
         conveyance: std::sync::Arc::new(criome::conveyance::NoConveyance),
         clock: criome::master_key::SystemClock::system(),
@@ -1213,6 +1224,7 @@ async fn cluster_root_gates_registration() {
         store: StoreLocation::new(workspace.join("criome.sema")),
         cluster_root: Some(cluster_root.public_key()),
         authorization_mode: signal_criome::AuthorizationMode::Quorum,
+        quorum_window: RootArguments::DEFAULT_QUORUM_WINDOW,
         node_identity: RootArguments::default_node_identity(),
         conveyance: std::sync::Arc::new(criome::conveyance::NoConveyance),
         clock: criome::master_key::SystemClock::system(),
@@ -1429,7 +1441,7 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
 
     let authorization =
         signal_call_authorization_with_nonce(b"auto-approved-signal-call", "signed-grant-nonce");
-    let request_digest = authorization.request_digest.clone();
+    let request_digest = authorization.request_digest().clone();
     let granted = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve signal authorization"));
         let reply = CriomeClient::new(&socket)
@@ -1441,7 +1453,7 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
     let CriomeReply::AuthorizationGranted(grant) = granted else {
         panic!("expected AuthorizationGranted, got {granted:?}");
     };
-    assert_eq!(grant.authorized_object_digest, request_digest);
+    assert_eq!(grant.authorized_object_digest(), &request_digest);
     assert_eq!(grant.issued_by, Identity::host("criome".to_string()));
     assert_eq!(grant.signatures().len(), 1);
     let signature = &grant.signatures()[0].envelope;
@@ -1519,7 +1531,7 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
 
     let authorization =
         signal_call_authorization_with_nonce(b"client-approved-signal-call", "slot-grant-nonce");
-    let request_digest = authorization.request_digest.clone();
+    let request_digest = authorization.request_digest().clone();
     let pending = thread::scope(|scope| {
         let server = scope.spawn(|| {
             daemon
@@ -1608,7 +1620,7 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
     assert_eq!(state.status, AuthorizationStatus::Granted);
     assert_eq!(state.signal_authorization(), Some(&authorization));
     let grant = state.grant().expect("approved signal call stores grant");
-    assert_eq!(grant.authorized_object_digest, request_digest);
+    assert_eq!(grant.authorized_object_digest(), &request_digest);
     assert_eq!(grant.signatures().len(), 1);
     assert!(
         !grant.signatures()[0].envelope.signature.as_str().is_empty(),
@@ -1654,7 +1666,7 @@ fn authorization_submit_stream_pushes_approval_update() {
 
     let authorization =
         signal_call_authorization_with_nonce(b"push-approved-signal-call", "push-grant-nonce");
-    let request_digest = authorization.request_digest.clone();
+    let request_digest = authorization.request_digest().clone();
     thread::scope(|scope| {
         let server = scope.spawn(|| {
             daemon

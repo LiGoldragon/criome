@@ -4,11 +4,12 @@ use kameo::message::{Context, Message};
 use signal_criome::{
     ArchiveAttestationRequest, Attestation, AttestationReceipt, AttestedMoment,
     AttestedMomentProposition, AuditContext, AuthorizationGrant, AuthorizationPolicyClass,
-    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, BlsPublicKey, BlsSignature,
-    ChannelGrantAttestationRequest, ContentPurpose, ContentReference, CriomeReply, Identity,
-    OperationDigest, RejectionReason, RequiredSignatureThreshold, RootFoundingStatement,
-    SignReceipt, SignRequest, SignalCallAuthorization, SignatureAuthorizationResult,
-    SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope, TimeWindow, TimestampNanos,
+    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, AuthorizedObjectKind, BlsPublicKey,
+    BlsSignature, ChannelGrantAttestationRequest, ComponentKind, ContentPurpose, ContentReference,
+    CriomeReply, Identity, OperationDigest, RejectionReason, RequiredSignatureThreshold,
+    RootFoundingStatement, SignReceipt, SignRequest, SignalCallAuthorization,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, StampedSignatureEnvelope,
+    TimeWindow, TimestampNanos,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, registry, rejection, store};
@@ -57,6 +58,12 @@ pub struct AttestAuthorization {
 pub struct SignAuthorizationGrant {
     request_slot: AuthorizationRequestSlot,
     authorization: SignalCallAuthorization,
+    /// The policy satisfaction the grant attests. Absent, the grant is the
+    /// single-signature self-signed shape (AutoApprove / owner approval);
+    /// present, it carries the quorum satisfaction the cluster bridge
+    /// assembled (ComplexQuorum with the contract threshold and the commit
+    /// round's voters).
+    policy_satisfaction: Option<AuthorizationPolicySatisfaction>,
 }
 
 /// Cast this node's quorum vote: sign the operation statement and time-sign the
@@ -146,6 +153,21 @@ impl SignAuthorizationGrant {
         Self {
             request_slot,
             authorization,
+            policy_satisfaction: None,
+        }
+    }
+
+    /// A grant attesting a satisfied quorum policy rather than the
+    /// single-signature self-signed default.
+    pub fn with_policy_satisfaction(
+        request_slot: AuthorizationRequestSlot,
+        authorization: SignalCallAuthorization,
+        policy_satisfaction: AuthorizationPolicySatisfaction,
+    ) -> Self {
+        Self {
+            request_slot,
+            authorization,
+            policy_satisfaction: Some(policy_satisfaction),
         }
     }
 }
@@ -170,13 +192,13 @@ impl<'a> AuthorizationGrantStatement<'a> {
         Self { grant, expires_at }
     }
 
+    // The V2 statement binds the typed authorized object — component and kind
+    // as closed enum tags plus the object digest — in place of the V1 line's
+    // contract/operation/scope string trio (retired with the typed ask).
     fn to_signing_bytes(&self) -> Vec<u8> {
-        let mut bytes = b"CRIOME-AUTHORIZATION-GRANT-V1".to_vec();
+        let mut bytes = b"CRIOME-AUTHORIZATION-GRANT-V2".to_vec();
         self.push_text(&mut bytes, self.grant.request_slot.as_str());
-        self.push_text(&mut bytes, self.grant.authorized_object_digest.as_str());
-        self.push_text(&mut bytes, self.grant.authorized_contract.as_str());
-        self.push_text(&mut bytes, self.grant.authorized_operation.as_str());
-        self.push_text(&mut bytes, self.grant.authorization_scope.as_str());
+        self.push_authorized_object(&mut bytes);
         self.push_policy_satisfaction(&mut bytes);
         self.push_signature_result(&mut bytes);
         self.push_identity(&mut bytes, &self.grant.issued_by);
@@ -189,6 +211,28 @@ impl<'a> AuthorizationGrantStatement<'a> {
             None => bytes.extend_from_slice(b"none"),
         }
         bytes
+    }
+
+    fn push_authorized_object(&self, bytes: &mut Vec<u8>) {
+        let component_tag: u8 = match self.grant.authorized_object.component {
+            ComponentKind::Spirit => 0,
+            ComponentKind::Criome => 1,
+            ComponentKind::Router => 2,
+            ComponentKind::Mirror => 3,
+            ComponentKind::Lojix => 4,
+            ComponentKind::Persona => 5,
+            ComponentKind::Agent => 6,
+        };
+        bytes.push(component_tag);
+        self.push_text(bytes, self.grant.authorized_object.digest.as_str());
+        let kind_tag: u8 = match self.grant.authorized_object.kind {
+            AuthorizedObjectKind::Operation => 0,
+            AuthorizedObjectKind::Contract => 1,
+            AuthorizedObjectKind::Agreement => 2,
+            AuthorizedObjectKind::Time => 3,
+            AuthorizedObjectKind::Head => 4,
+        };
+        bytes.push(kind_tag);
     }
 
     fn push_policy_satisfaction(&self, bytes: &mut Vec<u8>) {
@@ -351,18 +395,25 @@ impl AttestationSigner {
     async fn sign_authorization_grant(&self, request: SignAuthorizationGrant) -> CriomeReply {
         let issued_at = self.clock.timestamp();
         let expires_at = request.authorization.expires_at();
+        let (policy_satisfaction, signature_result) = match request.policy_satisfaction {
+            Some(satisfaction) => (
+                satisfaction,
+                SignatureAuthorizationResult::RequiredSignaturesSatisfied,
+            ),
+            None => (
+                AuthorizationPolicySatisfaction::new(
+                    AuthorizationPolicyClass::SimpleSelfSigned,
+                    RequiredSignatureThreshold::new(1),
+                    vec![self.criome_identity.clone()],
+                ),
+                SignatureAuthorizationResult::SingleSignature,
+            ),
+        };
         let mut grant = AuthorizationGrant::new(
             request.request_slot,
-            request.authorization.request_digest,
-            request.authorization.contract,
-            request.authorization.operation,
-            request.authorization.scope,
-            AuthorizationPolicySatisfaction::new(
-                AuthorizationPolicyClass::SimpleSelfSigned,
-                RequiredSignatureThreshold::new(1),
-                vec![self.criome_identity.clone()],
-            ),
-            SignatureAuthorizationResult::SingleSignature,
+            request.authorization.object.clone(),
+            policy_satisfaction,
+            signature_result,
             Vec::new(),
             self.criome_identity.clone(),
             issued_at,
@@ -378,19 +429,7 @@ impl AttestationSigner {
                 signature: self.master_key.sign(&signing_bytes),
             },
         };
-        grant = AuthorizationGrant::new(
-            grant.request_slot,
-            grant.authorized_object_digest,
-            grant.authorized_contract,
-            grant.authorized_operation,
-            grant.authorization_scope,
-            grant.policy_satisfaction,
-            grant.signature_result,
-            vec![signature],
-            grant.issued_by,
-            grant.issued_at,
-            expires_at,
-        );
+        grant.authorization_grant_signatures = vec![signature];
         CriomeReply::AuthorizationGranted(grant)
     }
 

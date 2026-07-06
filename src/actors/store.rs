@@ -333,7 +333,7 @@ impl StoreAuthorizationState {
 impl CreateAuthorizationState {
     pub fn signing(authorization: &signal_criome::SignalCallAuthorization) -> Self {
         Self {
-            request_digest: authorization.request_digest.clone(),
+            request_digest: authorization.object.digest.clone(),
             status: AuthorizationStatus::Signing,
             missing_authorities: Vec::new(),
             grant: None,
@@ -349,7 +349,7 @@ impl CreateAuthorizationState {
 
     pub fn expired(authorization: &signal_criome::SignalCallAuthorization) -> Self {
         Self {
-            request_digest: authorization.request_digest.clone(),
+            request_digest: authorization.object.digest.clone(),
             status: AuthorizationStatus::Expired,
             missing_authorities: Vec::new(),
             grant: None,
@@ -367,7 +367,7 @@ impl CreateAuthorizationState {
         authorization: signal_criome::SignalCallAuthorization,
     ) -> Self {
         Self {
-            request_digest: authorization.request_digest.clone(),
+            request_digest: authorization.object.digest.clone(),
             status: AuthorizationStatus::Parked,
             missing_authorities: Vec::new(),
             grant: None,
@@ -385,7 +385,7 @@ impl CreateAuthorizationState {
         authorization: signal_criome::SignalCallAuthorization,
     ) -> Self {
         Self {
-            request_digest: authorization.request_digest.clone(),
+            request_digest: authorization.object.digest.clone(),
             status: AuthorizationStatus::Pending,
             missing_authorities: Vec::new(),
             grant: None,

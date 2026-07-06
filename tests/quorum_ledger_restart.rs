@@ -85,6 +85,7 @@ async fn start(store: StoreLocation, identity: Identity) -> ActorRef<CriomeRoot>
         store,
         cluster_root: None,
         authorization_mode: AuthorizationMode::Quorum,
+        quorum_window: RootArguments::DEFAULT_QUORUM_WINDOW,
         node_identity: identity,
         conveyance: Arc::new(NoConveyance),
         clock: SystemClock::pinned(TimestampNanos::new(1_500)),

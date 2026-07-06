@@ -36,7 +36,7 @@ use crate::founding::RootFounding;
 // mismatch rather than silently mis-decoded: clean genesis, no re-digest
 // migration. The founding ceremony then writes the first parent-bearing
 // contracts into a fresh namespace. The test VMs hold nothing to preserve.
-const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(5);
+const CRIOME_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(6);
 const IDENTITIES: TableName = TableName::new("identities");
 const REVOCATIONS: TableName = TableName::new("revocations");
 const ATTESTATIONS: TableName = TableName::new("attestations");

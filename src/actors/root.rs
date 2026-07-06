@@ -1,4 +1,4 @@
-use kameo::actor::{Actor, ActorRef, Spawn};
+use kameo::actor::{Actor, ActorRef, Spawn, WeakActorRef};
 use kameo::message::{Context, Message};
 use meta_signal_criome::{
     AuthorizationApproval, AuthorizationApprovalDecision, AuthorizationApprovalRecorded,
@@ -8,26 +8,28 @@ use meta_signal_criome::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use signal_criome::{
     AttestedMoment, AttestedMomentProposition, AuthorizationAttestationRequest,
     AuthorizationDenial, AuthorizationDenialReason, AuthorizationDenialSource,
-    AuthorizationEvaluated, AuthorizationEvaluation, AuthorizationMode,
-    AuthorizationObservationToken, AuthorizationPending, AuthorizationRequestSlot,
-    AuthorizationStateRecord, AuthorizationStatus, AuthorizedObjectReference,
+    AuthorizationEvaluated, AuthorizationEvaluation, AuthorizationExpired, AuthorizationMode,
+    AuthorizationObservationToken, AuthorizationPending, AuthorizationPolicyClass,
+    AuthorizationPolicySatisfaction, AuthorizationRequestSlot, AuthorizationStateRecord,
+    AuthorizationStatus, AuthorizationUnavailable, AuthorizedObjectReference,
     AuthorizedObjectUpdate, AuthorizedObjectUpdateToken, BlsPublicKey, ContractAdmissionRejected,
-    ContractAdmitted, ContractFound, ContractMissing, ContractOperationHead,
+    ContractAdmitted, ContractDigest, ContractFound, ContractMissing, ContractOperationHead,
     CriomeDaemonConfiguration, CriomeReply, CriomeRequest, EvaluationDecision, Evidence,
     FoundedRoot, FoundingConveyance, FoundingConveyanceOutcome, FoundingConveyanceReceipt,
     FoundingProposal, FoundingSignature, FoundingSignatureReturn, Identity, IdentityRegistration,
     IdentitySubscriptionToken, InterceptPolicyCancellation, InterceptPolicyProposal, KeyPurpose,
     OperationDigest, ParkedAuthorization, ParkedAuthorizationObservation,
     ParkedAuthorizationSnapshot, ParkedRequestAnswer, ParkedRequestDecision,
-    ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest, PolicyMember, QuorumConflict,
-    QuorumProposal, QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus, QuorumVote,
-    QuorumVoteSolicitation, RejectionReason, RequiredSignatureThreshold, RootAnchorDigest,
-    RoundPhase, Rule, SignalCallAuthorization, SpiritAuthorizationContext,
-    StampedSignatureEnvelope, TimeSignature, TimestampNanos,
+    ParkedRequestIdentifier, ParkedRequestQuery, ParkedSpiritRequest, PolicyMember, PrincipalName,
+    QuorumConflict, QuorumProposal, QuorumRoundIdentifier, QuorumRoundState, QuorumRoundStatus,
+    QuorumVote, QuorumVoteSolicitation, RejectionReason, RequiredSignatureThreshold,
+    RootAnchorDigest, RoundPhase, Rule, SignalCallAuthorization, SpiritAuthorizationContext,
+    StampedSignatureEnvelope, TimeSignature, TimeWindow, TimestampNanos,
 };
 use tokio::sync::broadcast;
 
@@ -80,12 +82,52 @@ pub struct CriomeRoot {
     /// advances from — keyed by the contract digest's text. Absent ⇒ the
     /// contract's genesis head; advanced when a successor commits on round 2.
     contract_heads: HashMap<String, ContractOperationHead>,
+    /// The cluster-authorization bridge state: in-flight `AuthorizeSignalCall`
+    /// asks this node is driving through the two-round commit, keyed by the
+    /// requested object digest's text. An entry leaves the map exactly once —
+    /// granted on the commit majority, or expired by its window timer.
+    pending_head_authorizations: HashMap<String, PendingHeadAuthorization>,
+    /// The owner-configured duration of one cluster authorization window: both
+    /// commit rounds plus network round-trips, sized to also cover the
+    /// catch-up case (which chains a recorded round before the requested one).
+    quorum_window: Duration,
+    /// A weak self-reference for event-scheduled pushes (the window-close
+    /// expiry timer tells the actor rather than any component polling).
+    self_reference: Option<WeakActorRef<CriomeRoot>>,
+}
+
+/// One in-flight cluster head-advance authorization the bridge is driving:
+/// the original ask, the operational contract it runs over, the derived
+/// window, and how far the drive has progressed.
+struct PendingHeadAuthorization {
+    request_slot: AuthorizationRequestSlot,
+    authorization: SignalCallAuthorization,
+    contract: ContractDigest,
+    window: TimeWindow,
+    stage: HeadAuthorizationStage,
+}
+
+/// How far the bridge has driven a pending head authorization. `CatchingUp`
+/// is the batching no-wedge rule (§3.4): a standing self-co-signed row for an
+/// earlier proposed head is completed first (an identical re-proposal of the
+/// recorded round), advancing the contract head; only then is the requested
+/// head proposed. `Proposed` means the requested round itself is open.
+enum HeadAuthorizationStage {
+    CatchingUp {
+        recorded: AuthorizedObjectReference,
+    },
+    Proposed,
 }
 
 pub struct Arguments {
     pub store: StoreLocation,
     pub cluster_root: Option<BlsPublicKey>,
     pub authorization_mode: AuthorizationMode,
+    /// The cluster authorization window duration. Defaults to
+    /// [`Arguments::DEFAULT_QUORUM_WINDOW`]; a deployment configures it
+    /// through `CriomeDaemonConfiguration::quorum_window`, and tests set
+    /// seconds.
+    pub quorum_window: Duration,
     /// The identity this criome signs attestations as. A single-node deployment
     /// keeps the historical `Host("criome")`; a multi-node cluster gives each
     /// node a distinct identity so peers cross-verify by registered key.
@@ -135,11 +177,17 @@ pub struct AuthorizationObservationOpened {
 }
 
 impl Arguments {
+    /// The default cluster authorization window: tens of seconds — two commit
+    /// rounds plus network round-trips, covering the catch-up case that
+    /// chains a recorded round before the requested one. Nothing ceremonial.
+    pub const DEFAULT_QUORUM_WINDOW: Duration = Duration::from_secs(30);
+
     pub fn new(store: StoreLocation) -> Self {
         Self {
             store,
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
+            quorum_window: Self::DEFAULT_QUORUM_WINDOW,
             node_identity: Self::default_node_identity(),
             conveyance: Arc::new(NoConveyance),
             clock: SystemClock::system(),
@@ -244,6 +292,7 @@ impl CriomeRoot {
         subscription: ActorRef<subscription::SubscriptionRegistry>,
         store: ActorRef<store::StoreKernel>,
         authorization_mode: AuthorizationMode,
+        quorum_window: Duration,
         node_identity: Identity,
         conveyance: Arc<dyn PeerConveyance>,
         clock: SystemClock,
@@ -265,6 +314,9 @@ impl CriomeRoot {
             originated_request_rounds: HashSet::new(),
             co_signed_successors: HashMap::new(),
             contract_heads: HashMap::new(),
+            pending_head_authorizations: HashMap::new(),
+            quorum_window,
+            self_reference: None,
         }
     }
 
@@ -334,13 +386,17 @@ impl CriomeRoot {
                 if let Some(pending) = self.intercept_signal_authorization(request.clone()).await {
                     return pending;
                 }
-                if self.authorization_mode == AuthorizationMode::AutoApprove {
-                    self.auto_approve_signal_call(request).await
-                } else if self.authorization_mode == AuthorizationMode::ClientApproval {
-                    self.park_signal_authorization(request).await
-                } else {
-                    self.ask_authorization(authorization::AuthorizeSignalCall::new(request))
-                        .await
+                // The mode contact point (one closed match, §3.3): AutoApprove
+                // is the immediate self-signed fast path, ClientApproval parks
+                // for owner approval, and Quorum originates the two-round
+                // cluster commit over the operational quorum contract — every
+                // AuthorizeSignalCall, with no component-specific recognition.
+                match self.authorization_mode {
+                    AuthorizationMode::AutoApprove => self.auto_approve_signal_call(request).await,
+                    AuthorizationMode::ClientApproval => {
+                        self.park_signal_authorization(request).await
+                    }
+                    AuthorizationMode::Quorum => self.cluster_authorize_signal_call(request).await,
                 }
             }
             CriomeRequest::ObserveAuthorization(request) => {
@@ -1096,6 +1152,443 @@ impl CriomeRoot {
         CriomeReply::AuthorizationGranted(grant)
     }
 
+    // ─── Cluster authorization bridge (§3.3): AuthorizeSignalCall → two-round commit ──
+    //
+    // In Quorum mode EVERY well-formed AuthorizeSignalCall is cluster-authorized:
+    // the bridge creates the observable authorization state, resolves the
+    // operational quorum contract criome-side (never from the caller), derives
+    // the round window, applies the catch-up rule for a standing recorded
+    // round, and originates the existing two-round commit. The terminal
+    // verdict is pushed to the held observation session: Granted with the
+    // signed grant and the assembled quorum Evidence, or Expired at window
+    // close — fail-closed, the head never advances on silence.
+
+    /// The Quorum-mode ingress for one `AuthorizeSignalCall`.
+    async fn cluster_authorize_signal_call(
+        &mut self,
+        authorization: SignalCallAuthorization,
+    ) -> CriomeReply {
+        // An ask that is already past its own expiry is terminal immediately.
+        if let Some(expires_at) = authorization.expires_at()
+            && expires_at.into_u64() <= self.clock.timestamp().into_u64()
+        {
+            return match self
+                .create_authorization_state(store::CreateAuthorizationState::expired(
+                    &authorization,
+                ))
+                .await
+            {
+                Ok(stored) => {
+                    let state = stored.into_state();
+                    self.publish_authorization_update(state.clone());
+                    CriomeReply::AuthorizationExpired(AuthorizationExpired {
+                        request_slot: state.request_slot,
+                        expired_at: expires_at,
+                    })
+                }
+                Err(Error::AuthorizationReplayAttempted) => {
+                    rejection(RejectionReason::ReplayAttempted)
+                }
+                Err(_error) => rejection(RejectionReason::MalformedRequest),
+            };
+        }
+        // 1. The observable authorization state, bound to a request slot the
+        //    streaming observation session attaches to.
+        let stored = match self
+            .create_authorization_state(store::CreateAuthorizationState::signing(&authorization))
+            .await
+        {
+            Ok(stored) => stored,
+            Err(Error::AuthorizationReplayAttempted) => {
+                return rejection(RejectionReason::ReplayAttempted);
+            }
+            Err(_error) => return rejection(RejectionReason::MalformedRequest),
+        };
+        let state = stored.into_state();
+        let request_slot = state.request_slot.clone();
+        self.publish_authorization_update(state.clone());
+        // 2. The operational quorum contract, resolved criome-side. Unfounded
+        //    ⇒ refuse loudly with a terminal Unavailable (settled): founding is
+        //    rare and precedes system liveness; a silent park would hide
+        //    misconfiguration.
+        let Some(contract) = self.operational_quorum_contract().await else {
+            eprintln!(
+                "criome refused a Quorum-mode authorization: this node is unfounded \
+                 (no operational quorum contract); request slot {}",
+                request_slot.as_str()
+            );
+            return self
+                .refuse_unfounded_authorization(request_slot, authorization)
+                .await;
+        };
+        // 3. The round window [now, now + Δ], capped by the ask's own expiry.
+        let window = self.head_authorization_window(&authorization);
+        // 4. Catch-up (the batching no-wedge rule, §3.4): a standing
+        //    self-co-signed row at the current head whose successor differs
+        //    from the requested digest is completed FIRST — an identical
+        //    re-proposal of the recorded round, idempotent by construction —
+        //    and the requested head is proposed only once that commit advances
+        //    the contract head. Otherwise the requested round opens directly.
+        let object = authorization.object.clone();
+        let requested_key = object.digest.as_str().to_string();
+        let stage = match self.standing_recorded_successor(&contract, &object) {
+            Some(recorded) => HeadAuthorizationStage::CatchingUp { recorded },
+            None => HeadAuthorizationStage::Proposed,
+        };
+        let proposed_object = match &stage {
+            HeadAuthorizationStage::CatchingUp { recorded } => recorded.clone(),
+            HeadAuthorizationStage::Proposed => object.clone(),
+        };
+        self.pending_head_authorizations.insert(
+            requested_key.clone(),
+            PendingHeadAuthorization {
+                request_slot: request_slot.clone(),
+                authorization,
+                contract: contract.clone(),
+                window: window.clone(),
+                stage,
+            },
+        );
+        // 5. Fail-closed at window close: an event-scheduled one-shot push,
+        //    armed BEFORE origination so no origination failure can leave the
+        //    ask hanging without its expiry.
+        self.arm_head_authorization_expiry(request_slot.clone(), requested_key, &window);
+        // 6. Originate the Request round. A refusal here (for example a
+        //    genuine concurrent-origination QuorumConflict) leaves the pending
+        //    ask to its window timer — refused exactly like any refused
+        //    advance, head held.
+        let proposal = QuorumProposal {
+            round: QuorumRoundIdentifier::for_phase(&proposed_object.digest, RoundPhase::Request),
+            phase: RoundPhase::Request,
+            contract,
+            object: proposed_object,
+            window,
+        };
+        match self.propose_quorum_authorization(proposal).await {
+            CriomeReply::QuorumRoundOpened(round_state) => {
+                // A self-satisfying contract (degenerate single-member quorum)
+                // authorizes the Request round on the self-vote alone; drive
+                // it forward now rather than waiting for a vote that never
+                // arrives.
+                if round_state.status == QuorumRoundStatus::Authorized
+                    && let Some(stored_round) = self.stored_quorum_round(&round_state.round).await
+                {
+                    self.progress_authorized_rounds(vec![(stored_round, RoundPhase::Request)])
+                        .await;
+                }
+            }
+            other => {
+                eprintln!(
+                    "criome cluster authorization for slot {} could not open its round \
+                     (held until window close): {other:?}",
+                    request_slot.as_str()
+                );
+            }
+        }
+        CriomeReply::AuthorizationPending(AuthorizationPending::new(
+            request_slot.clone(),
+            state.request_digest,
+            Vec::new(),
+            AuthorizationObservationToken::new(request_slot),
+        ))
+    }
+
+    /// The prototype-stage operational quorum contract: the FOUNDED root
+    /// contract (explicit staging, §5 — a root-issued sub-contract replaces
+    /// this resolution once issuance exists). Resolved from this node's
+    /// durable founded record, never from the caller, and admitted into the
+    /// contract store idempotently so the round machinery resolves members
+    /// from it. `None` when this node is unfounded.
+    async fn operational_quorum_contract(&self) -> Option<ContractDigest> {
+        let founding = self.stored_root_founding().await?;
+        if !founding.verify() {
+            return None;
+        }
+        let contract = founding.genesis().root_contract.clone();
+        let reply = self.store.ask(store::StoreContract::new(contract)).await.ok()?;
+        match reply.into_result() {
+            Ok(stored) => Some(stored.into_parts().0),
+            Err(_error) => None,
+        }
+    }
+
+    /// Terminal `Unavailable` for a Quorum-mode ask on an unfounded node —
+    /// stored and pushed so the held observation session sees it.
+    async fn refuse_unfounded_authorization(
+        &self,
+        request_slot: AuthorizationRequestSlot,
+        authorization: SignalCallAuthorization,
+    ) -> CriomeReply {
+        let unavailable = AuthorizationStateRecord::new(
+            request_slot.clone(),
+            authorization.object.digest.clone(),
+            AuthorizationStatus::Unavailable,
+            Vec::new(),
+            None,
+            None,
+        )
+        .with_signal_authorization(authorization);
+        self.store_authorization_update(unavailable).await;
+        CriomeReply::AuthorizationUnavailable(AuthorizationUnavailable {
+            request_slot,
+            reason: PrincipalName::new("criome is unfounded: no operational quorum contract"),
+        })
+    }
+
+    /// The round window `[now, now + Δ]` on this node's clock, capped by the
+    /// ask's own expiry (the existing `window ⊆ lease` posture).
+    fn head_authorization_window(&self, authorization: &SignalCallAuthorization) -> TimeWindow {
+        let opens_at = self.clock.timestamp();
+        let mut closes_at = opens_at
+            .into_u64()
+            .saturating_add(self.quorum_window.as_nanos().min(u64::MAX as u128) as u64);
+        if let Some(expires_at) = authorization.expires_at() {
+            closes_at = closes_at.min(expires_at.into_u64());
+        }
+        TimeWindow {
+            opens_at,
+            closes_at: TimestampNanos::new(closes_at),
+        }
+    }
+
+    /// The catch-up predicate: the successor this node has already co-signed
+    /// from the contract's CURRENT head, when it differs from the requested
+    /// object — the durable proposal pin the bridge must complete first.
+    fn standing_recorded_successor(
+        &self,
+        contract: &ContractDigest,
+        requested: &AuthorizedObjectReference,
+    ) -> Option<AuthorizedObjectReference> {
+        let head = self.state_head(contract);
+        let recorded = self
+            .co_signed_successors
+            .get(&Self::state_point_key(contract, &head))?;
+        (recorded.digest != requested.digest).then(|| recorded.clone())
+    }
+
+    /// Arm the one-shot window-close expiry: an event-scheduled push (never a
+    /// poll) that tells this actor to mark the ask Expired if it is still
+    /// pending when the window closes. The durable round is left as-is — cast
+    /// votes and the veto row stand; safety is never rolled back.
+    fn arm_head_authorization_expiry(
+        &self,
+        request_slot: AuthorizationRequestSlot,
+        requested_digest: String,
+        window: &TimeWindow,
+    ) {
+        let Some(root) = self
+            .self_reference
+            .as_ref()
+            .and_then(WeakActorRef::upgrade)
+        else {
+            return;
+        };
+        let wait = Duration::from_nanos(
+            window
+                .closes_at
+                .into_u64()
+                .saturating_sub(self.clock.timestamp().into_u64()),
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            let _ = root
+                .tell(ExpireHeadAuthorization {
+                    request_slot,
+                    requested_digest,
+                })
+                .await;
+        });
+    }
+
+    /// A quorum round reached its majority — advance every consequence, as a
+    /// worklist so the degenerate immediately-authorized chains (a
+    /// self-satisfying contract, the catch-up hand-over) run without waiting
+    /// for votes that never arrive. Request majorities drive the commit round
+    /// (originator only); commit majorities publish the authorized object,
+    /// advance the head, and settle the bridge.
+    async fn progress_authorized_rounds(
+        &mut self,
+        mut ready: Vec<(StoredQuorumRound, RoundPhase)>,
+    ) {
+        while let Some((stored, phase)) = ready.pop() {
+            match phase {
+                RoundPhase::Request => {
+                    if !self
+                        .originated_request_rounds
+                        .contains(stored.round().as_str())
+                    {
+                        continue;
+                    }
+                    self.drive_commit_round(&stored).await;
+                    let commit_round = QuorumRoundIdentifier::for_phase(
+                        &stored.object().digest,
+                        RoundPhase::Commit,
+                    );
+                    if let Some(commit_stored) = self.stored_quorum_round(&commit_round).await
+                        && self.round_state(&commit_stored).await.status
+                            == QuorumRoundStatus::Authorized
+                    {
+                        ready.push((commit_stored, RoundPhase::Commit));
+                    }
+                }
+                RoundPhase::Commit => {
+                    let stamp = self.assemble_evidence(&stored).stamp;
+                    self.publish_authorized_object_update(AuthorizedObjectUpdate {
+                        object: stored.object().clone(),
+                        contract: stored.contract().clone(),
+                        decision: EvaluationDecision::Authorized,
+                        stamp,
+                    })
+                    .await;
+                    self.advance_head(stored.contract(), stored.object()).await;
+                    if let Some(follow_up) = self.settle_head_authorization(&stored).await {
+                        ready.push(follow_up);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A commit majority landed for `committed`'s object. Settle the bridge:
+    /// grant a pending ask whose requested head just committed, or hand a
+    /// catching-up ask over to its requested proposal now that the recorded
+    /// round advanced the contract head.
+    async fn settle_head_authorization(
+        &mut self,
+        committed: &StoredQuorumRound,
+    ) -> Option<(StoredQuorumRound, RoundPhase)> {
+        let committed_digest = committed.object().digest.clone();
+        let committed_key = committed_digest.as_str().to_string();
+        if matches!(
+            self.pending_head_authorizations.get(&committed_key),
+            Some(PendingHeadAuthorization {
+                stage: HeadAuthorizationStage::Proposed,
+                ..
+            })
+        ) {
+            self.grant_head_authorization(&committed_key, committed)
+                .await;
+            return None;
+        }
+        // A catch-up commit: find the ask whose recorded predecessor this is.
+        let requested_key = self
+            .pending_head_authorizations
+            .iter()
+            .find_map(|(key, pending)| match &pending.stage {
+                HeadAuthorizationStage::CatchingUp { recorded }
+                    if recorded.digest == committed_digest =>
+                {
+                    Some(key.clone())
+                }
+                _ => None,
+            })?;
+        let (contract, object, window) = {
+            let pending = self.pending_head_authorizations.get_mut(&requested_key)?;
+            pending.stage = HeadAuthorizationStage::Proposed;
+            (
+                pending.contract.clone(),
+                pending.authorization.object.clone(),
+                pending.window.clone(),
+            )
+        };
+        let proposal = QuorumProposal {
+            round: QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request),
+            phase: RoundPhase::Request,
+            contract,
+            object,
+            window,
+        };
+        match self.propose_quorum_authorization(proposal).await {
+            CriomeReply::QuorumRoundOpened(round_state)
+                if round_state.status == QuorumRoundStatus::Authorized =>
+            {
+                let stored = self.stored_quorum_round(&round_state.round).await?;
+                Some((stored, RoundPhase::Request))
+            }
+            CriomeReply::QuorumRoundOpened(_gathering) => None,
+            other => {
+                eprintln!(
+                    "criome cluster authorization could not open the requested round after \
+                     catch-up (held until window close): {other:?}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Terminal Granted (§3.3 step 5): assemble the commit round's Evidence,
+    /// sign the grant bound to the requested (batch-head) digest with the
+    /// quorum policy satisfaction, and store the state as Granted carrying
+    /// both the grant and the assembled Evidence — the §4 hand-off. The held
+    /// observation session pushes it to the asker. The pending entry leaves
+    /// the map only when the granted state is durably stored; any failure
+    /// leaves it to its window timer, fail-closed.
+    async fn grant_head_authorization(
+        &mut self,
+        requested_key: &str,
+        committed: &StoredQuorumRound,
+    ) {
+        let Some(pending) = self.pending_head_authorizations.get(requested_key) else {
+            return;
+        };
+        let request_slot = pending.request_slot.clone();
+        let authorization = pending.authorization.clone();
+        let contract = pending.contract.clone();
+        let evidence = self.assemble_evidence(committed);
+        let Some(required) = self.contract_store().await.and_then(|store| {
+            self.quorum_members(&store, &contract)
+                .map(|(required, _members)| required)
+        }) else {
+            eprintln!(
+                "criome cluster authorization for slot {} lost its operational contract \
+                 at grant time (held until window close)",
+                request_slot.as_str()
+            );
+            return;
+        };
+        let satisfaction = AuthorizationPolicySatisfaction::new(
+            AuthorizationPolicyClass::ComplexQuorum,
+            required,
+            committed
+                .votes()
+                .iter()
+                .map(|vote| vote.voter.clone())
+                .collect(),
+        );
+        let reply = self
+            .ask_signer(signer::SignAuthorizationGrant::with_policy_satisfaction(
+                request_slot.clone(),
+                authorization.clone(),
+                satisfaction,
+            ))
+            .await;
+        let CriomeReply::AuthorizationGranted(grant) = reply else {
+            eprintln!(
+                "criome cluster authorization for slot {} could not sign its grant \
+                 (held until window close): {reply:?}",
+                request_slot.as_str()
+            );
+            return;
+        };
+        let granted = AuthorizationStateRecord::new(
+            request_slot,
+            authorization.object.digest.clone(),
+            AuthorizationStatus::Granted,
+            Vec::new(),
+            Some(grant),
+            None,
+        )
+        .with_signal_authorization(authorization.clone())
+        .with_granted_evidence(AuthorizationEvaluation {
+            contract,
+            object: authorization.object,
+            evidence,
+        });
+        if self.store_authorization_update(granted).await {
+            self.pending_head_authorizations.remove(requested_key);
+        }
+    }
+
     async fn create_authorization_state(
         &self,
         state: store::CreateAuthorizationState,
@@ -1505,34 +1998,16 @@ impl CriomeRoot {
         }
         let state = self.round_state(&stored).await;
         if state.status == QuorumRoundStatus::Authorized {
-            match phase {
-                RoundPhase::Request => {
-                    // Round 1 reached a majority. Only the ORIGINATOR drives round 2:
-                    // a peer whose round-1 round reached a majority through the
-                    // conveyed round-1 evidence does not re-drive. Real approval is
-                    // withheld until the commit round itself reaches a majority.
-                    if self
-                        .originated_request_rounds
-                        .contains(stored.round().as_str())
-                    {
-                        self.drive_commit_round(&stored).await;
-                    }
-                }
-                RoundPhase::Commit => {
-                    // Round 2 reached a majority — real approval lands here. Publish
-                    // the authorized-object update so subscribers converge, and
-                    // advance this node's head to the committed successor.
-                    let stamp = self.assemble_evidence(&stored).stamp;
-                    self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                        object: stored.object().clone(),
-                        contract: stored.contract().clone(),
-                        decision: EvaluationDecision::Authorized,
-                        stamp,
-                    })
-                    .await;
-                    self.advance_head(stored.contract(), stored.object()).await;
-                }
-            }
+            // A round reached its majority. `progress_authorized_rounds` owns
+            // every consequence: a Request majority drives the commit round
+            // (on the ORIGINATOR only — a peer whose round-1 round reached a
+            // majority through conveyed evidence does not re-drive; real
+            // approval is withheld until the commit round itself); a Commit
+            // majority is the real approval — it publishes the
+            // authorized-object update, advances this node's head, and
+            // settles any pending cluster authorization (grant or catch-up
+            // hand-over).
+            self.progress_authorized_rounds(vec![(stored, phase)]).await;
         }
         CriomeReply::QuorumVoteAccepted(state)
     }
@@ -2566,12 +3041,14 @@ impl Actor for CriomeRoot {
             subscription,
             store,
             arguments.authorization_mode,
+            arguments.quorum_window,
             node_identity,
             conveyance,
             arguments.clock,
         );
         root.co_signed_successors = co_signed_successors;
         root.contract_heads = contract_heads;
+        root.self_reference = Some(actor_reference.downgrade());
         Ok(root)
     }
 }
@@ -2597,6 +3074,53 @@ impl Message<SubmitMetaRequest> for CriomeRoot {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         CriomeMetaActorReply::new(self.submit_meta(message.request).await)
+    }
+}
+
+/// The one-shot window-close expiry for a pending cluster authorization —
+/// the fail-closed leg (§3.3 step 6). Sent by the timer the bridge armed when
+/// the ask was admitted; a no-op when the ask already settled.
+pub struct ExpireHeadAuthorization {
+    request_slot: AuthorizationRequestSlot,
+    requested_digest: String,
+}
+
+impl Message<ExpireHeadAuthorization> for CriomeRoot {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        message: ExpireHeadAuthorization,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        // Already granted (or superseded by a fresh ask for the same digest,
+        // which armed its own timer): nothing to expire.
+        let still_pending = matches!(
+            self.pending_head_authorizations.get(&message.requested_digest),
+            Some(pending) if pending.request_slot == message.request_slot
+        );
+        if !still_pending {
+            return;
+        }
+        let pending = self
+            .pending_head_authorizations
+            .remove(&message.requested_digest)
+            .expect("the pending entry was just matched");
+        // Mark the authorization Expired and push it — the asker's held
+        // observation session receives it and holds the head. The durable
+        // round is left as-is: the veto row and any cast votes stand (safety
+        // is never rolled back); an identical re-proposal re-opens the round
+        // with a fresh window.
+        let expired = AuthorizationStateRecord::new(
+            pending.request_slot,
+            pending.authorization.object.digest.clone(),
+            AuthorizationStatus::Expired,
+            Vec::new(),
+            None,
+            None,
+        )
+        .with_signal_authorization(pending.authorization);
+        self.store_authorization_update(expired).await;
     }
 }
 

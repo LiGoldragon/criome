@@ -30,6 +30,7 @@ pub struct CriomeDaemon {
     store: StoreLocation,
     cluster_root: Option<BlsPublicKey>,
     authorization_mode: AuthorizationMode,
+    quorum_window: Duration,
     node_identity: Identity,
     conveyance: Arc<dyn PeerConveyance>,
     clock: SystemClock,
@@ -52,6 +53,7 @@ impl CriomeDaemon {
             store,
             cluster_root: None,
             authorization_mode: AuthorizationMode::Quorum,
+            quorum_window: RootArguments::DEFAULT_QUORUM_WINDOW,
             node_identity: RootArguments::default_node_identity(),
             conveyance: Arc::new(NoConveyance),
             clock: SystemClock::system(),
@@ -74,12 +76,17 @@ impl CriomeDaemon {
             }
             None => Arc::new(NoConveyance),
         };
+        let quorum_window = configuration
+            .quorum_window()
+            .map(|window| Duration::from_nanos(*window.payload()))
+            .unwrap_or(RootArguments::DEFAULT_QUORUM_WINDOW);
         Self {
             socket,
             meta_socket,
             store: StoreLocation::new(configuration.store_path.as_str()),
             cluster_root: configuration.cluster_root().cloned(),
             authorization_mode: *configuration.authorization_mode(),
+            quorum_window,
             node_identity,
             conveyance,
             clock: SystemClock::system(),
@@ -112,6 +119,14 @@ impl CriomeDaemon {
 
     pub fn with_authorization_mode(mut self, authorization_mode: AuthorizationMode) -> Self {
         self.authorization_mode = authorization_mode;
+        self
+    }
+
+    /// Set the cluster authorization window: how long one Quorum-mode
+    /// authorization (both commit rounds plus the catch-up case) may take
+    /// before it expires fail-closed. Tens of seconds live, seconds in tests.
+    pub fn with_quorum_window(mut self, quorum_window: Duration) -> Self {
+        self.quorum_window = quorum_window;
         self
     }
 
@@ -162,6 +177,7 @@ impl CriomeDaemon {
             store: self.store,
             cluster_root: self.cluster_root,
             authorization_mode: self.authorization_mode,
+            quorum_window: self.quorum_window,
             node_identity: self.node_identity,
             conveyance: self.conveyance,
             clock: self.clock,

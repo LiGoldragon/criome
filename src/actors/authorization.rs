@@ -3,28 +3,22 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use signal_criome::{
     AuthorizationDenial, AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationDenied,
-    AuthorizationExpired, AuthorizationObservation, AuthorizationObservationRetracted,
-    AuthorizationObservationSnapshot, AuthorizationObservationToken, AuthorizationPending,
-    AuthorizationRejection, AuthorizationRequestSlot, AuthorizationStateRecord,
-    AuthorizationStatus, AuthorizationVerification, CriomeReply, RejectionReason,
-    SignalCallAuthorization, SignatureRouteReceipt, SignatureSolicitationRoute,
-    SignatureSubmission, SignatureSubmissionReceipt, TimestampNanos,
+    AuthorizationObservation, AuthorizationObservationRetracted, AuthorizationObservationSnapshot,
+    AuthorizationObservationToken, AuthorizationRejection, AuthorizationRequestSlot,
+    AuthorizationStateRecord, AuthorizationStatus, AuthorizationVerification, CriomeReply,
+    RejectionReason, SignatureRouteReceipt, SignatureSolicitationRoute, SignatureSubmission,
+    SignatureSubmissionReceipt,
 };
 
 use crate::actors::{CriomeActorReply, actor_reply, rejection, store};
 
 pub struct AuthorizationCoordinator {
     store: ActorRef<store::StoreKernel>,
-    clock: AuthorizationClock,
 }
 
 #[derive(Clone)]
 pub struct Arguments {
     pub store: ActorRef<store::StoreKernel>,
-}
-
-pub struct AuthorizeSignalCall {
-    authorization: SignalCallAuthorization,
 }
 
 pub struct ObserveAuthorization {
@@ -49,12 +43,6 @@ pub struct RejectAuthorization {
 
 pub struct CloseAuthorizationObservation {
     token: AuthorizationObservationToken,
-}
-
-impl AuthorizeSignalCall {
-    pub fn new(authorization: SignalCallAuthorization) -> Self {
-        Self { authorization }
-    }
 }
 
 impl ObserveAuthorization {
@@ -95,52 +83,7 @@ impl CloseAuthorizationObservation {
 
 impl AuthorizationCoordinator {
     fn new(store: ActorRef<store::StoreKernel>) -> Self {
-        Self {
-            store,
-            clock: AuthorizationClock::system(),
-        }
-    }
-
-    async fn authorize_signal_call(&self, authorization: SignalCallAuthorization) -> CriomeReply {
-        if let Some(expired_at) = authorization.expires_at()
-            && self.clock.is_expired(expired_at)
-        {
-            return self.expire_authorization(authorization, expired_at).await;
-        }
-
-        let stored = match self
-            .create_authorization_state(store::CreateAuthorizationState::signing(&authorization))
-            .await
-        {
-            Ok(stored) => stored,
-            Err(error) => return authorization_store_rejection(error),
-        };
-        let state = stored.into_state();
-        let request_slot = state.request_slot.clone();
-        CriomeReply::AuthorizationPending(AuthorizationPending::new(
-            request_slot.clone(),
-            authorization.request_digest,
-            state.missing_authorities().to_vec(),
-            AuthorizationObservationToken::new(request_slot),
-        ))
-    }
-
-    async fn expire_authorization(
-        &self,
-        authorization: SignalCallAuthorization,
-        expired_at: TimestampNanos,
-    ) -> CriomeReply {
-        let stored = match self
-            .create_authorization_state(store::CreateAuthorizationState::expired(&authorization))
-            .await
-        {
-            Ok(stored) => stored,
-            Err(error) => return authorization_store_rejection(error),
-        };
-        CriomeReply::AuthorizationExpired(AuthorizationExpired {
-            request_slot: stored.into_state().request_slot,
-            expired_at,
-        })
+        Self { store }
     }
 
     async fn observe_authorization(&self, observation: AuthorizationObservation) -> CriomeReply {
@@ -158,7 +101,7 @@ impl AuthorizationCoordinator {
     }
 
     async fn verify_authorization(&self, verification: AuthorizationVerification) -> CriomeReply {
-        if verification.request_digest == verification.authorization.authorized_object_digest {
+        if &verification.request_digest == verification.authorization.authorized_object_digest() {
             CriomeReply::AuthorizationGranted(verification.authorization)
         } else {
             CriomeReply::AuthorizationDenied(AuthorizationDenied {
@@ -249,18 +192,6 @@ impl AuthorizationCoordinator {
         Ok(reply.into_state())
     }
 
-    async fn create_authorization_state(
-        &self,
-        state: store::CreateAuthorizationState,
-    ) -> crate::Result<crate::tables::StoredAuthorizationState> {
-        let reply = self
-            .store
-            .ask(state)
-            .await
-            .map_err(|error| crate::Error::ActorCall(error.to_string()))?;
-        reply.into_result()
-    }
-
     async fn lookup_authorization_state(
         &self,
         request_slot: AuthorizationRequestSlot,
@@ -298,38 +229,6 @@ impl AuthorizationCoordinator {
     }
 }
 
-fn authorization_store_rejection(error: crate::Error) -> CriomeReply {
-    match error {
-        crate::Error::AuthorizationReplayAttempted => rejection(RejectionReason::ReplayAttempted),
-        _error => rejection(RejectionReason::MalformedRequest),
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AuthorizationClock {
-    epoch: std::time::SystemTime,
-}
-
-impl AuthorizationClock {
-    fn system() -> Self {
-        Self {
-            epoch: std::time::UNIX_EPOCH,
-        }
-    }
-
-    fn is_expired(&self, expires_at: TimestampNanos) -> bool {
-        expires_at.into_u64() <= self.now().into_u64()
-    }
-
-    fn now(&self) -> TimestampNanos {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(self.epoch)
-            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-            .unwrap_or(0);
-        TimestampNanos::new(nanos)
-    }
-}
-
 impl Actor for AuthorizationCoordinator {
     type Args = Arguments;
     type Error = Infallible;
@@ -339,18 +238,6 @@ impl Actor for AuthorizationCoordinator {
         _actor_reference: ActorRef<Self>,
     ) -> Result<Self, Self::Error> {
         Ok(Self::new(arguments.store))
-    }
-}
-
-impl Message<AuthorizeSignalCall> for AuthorizationCoordinator {
-    type Reply = CriomeActorReply;
-
-    async fn handle(
-        &mut self,
-        message: AuthorizeSignalCall,
-        _context: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        actor_reply(self.authorize_signal_call(message.authorization).await)
     }
 }
 
