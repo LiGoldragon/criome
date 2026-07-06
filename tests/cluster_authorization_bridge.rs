@@ -331,3 +331,244 @@ fn window_expiry_pushes_expired_fail_closed() {
         "the expiry is the window timer, not an immediate refusal"
     );
 }
+
+/// Open one authorization observation session WITHOUT draining it, so a
+/// second ask can be submitted while the first is still in flight.
+fn open_session(
+    socket: &Path,
+    authorization: SignalCallAuthorization,
+    deadline: Duration,
+) -> criome::transport::CriomeAuthorizationObservationSession {
+    let session = CriomeClient::new(socket)
+        .authorize_signal_call(authorization)
+        .expect("open authorization session");
+    session
+        .set_read_timeout(Some(deadline))
+        .expect("set session read deadline");
+    session
+}
+
+/// Drain an already-open session to its terminal state (snapshot first, then
+/// pushed updates), binding by the session's own slot.
+fn drain_to_terminal(
+    mut session: criome::transport::CriomeAuthorizationObservationSession,
+    submitted_digest: &ObjectDigest,
+) -> signal_criome::AuthorizationStateRecord {
+    let token_slot = session.token().payload().clone();
+    let terminal = |status: AuthorizationStatus| {
+        matches!(
+            status,
+            AuthorizationStatus::Granted
+                | AuthorizationStatus::Denied
+                | AuthorizationStatus::Expired
+                | AuthorizationStatus::Unavailable
+        )
+    };
+    if let Some(state) = session
+        .snapshot()
+        .states()
+        .iter()
+        .find(|state| {
+            state.request_slot == token_slot
+                && state.request_digest == *submitted_digest
+                && terminal(state.status)
+        })
+        .cloned()
+    {
+        return state;
+    }
+    loop {
+        let state = session.next_update().expect("session pushes an update");
+        assert_eq!(state.request_digest, *submitted_digest);
+        if terminal(state.status) {
+            return state;
+        }
+    }
+}
+
+/// AUDIT F1 — the standing-head wedge, witnessed at the daemon boundary. The
+/// spirit drain re-asks an already-committed head on every idle or coalesced
+/// mail pass, and again after a grant-then-ship failure. Each re-ask must
+/// RE-GRANT from the stored committed round (with the full grant + evidence
+/// hand-off), record NO self-loop veto row, and leave every later successor
+/// grantable. Pre-fix, the first re-ask durably recorded `(contract, D) → D`
+/// and every successor expired as a false QuorumConflict, forever.
+#[test]
+fn re_ask_of_a_standing_committed_head_re_grants_and_the_successor_still_grants() {
+    let founder = host("bridge-re-ask-founder");
+    let (socket, store) = fixture("standing-head-re-ask");
+    let meta_socket = meta_socket_for(&socket);
+    serve(
+        CriomeDaemon::new(&socket, store)
+            .with_node_identity(founder.clone())
+            .with_quorum_window(Duration::from_secs(10)),
+    );
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+    let key = node_public_key(&socket);
+    let cohort = genesis(
+        vec![FoundingMember::new(founder.clone(), key)],
+        "bridge-standing-head-re-ask",
+    );
+    found(&meta_socket, &cohort);
+
+    // The committed head D.
+    let first = terminal_state(
+        &socket,
+        head_advance(b"re-ask head D", "re-ask-d-1"),
+        Duration::from_secs(20),
+    );
+    assert_eq!(first.status, AuthorizationStatus::Granted, "got {first:?}");
+
+    // The drain's re-ask of the STANDING head (fresh nonce, same digest):
+    // re-granted from the committed round, never re-proposed.
+    let re_ask = terminal_state(
+        &socket,
+        head_advance(b"re-ask head D", "re-ask-d-2"),
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        re_ask.status,
+        AuthorizationStatus::Granted,
+        "a re-ask of the committed head re-grants, got {re_ask:?}"
+    );
+    let grant = re_ask.grant().expect("the re-grant carries its grant");
+    assert_eq!(
+        grant.authorized_object_digest().as_str(),
+        ObjectDigest::from_bytes(b"re-ask head D").as_str(),
+        "the re-grant binds the standing head digest"
+    );
+    assert!(
+        re_ask
+            .granted_evidence()
+            .is_some_and(|evidence| !evidence.evidence.evidence_signatures.is_empty()),
+        "the re-grant hands off the committed round's quorum Evidence"
+    );
+
+    // The grant-then-ship-failure retry: a THIRD identical ask, still granted
+    // idempotently.
+    let ship_failure_retry = terminal_state(
+        &socket,
+        head_advance(b"re-ask head D", "re-ask-d-3"),
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        ship_failure_retry.status,
+        AuthorizationStatus::Granted,
+        "the grant-then-ship-failure re-ask re-grants, got {ship_failure_retry:?}"
+    );
+
+    // THE WEDGE PROBE: the successor H must still grant. Pre-fix this
+    // expired forever on the self-loop veto row.
+    let successor = terminal_state(
+        &socket,
+        head_advance(b"re-ask successor H", "re-ask-h-1"),
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        successor.status,
+        AuthorizationStatus::Granted,
+        "the successor after a standing-head re-ask still grants — no poison row, got {successor:?}"
+    );
+    // And the successor's own re-ask re-grants at the NEW head.
+    let successor_re_ask = terminal_state(
+        &socket,
+        head_advance(b"re-ask successor H", "re-ask-h-2"),
+        Duration::from_secs(20),
+    );
+    assert_eq!(
+        successor_re_ask.status,
+        AuthorizationStatus::Granted,
+        "got {successor_re_ask:?}"
+    );
+}
+
+/// AUDIT F3 — no ask is silently orphaned. Two in-flight asks for the SAME
+/// digest (a founded 2-member root whose peer is dark, so neither can grant):
+/// the second JOINS the first's drive, and BOTH sessions receive the terminal
+/// Expired at window close. Pre-fix, the second ask overwrote the first's
+/// pending slot; the first slot's timer no-opped on the slot mismatch and its
+/// session never turned terminal.
+#[test]
+fn every_pending_slot_for_one_digest_settles_at_window_close() {
+    let founder = host("bridge-join-founder");
+    let absent_member = host("bridge-join-absent");
+    let (socket, store) = fixture("duplicate-ask-join");
+    let meta_socket = meta_socket_for(&socket);
+    serve(
+        CriomeDaemon::new(&socket, store)
+            .with_node_identity(founder.clone())
+            .with_quorum_window(Duration::from_secs(3)),
+    );
+    wait_for_socket(&socket);
+    wait_for_socket(&meta_socket);
+    let key = node_public_key(&socket);
+    let absent_key = MasterKey::generate().expect("absent member key");
+    let cohort = genesis(
+        vec![
+            FoundingMember::new(founder.clone(), key),
+            FoundingMember::new(absent_member.clone(), absent_key.public_key()),
+        ],
+        "bridge-duplicate-ask-join",
+    );
+    let anchor = cohort.anchor().expect("cohort anchor");
+    match meta(
+        &meta_socket,
+        MetaInput::InitiateRootFounding(RootFoundingInitiation::new(cohort.clone())),
+    ) {
+        MetaOutput::RootFoundingStatus(_status) => {}
+        other => panic!("initiate must report status, got {other:?}"),
+    }
+    found(&meta_socket, &cohort);
+    let statement = criome::founding::RootFounding::found(cohort.clone())
+        .expect("cohort founds")
+        .statement();
+    let statement_bytes = statement.signing_bytes().expect("statement encodes");
+    let returned = FoundingSignatureReturn {
+        anchor,
+        signature: FoundingSignature::new(
+            absent_member,
+            SignatureEnvelope {
+                scheme: SignatureScheme::Bls12_381MinPk,
+                public_key: absent_key.public_key(),
+                signature: absent_key.sign(&statement_bytes),
+            },
+        ),
+    };
+    let reply = CriomeClient::new(&socket)
+        .send(CriomeRequest::convey_founding(
+            FoundingConveyance::Signature(returned),
+        ))
+        .expect("convey the absent member's founding signature");
+    assert!(matches!(reply, CriomeReply::FoundingConveyed(_)));
+
+    // Two in-flight asks for the SAME digest, distinct nonces, both submitted
+    // inside the window.
+    let digest = ObjectDigest::from_bytes(b"join twin head");
+    let session_one = open_session(
+        &socket,
+        head_advance(b"join twin head", "join-nonce-1"),
+        Duration::from_secs(30),
+    );
+    let session_two = open_session(
+        &socket,
+        head_advance(b"join twin head", "join-nonce-2"),
+        Duration::from_secs(30),
+    );
+    let first = drain_to_terminal(session_one, &digest);
+    let second = drain_to_terminal(session_two, &digest);
+    assert_eq!(
+        first.status,
+        AuthorizationStatus::Expired,
+        "the FIRST slot settles at window close — never orphaned, got {first:?}"
+    );
+    assert_eq!(
+        second.status,
+        AuthorizationStatus::Expired,
+        "the joined second slot settles too, got {second:?}"
+    );
+    assert_ne!(
+        first.request_slot, second.request_slot,
+        "two asks occupy two observable slots"
+    );
+}

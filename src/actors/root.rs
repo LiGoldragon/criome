@@ -76,7 +76,7 @@ pub struct CriomeRoot {
     /// for each `(contract, head)`, keyed by [`Self::state_point_key`]. A
     /// conflicting second successor from the same head is refused with
     /// `QuorumConflict` (the pluggable phase-2 commutative-merge seam lives in
-    /// [`Self::successors_conflict`]).
+    /// [`SuccessorLedgerPoint::successors_conflict`]).
     co_signed_successors: HashMap<String, AuthorizedObjectReference>,
     /// This node's view of each contract's current head — the state-point a change
     /// advances from — keyed by the contract digest's text. Absent ⇒ the
@@ -97,14 +97,28 @@ pub struct CriomeRoot {
 }
 
 /// One in-flight cluster head-advance authorization the bridge is driving:
-/// the original ask, the operational contract it runs over, the derived
-/// window, and how far the drive has progressed.
+/// every asker waiting on this digest, the requested object, the operational
+/// contract the drive runs over, the first ask's derived window, and how far
+/// the drive has progressed. A SECOND ask for the same digest JOINS the
+/// standing drive as another asker (audit F3) — it never overwrites the first
+/// asker's slot, and every asker settles on the digest's terminal: granted
+/// together on the commit majority, or expired one by one by each slot's own
+/// window timer.
 struct PendingHeadAuthorization {
-    request_slot: AuthorizationRequestSlot,
-    authorization: SignalCallAuthorization,
+    askers: Vec<HeadAuthorizationAsker>,
+    object: AuthorizedObjectReference,
     contract: ContractDigest,
     window: TimeWindow,
     stage: HeadAuthorizationStage,
+}
+
+/// One asker waiting on a pending head authorization: the observable request
+/// slot its session is bound to and its original ask (each ask carries its
+/// own replay nonce, so the signed grant is per-asker).
+#[derive(Clone)]
+struct HeadAuthorizationAsker {
+    request_slot: AuthorizationRequestSlot,
+    authorization: SignalCallAuthorization,
 }
 
 /// How far the bridge has driven a pending head authorization. `CatchingUp`
@@ -117,6 +131,104 @@ enum HeadAuthorizationStage {
         recorded: AuthorizedObjectReference,
     },
     Proposed,
+}
+
+/// One `(contract, head)` state point together with the successor row this
+/// node has co-signed from it — the single contact point where the
+/// anti-equivocation veto, the self-loop invariant, and the catch-up
+/// predicate are decided.
+///
+/// THE SELF-LOOP INVARIANT (audit F1): a recorded successor EQUAL to its own
+/// head is VOID — a head can never be its own successor, so such a row names
+/// no real advance and no honest vote. It is filtered at construction, which
+/// both refuses new self-loop rows (through [`Self::co_sign_admission`]) and
+/// heals a durable ledger a pre-fix re-ask of an already-committed head had
+/// poisoned: the void row neither pins a catch-up nor vetoes a real
+/// successor.
+struct SuccessorLedgerPoint {
+    head: ContractOperationHead,
+    recorded: Option<AuthorizedObjectReference>,
+}
+
+/// The recording seam's admission verdict for one proposed successor at one
+/// state point — decided where the row is recorded, never left to callers.
+enum CoSignAdmission {
+    /// No successor row stands: record the proposed object as the one
+    /// successor from this head.
+    RecordFresh,
+    /// The identical successor is already recorded — idempotent, no re-write.
+    AlreadyRecorded,
+    /// The proposed object IS the head itself: a self-loop row is refused
+    /// (it would wedge every later advance as a false `QuorumConflict`).
+    RefusedSelfLoop,
+    /// A DIFFERENT successor is recorded from this head: the
+    /// single-successor veto, refused as the typed `QuorumConflict`.
+    RefusedConflict(AuthorizedObjectReference),
+}
+
+impl SuccessorLedgerPoint {
+    /// Build the point, voiding a self-loop row (`recorded == head`) so no
+    /// judgment ever sees it.
+    fn new(head: ContractOperationHead, recorded: Option<AuthorizedObjectReference>) -> Self {
+        let recorded =
+            recorded.filter(|successor| successor.digest.as_str() != head.as_str());
+        Self { head, recorded }
+    }
+
+    fn head(&self) -> &ContractOperationHead {
+        &self.head
+    }
+
+    fn into_head(self) -> ContractOperationHead {
+        self.head
+    }
+
+    /// The pluggable conflict predicate (the phase-2 commutative-merge seam):
+    /// TODAY two successors from the same head conflict iff they are
+    /// different objects. A later compatible/commutative-merge predicate
+    /// slots in here to let order-independent changes both commit.
+    fn successors_conflict(
+        existing: &AuthorizedObjectReference,
+        proposed: &AuthorizedObjectReference,
+    ) -> bool {
+        existing.digest != proposed.digest
+    }
+
+    /// Judge one proposed successor against this state point — the closed
+    /// admission every co-sign runs through.
+    fn co_sign_admission(&self, proposed: &AuthorizedObjectReference) -> CoSignAdmission {
+        if proposed.digest.as_str() == self.head.as_str() {
+            return CoSignAdmission::RefusedSelfLoop;
+        }
+        match &self.recorded {
+            None => CoSignAdmission::RecordFresh,
+            Some(existing) if Self::successors_conflict(existing, proposed) => {
+                CoSignAdmission::RefusedConflict(existing.clone())
+            }
+            Some(_identical) => CoSignAdmission::AlreadyRecorded,
+        }
+    }
+
+    /// The catch-up predicate (§3.4): the recorded successor this node must
+    /// complete FIRST — standing, non-void, and differing from the requested
+    /// object.
+    fn standing_successor_differing_from(
+        &self,
+        requested: &AuthorizedObjectReference,
+    ) -> Option<AuthorizedObjectReference> {
+        let recorded = self.recorded.as_ref()?;
+        (recorded.digest != requested.digest).then(|| recorded.clone())
+    }
+}
+
+/// The typed verdict of the vote ingress gate (audit F6): a vote either
+/// verifies over THIS round's stored proposition, is forged (signature
+/// material that cannot belong to the registered voter), or is stale (the
+/// right key over a proposition that is no longer this round's).
+enum VoteVerification {
+    Verified,
+    Forged,
+    Stale,
 }
 
 pub struct Arguments {
@@ -1223,14 +1335,43 @@ impl CriomeRoot {
         };
         // 3. The round window [now, now + Δ], capped by the ask's own expiry.
         let window = self.head_authorization_window(&authorization);
-        // 4. Catch-up (the batching no-wedge rule, §3.4): a standing
+        let object = authorization.object.clone();
+        let requested_key = object.digest.as_str().to_string();
+        // 4a. Already-authorized guard (audit F1): a requested digest EQUAL to
+        //     the contract's current head has already committed on this node —
+        //     the asker is behind (a drain's idle or coalesced re-ask, or a
+        //     grant-then-ship-failure retry of a committed head). Re-grant
+        //     from the stored committed round; proposing it again would record
+        //     the self-loop veto row `(contract, D) → D` that turns every
+        //     later successor into a permanent QuorumConflict wedge.
+        if self.state_head(&contract).as_str() == object.digest.as_str() {
+            return self
+                .re_grant_standing_head(request_slot, authorization, contract, window, state)
+                .await;
+        }
+        // 4b. A second in-flight ask for the same digest JOINS the standing
+        //     drive (audit F3): its slot is added as another asker with its
+        //     own window timer, and the open round is left untouched —
+        //     re-originating would clobber the gathered votes.
+        if let Some(pending) = self.pending_head_authorizations.get_mut(&requested_key) {
+            pending.askers.push(HeadAuthorizationAsker {
+                request_slot: request_slot.clone(),
+                authorization,
+            });
+            self.arm_head_authorization_expiry(request_slot.clone(), requested_key, &window);
+            return CriomeReply::AuthorizationPending(AuthorizationPending::new(
+                request_slot.clone(),
+                state.request_digest,
+                Vec::new(),
+                AuthorizationObservationToken::new(request_slot),
+            ));
+        }
+        // 4c. Catch-up (the batching no-wedge rule, §3.4): a standing
         //    self-co-signed row at the current head whose successor differs
         //    from the requested digest is completed FIRST — an identical
         //    re-proposal of the recorded round, idempotent by construction —
         //    and the requested head is proposed only once that commit advances
         //    the contract head. Otherwise the requested round opens directly.
-        let object = authorization.object.clone();
-        let requested_key = object.digest.as_str().to_string();
         let stage = match self.standing_recorded_successor(&contract, &object) {
             Some(recorded) => HeadAuthorizationStage::CatchingUp { recorded },
             None => HeadAuthorizationStage::Proposed,
@@ -1242,8 +1383,11 @@ impl CriomeRoot {
         self.pending_head_authorizations.insert(
             requested_key.clone(),
             PendingHeadAuthorization {
-                request_slot: request_slot.clone(),
-                authorization,
+                askers: vec![HeadAuthorizationAsker {
+                    request_slot: request_slot.clone(),
+                    authorization,
+                }],
+                object,
                 contract: contract.clone(),
                 window: window.clone(),
                 stage,
@@ -1335,6 +1479,75 @@ impl CriomeRoot {
         })
     }
 
+    /// Re-grant an ask whose requested digest IS the contract's current head
+    /// (audit F1): the head already committed on this node, so the committed
+    /// round's durable evidence answers the ask — no new proposal, no veto
+    /// row. The asker joins the pending map with its own window timer FIRST,
+    /// so a signer or store fault leaves it to expire fail-closed exactly like
+    /// any other pending ask; on the normal path the grant settles it before
+    /// this method returns and the session's snapshot already carries Granted.
+    async fn re_grant_standing_head(
+        &mut self,
+        request_slot: AuthorizationRequestSlot,
+        authorization: SignalCallAuthorization,
+        contract: ContractDigest,
+        window: TimeWindow,
+        state: AuthorizationStateRecord,
+    ) -> CriomeReply {
+        let object = authorization.object.clone();
+        let requested_key = object.digest.as_str().to_string();
+        let asker = HeadAuthorizationAsker {
+            request_slot: request_slot.clone(),
+            authorization,
+        };
+        match self.pending_head_authorizations.get_mut(&requested_key) {
+            // A prior re-grant attempt is still pending (a signer/store fault
+            // holding it to its timer): join it rather than overwrite.
+            Some(pending) => pending.askers.push(asker),
+            None => {
+                self.pending_head_authorizations.insert(
+                    requested_key.clone(),
+                    PendingHeadAuthorization {
+                        askers: vec![asker],
+                        object: object.clone(),
+                        contract,
+                        window: window.clone(),
+                        stage: HeadAuthorizationStage::Proposed,
+                    },
+                );
+            }
+        }
+        self.arm_head_authorization_expiry(
+            request_slot.clone(),
+            requested_key.clone(),
+            &window,
+        );
+        let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+        match self.stored_quorum_round(&commit_round).await {
+            Some(committed) => {
+                self.grant_head_authorization(&requested_key, &committed)
+                    .await;
+            }
+            None => {
+                // The head cursor names a commit this node's round ledger does
+                // not hold — refuse to fabricate evidence; the ask expires at
+                // window close, fail-closed and loud.
+                eprintln!(
+                    "criome cluster authorization for slot {} asks the standing head {} but \
+                     no committed round is stored for it (held until window close)",
+                    request_slot.as_str(),
+                    object.digest.as_str()
+                );
+            }
+        }
+        CriomeReply::AuthorizationPending(AuthorizationPending::new(
+            request_slot.clone(),
+            state.request_digest,
+            Vec::new(),
+            AuthorizationObservationToken::new(request_slot),
+        ))
+    }
+
     /// The round window `[now, now + Δ]` on this node's clock, capped by the
     /// ask's own expiry (the existing `window ⊆ lease` posture).
     fn head_authorization_window(&self, authorization: &SignalCallAuthorization) -> TimeWindow {
@@ -1353,17 +1566,16 @@ impl CriomeRoot {
 
     /// The catch-up predicate: the successor this node has already co-signed
     /// from the contract's CURRENT head, when it differs from the requested
-    /// object — the durable proposal pin the bridge must complete first.
+    /// object — the durable proposal pin the bridge must complete first. A
+    /// recorded successor equal to the head itself is VOID and ignored (the
+    /// [`SuccessorLedgerPoint`] invariant).
     fn standing_recorded_successor(
         &self,
         contract: &ContractDigest,
         requested: &AuthorizedObjectReference,
     ) -> Option<AuthorizedObjectReference> {
-        let head = self.state_head(contract);
-        let recorded = self
-            .co_signed_successors
-            .get(&Self::state_point_key(contract, &head))?;
-        (recorded.digest != requested.digest).then(|| recorded.clone())
+        self.successor_ledger_point(contract)
+            .standing_successor_differing_from(requested)
     }
 
     /// Arm the one-shot window-close expiry: an event-scheduled push (never a
@@ -1487,7 +1699,7 @@ impl CriomeRoot {
             pending.stage = HeadAuthorizationStage::Proposed;
             (
                 pending.contract.clone(),
-                pending.authorization.object.clone(),
+                pending.object.clone(),
                 pending.window.clone(),
             )
         };
@@ -1517,12 +1729,13 @@ impl CriomeRoot {
     }
 
     /// Terminal Granted (§3.3 step 5): assemble the commit round's Evidence,
-    /// sign the grant bound to the requested (batch-head) digest with the
-    /// quorum policy satisfaction, and store the state as Granted carrying
-    /// both the grant and the assembled Evidence — the §4 hand-off. The held
-    /// observation session pushes it to the asker. The pending entry leaves
-    /// the map only when the granted state is durably stored; any failure
-    /// leaves it to its window timer, fail-closed.
+    /// sign a grant PER ASKER bound to the requested (batch-head) digest with
+    /// the quorum policy satisfaction, and store each state as Granted
+    /// carrying both the grant and the assembled Evidence — the §4 hand-off.
+    /// Each held observation session pushes it to its asker. An asker leaves
+    /// the pending entry only when its granted state is durably stored; a
+    /// failed asker stays for its own window timer, fail-closed, and the
+    /// entry leaves the map once no asker remains.
     async fn grant_head_authorization(
         &mut self,
         requested_key: &str,
@@ -1531,8 +1744,7 @@ impl CriomeRoot {
         let Some(pending) = self.pending_head_authorizations.get(requested_key) else {
             return;
         };
-        let request_slot = pending.request_slot.clone();
-        let authorization = pending.authorization.clone();
+        let askers = pending.askers.clone();
         let contract = pending.contract.clone();
         let evidence = self.assemble_evidence(committed);
         let Some(required) = self.contract_store().await.and_then(|store| {
@@ -1540,9 +1752,9 @@ impl CriomeRoot {
                 .map(|(required, _members)| required)
         }) else {
             eprintln!(
-                "criome cluster authorization for slot {} lost its operational contract \
+                "criome cluster authorization for digest {} lost its operational contract \
                  at grant time (held until window close)",
-                request_slot.as_str()
+                requested_key
             );
             return;
         };
@@ -1555,37 +1767,50 @@ impl CriomeRoot {
                 .map(|vote| vote.voter.clone())
                 .collect(),
         );
-        let reply = self
-            .ask_signer(signer::SignAuthorizationGrant::with_policy_satisfaction(
+        let mut granted_slots = Vec::new();
+        for asker in askers {
+            let request_slot = asker.request_slot;
+            let authorization = asker.authorization;
+            let reply = self
+                .ask_signer(signer::SignAuthorizationGrant::with_policy_satisfaction(
+                    request_slot.clone(),
+                    authorization.clone(),
+                    satisfaction.clone(),
+                ))
+                .await;
+            let CriomeReply::AuthorizationGranted(grant) = reply else {
+                eprintln!(
+                    "criome cluster authorization for slot {} could not sign its grant \
+                     (held until window close): {reply:?}",
+                    request_slot.as_str()
+                );
+                continue;
+            };
+            let granted = AuthorizationStateRecord::new(
                 request_slot.clone(),
-                authorization.clone(),
-                satisfaction,
-            ))
-            .await;
-        let CriomeReply::AuthorizationGranted(grant) = reply else {
-            eprintln!(
-                "criome cluster authorization for slot {} could not sign its grant \
-                 (held until window close): {reply:?}",
-                request_slot.as_str()
-            );
-            return;
-        };
-        let granted = AuthorizationStateRecord::new(
-            request_slot,
-            authorization.object.digest.clone(),
-            AuthorizationStatus::Granted,
-            Vec::new(),
-            Some(grant),
-            None,
-        )
-        .with_signal_authorization(authorization.clone())
-        .with_granted_evidence(AuthorizationEvaluation {
-            contract,
-            object: authorization.object,
-            evidence,
-        });
-        if self.store_authorization_update(granted).await {
-            self.pending_head_authorizations.remove(requested_key);
+                authorization.object.digest.clone(),
+                AuthorizationStatus::Granted,
+                Vec::new(),
+                Some(grant),
+                None,
+            )
+            .with_signal_authorization(authorization.clone())
+            .with_granted_evidence(AuthorizationEvaluation {
+                contract: contract.clone(),
+                object: authorization.object,
+                evidence: evidence.clone(),
+            });
+            if self.store_authorization_update(granted).await {
+                granted_slots.push(request_slot);
+            }
+        }
+        if let Some(pending) = self.pending_head_authorizations.get_mut(requested_key) {
+            pending
+                .askers
+                .retain(|asker| !granted_slots.contains(&asker.request_slot));
+            if pending.askers.is_empty() {
+                self.pending_head_authorizations.remove(requested_key);
+            }
         }
     }
 
@@ -1839,6 +2064,23 @@ impl CriomeRoot {
         if round != QuorumRoundIdentifier::for_phase(&object.digest, phase) {
             return rejection(RejectionReason::MalformedRequest);
         }
+        // A round that already judges Authorized is never re-opened: the
+        // bridge's idempotent catch-up re-proposal would otherwise CLOBBER the
+        // committed round's gathered votes with a fresh single-vote round
+        // (audit F6, audit-trail erosion). Answer with the standing state —
+        // the caller sees the same Authorized round it would have re-derived.
+        // (A Gathering round IS re-opened below: that is the intentional
+        // fresh-window recovery of an expired round.)
+        if let Some(existing) = self.stored_quorum_round(&round).await {
+            let state = self.round_state(&existing).await;
+            if state.status == QuorumRoundStatus::Authorized {
+                if phase == RoundPhase::Request {
+                    self.originated_request_rounds
+                        .insert(round.as_str().to_string());
+                }
+                return CriomeReply::QuorumRoundOpened(state);
+            }
+        }
         let Some(store) = self.contract_store().await else {
             return rejection(RejectionReason::MalformedRequest);
         };
@@ -1997,9 +2239,13 @@ impl CriomeRoot {
         // window's solicitation redelivered from a durable backlog after the
         // round re-opened with a fresh window — would CLOBBER the member's
         // valid vote through the one-vote-per-member replacement rule and
-        // wedge the round at Gathering forever.
-        if !self.vote_verifies_for_round(&stored, &vote).await {
-            return rejection(RejectionReason::MalformedRequest);
+        // wedge the round at Gathering forever. Each refusal is typed (audit
+        // F6): forged signature material and a stale round binding are
+        // distinct verdicts, never a generic MalformedRequest.
+        match self.vote_verifies_for_round(&stored, &vote).await {
+            VoteVerification::Verified => {}
+            VoteVerification::Forged => return rejection(RejectionReason::ForgedVote),
+            VoteVerification::Stale => return rejection(RejectionReason::StaleVote),
         }
         let phase = vote.phase;
         stored.record_vote(vote);
@@ -2022,11 +2268,25 @@ impl CriomeRoot {
         CriomeReply::QuorumVoteAccepted(state)
     }
 
-    /// Whether an arriving vote's two BLS signatures verify against the
-    /// voter's registered key over THIS round's stored object and
-    /// proposition — the ingress gate that keeps a stale or forged vote from
-    /// replacing a member's valid one.
-    async fn vote_verifies_for_round(&self, stored: &StoredQuorumRound, vote: &QuorumVote) -> bool {
+    /// Verify an arriving vote's two BLS signatures against the voter's
+    /// registered key over THIS round's stored object and proposition — the
+    /// ingress gate that keeps a stale or forged vote from replacing a
+    /// member's valid one. The verdict is typed (audit F6):
+    ///
+    ///   - `Forged`: the signature material cannot belong to the registered
+    ///     voter at all — an unsupported scheme, an unresolvable voter, or an
+    ///     embedded public key that is not the registered one. A genuine past
+    ///     vote always carried the right key and scheme, so this class is
+    ///     never a stale redelivery.
+    ///   - `Stale`: the right key and scheme, but the signatures do not
+    ///     verify over THIS round's stored proposition — the redelivered
+    ///     vote of a superseded window (a fabricated signature over the right
+    ///     key lands here too; both are refused, so the split costs nothing).
+    async fn vote_verifies_for_round(
+        &self,
+        stored: &StoredQuorumRound,
+        vote: &QuorumVote,
+    ) -> VoteVerification {
         use crate::master_key::VerifyBls;
         if !matches!(
             vote.operation_signature.scheme,
@@ -2035,23 +2295,23 @@ impl CriomeRoot {
             vote.time_signature.scheme,
             signal_criome::SignatureScheme::Bls12_381MinPk
         ) {
-            return false;
+            return VoteVerification::Forged;
         }
         let Ok(lookup) = self
             .registry
             .ask(registry::ResolveIdentity::new(vote.voter.clone()))
             .await
         else {
-            return false;
+            return VoteVerification::Forged;
         };
         let Some(identity) = lookup.into_identity() else {
-            return false;
+            return VoteVerification::Forged;
         };
         let voter_key = identity.public_key();
         if &vote.operation_signature.public_key != voter_key
             || &vote.time_signature.public_key != voter_key
         {
-            return false;
+            return VoteVerification::Forged;
         }
         let operation = OperationDigest::new(stored.object().digest.clone());
         let provisional_stamp = AttestedMoment::new(stored.proposition().clone(), Vec::new());
@@ -2059,15 +2319,20 @@ impl CriomeRoot {
             crate::language::OperationStatement::new(&vote.voter, &operation, &provisional_stamp)
                 .to_signing_bytes()
         else {
-            return false;
+            return VoteVerification::Stale;
         };
         let Ok(moment_bytes) =
             crate::language::AttestedMomentStatement::new(stored.proposition()).to_signing_bytes()
         else {
-            return false;
+            return VoteVerification::Stale;
         };
-        voter_key.verify_bls(&vote.operation_signature.signature, &operation_bytes)
+        if voter_key.verify_bls(&vote.operation_signature.signature, &operation_bytes)
             && voter_key.verify_bls(&vote.time_signature.signature, &moment_bytes)
+        {
+            VoteVerification::Verified
+        } else {
+            VoteVerification::Stale
+        }
     }
 
     /// Read a round's current withheld/authorized state.
@@ -2327,45 +2592,54 @@ impl CriomeRoot {
         format!("{}@{}", contract.as_str(), head.as_str())
     }
 
-    /// The pluggable conflict predicate (the phase-2 commutative-merge seam): TODAY
-    /// two successors from the same head conflict iff they are different objects. A
-    /// later compatible/commutative-merge predicate slots in here to let
-    /// order-independent changes both commit.
-    fn successors_conflict(
-        &self,
-        existing: &AuthorizedObjectReference,
-        proposed: &AuthorizedObjectReference,
-    ) -> bool {
-        existing.digest != proposed.digest
+    /// This node's [`SuccessorLedgerPoint`] for `contract` — its current head
+    /// and the (possibly void) successor row recorded from it. Every
+    /// successor-ledger judgment (veto conflict, self-loop refusal, catch-up
+    /// predicate) is decided on this one contact point.
+    fn successor_ledger_point(&self, contract: &signal_criome::ContractDigest) -> SuccessorLedgerPoint {
+        let head = self.state_head(contract);
+        let recorded = self
+            .co_signed_successors
+            .get(&Self::state_point_key(contract, &head))
+            .cloned();
+        SuccessorLedgerPoint::new(head, recorded)
     }
 
     /// Non-double-signing guard: at most one honest successor per (contract, head).
     /// Returns the typed `QuorumConflict` refusal when this node has already
-    /// co-signed a CONFLICTING successor from the same head; `None` when the
-    /// successor is new or identical (idempotent re-co-sign) and may proceed.
+    /// co-signed a CONFLICTING successor from the same head, and the typed
+    /// self-loop rejection when the proposed successor IS the head itself;
+    /// `None` when the successor is new or identical (idempotent re-co-sign)
+    /// and may proceed.
     fn check_successor_conflict(
         &self,
         contract: &signal_criome::ContractDigest,
         object: &AuthorizedObjectReference,
     ) -> Option<CriomeReply> {
-        let head = self.state_head(contract);
-        let existing = self
-            .co_signed_successors
-            .get(&Self::state_point_key(contract, &head))?;
-        self.successors_conflict(existing, object).then(|| {
-            CriomeReply::quorum_conflict(QuorumConflict::new(
-                contract.clone(),
-                head.clone(),
-                existing.clone(),
-            ))
-        })
+        let point = self.successor_ledger_point(contract);
+        match point.co_sign_admission(object) {
+            CoSignAdmission::RecordFresh | CoSignAdmission::AlreadyRecorded => None,
+            CoSignAdmission::RefusedSelfLoop => {
+                Some(rejection(RejectionReason::SelfLoopSuccessor))
+            }
+            CoSignAdmission::RefusedConflict(existing) => {
+                Some(CriomeReply::quorum_conflict(QuorumConflict::new(
+                    contract.clone(),
+                    point.head().clone(),
+                    existing,
+                )))
+            }
+        }
     }
 
-    /// Durably record `object` as the one successor this node has co-signed for
-    /// `contract`'s current head, BEFORE the caller casts or conveys its vote.
-    /// Idempotent: a later identical co-sign keeps the first record (and needs no
-    /// re-write); a conflicting one is refused earlier by
-    /// [`Self::check_successor_conflict`].
+    /// Durably CHECK-AND-RECORD `object` as the one successor this node has
+    /// co-signed for `contract`'s current head, BEFORE the caller casts or
+    /// conveys its vote. The admission is decided here, at the recording seam
+    /// itself (audit F6's invariant locality): an identical standing row is
+    /// idempotent, a conflicting row is the typed `QuorumConflict` refusal,
+    /// and a SELF-LOOP row (`object == head` — the head proposed as its own
+    /// successor, audit F1's poison) is refused outright. The seam never
+    /// relies on a caller having run [`Self::check_successor_conflict`] first.
     ///
     /// The veto row is a HARD guarantee, not best-effort: the durable write happens
     /// first, and a failure returns a rejection so the caller aborts the vote. A
@@ -2380,15 +2654,28 @@ impl CriomeRoot {
         contract: &signal_criome::ContractDigest,
         object: &AuthorizedObjectReference,
     ) -> std::result::Result<(), CriomeReply> {
-        let head = self.state_head(contract);
-        let key = Self::state_point_key(contract, &head);
-        if self.co_signed_successors.contains_key(&key) {
-            return Ok(());
+        let point = self.successor_ledger_point(contract);
+        match point.co_sign_admission(object) {
+            CoSignAdmission::AlreadyRecorded => return Ok(()),
+            CoSignAdmission::RefusedSelfLoop => {
+                return Err(rejection(RejectionReason::SelfLoopSuccessor));
+            }
+            CoSignAdmission::RefusedConflict(existing) => {
+                return Err(CriomeReply::quorum_conflict(QuorumConflict::new(
+                    contract.clone(),
+                    point.head().clone(),
+                    existing,
+                )));
+            }
+            CoSignAdmission::RecordFresh => {}
         }
+        let head = point.into_head();
+        let key = Self::state_point_key(contract, &head);
         // Durable-first: commit the veto row before touching the in-memory map and
         // before the caller emits, so the durable ledger never lags the vote. A
         // failed write aborts the vote with a rejection instead of leaving a vote
-        // whose anti-equivocation veto is only best-effort.
+        // whose anti-equivocation veto is only best-effort. (A void self-loop row
+        // left by a pre-fix ledger is overwritten by this fresh record.)
         self.persist_co_signed_successor(StoredCoSignedSuccessor::new(
             contract.clone(),
             head,
@@ -3170,33 +3457,43 @@ impl Message<ExpireHeadAuthorization> for CriomeRoot {
         message: ExpireHeadAuthorization,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // Already granted (or superseded by a fresh ask for the same digest,
-        // which armed its own timer): nothing to expire.
-        let still_pending = matches!(
-            self.pending_head_authorizations.get(&message.requested_digest),
-            Some(pending) if pending.request_slot == message.request_slot
-        );
-        if !still_pending {
-            return;
-        }
-        let pending = self
+        // Every asker armed its own timer, so each slot settles exactly once:
+        // an already-granted slot is gone from the asker list and this timer
+        // is a no-op; a still-waiting slot is removed here and marked Expired.
+        // The entry leaves the map once no asker remains (audit F3: no slot is
+        // ever silently orphaned).
+        let Some(pending) = self
             .pending_head_authorizations
-            .remove(&message.requested_digest)
-            .expect("the pending entry was just matched");
+            .get_mut(&message.requested_digest)
+        else {
+            return;
+        };
+        let Some(position) = pending
+            .askers
+            .iter()
+            .position(|asker| asker.request_slot == message.request_slot)
+        else {
+            return;
+        };
+        let asker = pending.askers.remove(position);
+        if pending.askers.is_empty() {
+            self.pending_head_authorizations
+                .remove(&message.requested_digest);
+        }
         // Mark the authorization Expired and push it — the asker's held
         // observation session receives it and holds the head. The durable
         // round is left as-is: the veto row and any cast votes stand (safety
         // is never rolled back); an identical re-proposal re-opens the round
         // with a fresh window.
         let expired = AuthorizationStateRecord::new(
-            pending.request_slot,
-            pending.authorization.object.digest.clone(),
+            asker.request_slot,
+            asker.authorization.object.digest.clone(),
             AuthorizationStatus::Expired,
             Vec::new(),
             None,
             None,
         )
-        .with_signal_authorization(pending.authorization);
+        .with_signal_authorization(asker.authorization);
         self.store_authorization_update(expired).await;
     }
 }
@@ -3223,5 +3520,117 @@ impl Message<ReadTopology> for CriomeRoot {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         CriomeTopology::complete()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The successor-ledger unit sweep (audit F1/F6): the catch-up predicate
+    //! and the co-sign admission judged purely on one [`SuccessorLedgerPoint`]
+    //! — the exact corner the standing-head wedge lived in. Daemon-level
+    //! companions (re-ask re-grant, expiry fan-out) live in
+    //! `tests/cluster_authorization_bridge.rs`.
+
+    use signal_criome::{AuthorizedObjectKind, AuthorizedObjectReference, ComponentKind, ObjectDigest};
+
+    use super::{CoSignAdmission, ContractOperationHead, SuccessorLedgerPoint};
+
+    fn object(seed: &[u8]) -> AuthorizedObjectReference {
+        AuthorizedObjectReference {
+            component: ComponentKind::Spirit,
+            digest: ObjectDigest::from_bytes(seed),
+            kind: AuthorizedObjectKind::Head,
+        }
+    }
+
+    fn head_of(reference: &AuthorizedObjectReference) -> ContractOperationHead {
+        ContractOperationHead::new(reference.digest.as_str().to_string())
+    }
+
+    #[test]
+    fn fresh_point_admits_a_successor_and_pins_no_catch_up() {
+        let successor = object(b"successor S");
+        let point = SuccessorLedgerPoint::new(
+            ContractOperationHead::new("genesis:contract".to_string()),
+            None,
+        );
+        assert!(matches!(
+            point.co_sign_admission(&successor),
+            CoSignAdmission::RecordFresh
+        ));
+        assert!(
+            point.standing_successor_differing_from(&successor).is_none(),
+            "no row stands, so nothing pins a catch-up"
+        );
+    }
+
+    #[test]
+    fn re_ask_of_the_recorded_successor_is_idempotent_not_catch_up() {
+        let successor = object(b"successor S");
+        let point = SuccessorLedgerPoint::new(
+            ContractOperationHead::new("genesis:contract".to_string()),
+            Some(successor.clone()),
+        );
+        assert!(matches!(
+            point.co_sign_admission(&successor),
+            CoSignAdmission::AlreadyRecorded
+        ));
+        assert!(
+            point.standing_successor_differing_from(&successor).is_none(),
+            "the identical re-ask completes the recorded round itself — no catch-up chain"
+        );
+    }
+
+    #[test]
+    fn a_conflicting_successor_is_vetoed_and_pins_the_recorded_catch_up() {
+        let recorded = object(b"successor S");
+        let conflicting = object(b"successor T");
+        let point = SuccessorLedgerPoint::new(
+            ContractOperationHead::new("genesis:contract".to_string()),
+            Some(recorded.clone()),
+        );
+        match point.co_sign_admission(&conflicting) {
+            CoSignAdmission::RefusedConflict(existing) => {
+                assert_eq!(existing.digest, recorded.digest);
+            }
+            _other => panic!("a different successor from the same head is the veto case"),
+        }
+        assert_eq!(
+            point
+                .standing_successor_differing_from(&conflicting)
+                .map(|standing| standing.digest),
+            Some(recorded.digest),
+            "the standing row pins the catch-up for a differing request"
+        );
+    }
+
+    #[test]
+    fn co_signing_the_head_as_its_own_successor_is_refused() {
+        // Audit F1's poison: the row `(contract, D) → D`. The recording seam
+        // itself refuses it — no caller ordering can reintroduce it.
+        let committed = object(b"committed head D");
+        let point = SuccessorLedgerPoint::new(head_of(&committed), None);
+        assert!(matches!(
+            point.co_sign_admission(&committed),
+            CoSignAdmission::RefusedSelfLoop
+        ));
+    }
+
+    #[test]
+    fn a_poisoned_self_loop_row_is_void_for_every_judgment() {
+        // A pre-fix ledger may hold `(contract, D) → D` durably. The point
+        // voids it: it neither pins a catch-up, nor vetoes the real next
+        // successor, nor blocks recording that successor fresh.
+        let committed = object(b"committed head D");
+        let next = object(b"successor H");
+        let point = SuccessorLedgerPoint::new(head_of(&committed), Some(committed.clone()));
+        assert!(
+            point.standing_successor_differing_from(&next).is_none(),
+            "a void self-loop row never pins a catch-up"
+        );
+        assert!(matches!(
+            point.co_sign_admission(&next),
+            CoSignAdmission::RecordFresh
+        ));
     }
 }

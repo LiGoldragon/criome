@@ -260,6 +260,12 @@ impl CriomeMetaFrameCodec {
 pub struct CriomeClient {
     socket: std::path::PathBuf,
     codec: CriomeFrameCodec,
+    /// The per-operation IO deadline applied to every stream this client
+    /// opens, covering the SUBMISSION legs (the request write and the
+    /// snapshot read) as well as later session reads — so a hung-but-accepting
+    /// daemon can never hold a caller indefinitely. `None` (the default)
+    /// keeps the historical unbounded blocking behavior.
+    io_deadline: Option<Duration>,
 }
 
 pub struct CriomeAuthorizationObservationSession {
@@ -279,7 +285,17 @@ impl CriomeClient {
         Self {
             socket: socket.into(),
             codec: CriomeFrameCodec::default(),
+            io_deadline: None,
         }
+    }
+
+    /// Bound every IO leg of this client — connect-adjacent writes, the
+    /// submission's snapshot read, and every later session read — with one
+    /// per-operation deadline, so a hung-but-accepting criome daemon cannot
+    /// hold the caller forever.
+    pub fn with_io_deadline(mut self, deadline: Duration) -> Self {
+        self.io_deadline = Some(deadline);
+        self
     }
 
     pub fn from_environment() -> Self {
@@ -289,14 +305,23 @@ impl CriomeClient {
         Self::new(socket)
     }
 
-    pub fn send(&self, request: CriomeRequest) -> Result<CriomeReply> {
+    /// Open the working stream: connect, then apply the IO deadline BEFORE
+    /// the first byte moves, so the request write and the reply read are both
+    /// bounded legs.
+    fn connect(&self) -> Result<UnixStream> {
         if !Path::new(&self.socket).exists() {
             return Err(Error::MissingSocket {
                 path: self.socket.clone(),
             });
         }
         let stream = UnixStream::connect(&self.socket)?;
-        let mut stream = BufReader::new(stream);
+        stream.set_read_timeout(self.io_deadline)?;
+        stream.set_write_timeout(self.io_deadline)?;
+        Ok(stream)
+    }
+
+    pub fn send(&self, request: CriomeRequest) -> Result<CriomeReply> {
+        let mut stream = BufReader::new(self.connect()?);
         self.codec.write_request(stream.get_mut(), request)?;
         self.codec.read_reply(&mut stream)
     }
@@ -305,14 +330,8 @@ impl CriomeClient {
         &self,
         observation: AuthorizationObservation,
     ) -> Result<CriomeAuthorizationObservationSession> {
-        if !Path::new(&self.socket).exists() {
-            return Err(Error::MissingSocket {
-                path: self.socket.clone(),
-            });
-        }
         let token = AuthorizationObservationToken::new(observation.payload().clone());
-        let stream = UnixStream::connect(&self.socket)?;
-        let mut stream = BufReader::new(stream);
+        let mut stream = BufReader::new(self.connect()?);
         self.codec.write_request(
             stream.get_mut(),
             CriomeRequest::ObserveAuthorization(observation),
@@ -335,14 +354,8 @@ impl CriomeClient {
         &self,
         authorization: SignalCallAuthorization,
     ) -> Result<CriomeAuthorizationObservationSession> {
-        if !Path::new(&self.socket).exists() {
-            return Err(Error::MissingSocket {
-                path: self.socket.clone(),
-            });
-        }
         let submitted_digest = authorization.object.digest.clone();
-        let stream = UnixStream::connect(&self.socket)?;
-        let mut stream = BufReader::new(stream);
+        let mut stream = BufReader::new(self.connect()?);
         self.codec.write_request(
             stream.get_mut(),
             CriomeRequest::AuthorizeSignalCall(authorization),
