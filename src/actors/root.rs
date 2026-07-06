@@ -2202,6 +2202,19 @@ impl CriomeRoot {
             Ok(vote) => vote,
             Err(reply) => return reply,
         };
+        // (Why "a redelivered solicitation still re-opens this peer's stored round"
+        //   (caused-by "audit F6 fixed the originator's propose seam only: a
+        //     solicitation redelivered inside a live window overwrites the
+        //     peer's stored round copy with a fresh open plus its own vote,
+        //     eroding votes that ledger copy had gathered")
+        //   (alternatives-considered [ReconveyRecordedVoteWithoutReopen ReopenAndRecast])
+        //   (chosen-because "ReconveyRecordedVoteWithoutReopen must keep the
+        //     redelivery's recovery duty (the originator re-solicits precisely
+        //     because it lost the vote) and needs a proposition-equality merge
+        //     rule to stay sound across window re-opens; deferred to its own
+        //     change — the originator's gathered rounds, the actual
+        //     grant-evidence source, are already protected by the propose-side
+        //     Authorized guard and the drive_commit_round existing-round merge"))
         let mut stored = StoredQuorumRound::open(round, contract, object, proposition);
         stored.record_vote(vote.clone());
         let _ = self.persist_quorum_round(stored.clone()).await;
