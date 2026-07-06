@@ -367,10 +367,12 @@ fn a_commit_is_refused_when_round_one_is_short() {
 
 #[test]
 fn a_commit_is_refused_when_round_one_is_forged() {
-    // The forged-round-1 attack: round 1 has TWO rows (A's real vote + a forged B
-    // vote), so the vote count looks like a majority — but the judge does not COUNT
-    // the forged signature, so round 1 is not Authorized. A commit solicitation is
-    // therefore refused: a round-2 signer re-runs the REUSED judge, not a row count.
+    // The forged-round-1 attack: a forged B vote arrives for round 1. The vote
+    // ingress verification gate refuses it outright (it would otherwise occupy
+    // B's slot, where the one-vote-per-member replacement rule could clobber a
+    // valid vote), so round 1 holds only A's real vote — no majority. A commit
+    // solicitation is therefore refused: a round-2 signer re-runs the REUSED
+    // judge over what actually verified, never a row count.
     let alpha = host("tworound-alpha");
     let beta = host("tworound-beta");
     let (socket_a, store_a) = fixture("forged-alpha");
@@ -390,7 +392,8 @@ fn a_commit_is_refused_when_round_one_is_forged() {
         other => panic!("propose must open the Request round, got {other:?}"),
     }
 
-    // Inject a forged member vote into round 1 — recorded, but never counted.
+    // Inject a forged member vote into round 1 — refused at ingress, never
+    // recorded.
     let forged = QuorumVote {
         round: request_round.clone(),
         phase: RoundPhase::Request,
@@ -398,16 +401,17 @@ fn a_commit_is_refused_when_round_one_is_forged() {
         operation_signature: forged_envelope(),
         time_signature: forged_envelope(),
     };
-    match ask(&socket_a, CriomeRequest::submit_quorum_vote(forged)) {
-        CriomeReply::QuorumVoteAccepted(state) => {
-            assert_eq!(state.gathered.into_u16(), 2, "the forged row is recorded");
-            assert_eq!(
-                state.status,
-                QuorumRoundStatus::Gathering,
-                "a forged signature is not counted — round 1 is not a real majority"
-            );
+    let refused = ask(&socket_a, CriomeRequest::submit_quorum_vote(forged));
+    assert!(
+        matches!(refused, CriomeReply::Rejection(_)),
+        "an unverifiable member vote is refused at ingress, got {refused:?}"
+    );
+    match try_observe(&socket_a, &request_round) {
+        Some(state) => {
+            assert_eq!(state.gathered.into_u16(), 1, "only the real self-vote stands");
+            assert_eq!(state.status, QuorumRoundStatus::Gathering);
         }
-        other => panic!("expected QuorumVoteAccepted, got {other:?}"),
+        None => panic!("the proposed round exists"),
     }
 
     let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);

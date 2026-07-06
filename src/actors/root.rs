@@ -1991,6 +1991,16 @@ impl CriomeRoot {
         if !members.contains(&vote.voter) {
             return rejection(RejectionReason::UnknownIdentity);
         }
+        // A vote must VERIFY over THIS round's stored proposition before it
+        // may occupy the voter's slot. Without this ingress gate, a stale
+        // vote for the same round identifier — for example an expired
+        // window's solicitation redelivered from a durable backlog after the
+        // round re-opened with a fresh window — would CLOBBER the member's
+        // valid vote through the one-vote-per-member replacement rule and
+        // wedge the round at Gathering forever.
+        if !self.vote_verifies_for_round(&stored, &vote).await {
+            return rejection(RejectionReason::MalformedRequest);
+        }
         let phase = vote.phase;
         stored.record_vote(vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
@@ -2010,6 +2020,54 @@ impl CriomeRoot {
             self.progress_authorized_rounds(vec![(stored, phase)]).await;
         }
         CriomeReply::QuorumVoteAccepted(state)
+    }
+
+    /// Whether an arriving vote's two BLS signatures verify against the
+    /// voter's registered key over THIS round's stored object and
+    /// proposition — the ingress gate that keeps a stale or forged vote from
+    /// replacing a member's valid one.
+    async fn vote_verifies_for_round(&self, stored: &StoredQuorumRound, vote: &QuorumVote) -> bool {
+        use crate::master_key::VerifyBls;
+        if !matches!(
+            vote.operation_signature.scheme,
+            signal_criome::SignatureScheme::Bls12_381MinPk
+        ) || !matches!(
+            vote.time_signature.scheme,
+            signal_criome::SignatureScheme::Bls12_381MinPk
+        ) {
+            return false;
+        }
+        let Ok(lookup) = self
+            .registry
+            .ask(registry::ResolveIdentity::new(vote.voter.clone()))
+            .await
+        else {
+            return false;
+        };
+        let Some(identity) = lookup.into_identity() else {
+            return false;
+        };
+        let voter_key = identity.public_key();
+        if &vote.operation_signature.public_key != voter_key
+            || &vote.time_signature.public_key != voter_key
+        {
+            return false;
+        }
+        let operation = OperationDigest::new(stored.object().digest.clone());
+        let provisional_stamp = AttestedMoment::new(stored.proposition().clone(), Vec::new());
+        let Ok(operation_bytes) =
+            crate::language::OperationStatement::new(&vote.voter, &operation, &provisional_stamp)
+                .to_signing_bytes()
+        else {
+            return false;
+        };
+        let Ok(moment_bytes) =
+            crate::language::AttestedMomentStatement::new(stored.proposition()).to_signing_bytes()
+        else {
+            return false;
+        };
+        voter_key.verify_bls(&vote.operation_signature.signature, &operation_bytes)
+            && voter_key.verify_bls(&vote.time_signature.signature, &moment_bytes)
     }
 
     /// Read a round's current withheld/authorized state.

@@ -391,15 +391,16 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
 }
 
 #[test]
-fn a_forged_member_vote_is_recorded_but_not_counted() {
+fn a_forged_member_vote_is_refused_at_ingress() {
     // The attack: a vote arrives claiming to be from member `beta` (a real member
     // of the admitted 2-of-2 contract, so it survives the non-member ingress drop)
     // but carries a present-but-invalid signature — a foreign key, not beta's
-    // admitted key. The row is recorded (so `gathered` reflects it), yet the judge
-    // (`has_valid_signature_from`) does not COUNT it, because the envelope's key is
-    // not beta's admitted key. The round therefore stays WITHHELD: a below-majority
-    // set of VALID signatures is refused fail-closed even when the vote count
-    // reaches the threshold.
+    // admitted key. The ingress verification gate refuses it outright: an
+    // unverifiable vote never occupies the member's slot (where, via the
+    // one-vote-per-member replacement rule, it could CLOBBER a valid vote —
+    // for example a stale redelivery after a round re-opened with a fresh
+    // window — and wedge the round). The round therefore stays WITHHELD at
+    // the self-vote.
     let alpha = host("mirror-alpha");
     let beta = host("mirror-beta");
 
@@ -438,24 +439,16 @@ fn a_forged_member_vote_is_recorded_but_not_counted() {
         operation_signature: forged_envelope(),
         time_signature: forged_envelope(),
     };
-    let after = submit(&socket_a, forged);
-    assert_eq!(
-        after.gathered.into_u16(),
-        2,
-        "the forged member vote IS recorded — gathered reflects the row"
-    );
-    assert_eq!(
-        after.status,
-        QuorumRoundStatus::Gathering,
-        "a present-but-invalid member signature is NOT counted — the round stays WITHHELD"
-    );
+    let after = ask(&socket_a, CriomeRequest::submit_quorum_vote(forged));
     assert!(
-        after.authorized_evidence.is_none(),
-        "no Evidence is surfaced while the only valid signature is below the majority"
+        matches!(after, CriomeReply::Rejection(_)),
+        "a present-but-invalid member vote is refused at ingress, got {after:?}"
     );
 
-    // And it stays withheld under an independent re-read.
+    // And the round stays withheld at the self-vote under an independent
+    // re-read — the forged row never landed.
     let observed = observe(&socket_a, &round);
+    assert_eq!(observed.gathered.into_u16(), 1, "only the valid self-vote stands");
     assert_eq!(observed.status, QuorumRoundStatus::Gathering);
     assert!(observed.authorized_evidence.is_none());
 }
