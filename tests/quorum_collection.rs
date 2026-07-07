@@ -165,13 +165,6 @@ fn observe(socket: &Path, round: &QuorumRoundIdentifier) -> QuorumRoundState {
     }
 }
 
-fn submit(socket: &Path, vote: QuorumVote) -> QuorumRoundState {
-    match ask(socket, CriomeRequest::submit_quorum_vote(vote)) {
-        CriomeReply::QuorumVoteAccepted(state) => state,
-        other => panic!("expected QuorumVoteAccepted, got {other:?}"),
-    }
-}
-
 /// A signature envelope that is present and well-formed on the wire but carries a
 /// foreign key + garbage signature — it can never satisfy a member whose admitted
 /// key differs, so the judge does not count it.
@@ -372,7 +365,7 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
         QuorumProposal {
             round_phase: RoundPhase::Request,
             quorum_round_identifier: round.clone(),
-            contract_digest: contract_digest,
+            contract_digest,
             authorized_object_reference: object,
             time_window: open_window(),
         },
@@ -426,7 +419,7 @@ fn a_forged_member_vote_is_refused_at_ingress() {
         QuorumProposal {
             round_phase: RoundPhase::Request,
             quorum_round_identifier: round.clone(),
-            contract_digest: contract_digest,
+            contract_digest,
             authorized_object_reference: object.clone(),
             time_window: open_window(),
         },

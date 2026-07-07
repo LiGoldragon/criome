@@ -23,21 +23,21 @@ use signal_criome::{
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
     AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
     AuthorizationPolicySatisfaction, AuthorizationRejection, AuthorizationRequestSlot,
-    AuthorizationScope, AuthorizationStatus, AuthorizedObjectInterest, AuthorizedObjectKind,
+    AuthorizationStatus, AuthorizedObjectInterest, AuthorizedObjectKind,
     AuthorizedObjectObservation, AuthorizedObjectReference, AuthorizedObjectUpdateToken,
     BlsPublicKey, BlsSignature, ComponentKind, ComponentObjectInterest, ContentPurpose,
-    ContentReference, Contract, ContractName, ContractOperationHead, ContractTimeCheck,
-    CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest, EscalationTarget, EvaluationDecision,
-    Evidence, ExpiryAction, Identity, IdentityLookup, IdentityRegistration,
-    InterceptPolicyCancellation, InterceptPolicyProposal, InterceptTargetSelector, KeyPurpose,
-    MentciSessionSlot, ObjectDigest, OperationDigest, ParkedRequestAnswer, ParkedRequestDecision,
-    ParkedRequestOutcome, ParkedRequestQuery, PolicyDurationNanos, PolicyOverlapMode,
-    PolicyPriority, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
-    RawSpiritOperationPayload, RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule,
-    SignRequest, SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope,
-    SignatureScheme, SpiritAuthorizationContext, SpiritOperationName, SpiritOperationNames,
-    SpiritProcessKey, StampedSignatureEnvelope, TimeSignature, TimeWindow, TimestampNanos,
-    WorkflowDigest, WorkflowGuard, WorkflowProvenanceDigest, WorkflowReceipt,
+    ContentReference, Contract, ContractTimeCheck, CriomeFrame, CriomeFrameBody, CriomeReply,
+    CriomeRequest, EscalationTarget, EvaluationDecision, Evidence, ExpiryAction, Identity,
+    IdentityLookup, IdentityRegistration, InterceptPolicyCancellation, InterceptPolicyProposal,
+    InterceptTargetSelector, KeyPurpose, MentciSessionSlot, ObjectDigest, OperationDigest,
+    ParkedRequestAnswer, ParkedRequestDecision, ParkedRequestOutcome, ParkedRequestQuery,
+    PolicyDurationNanos, PolicyOverlapMode, PolicyPriority, PrincipalName, PrincipalStatus,
+    PublicKeyFingerprint, RawSpiritOperationPayload, RejectionReason, ReplayNonce,
+    RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
+    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, SpiritAuthorizationContext,
+    SpiritOperationName, SpiritOperationNames, SpiritProcessKey, StampedSignatureEnvelope,
+    TimeSignature, TimeWindow, TimestampNanos, WorkflowDigest, WorkflowGuard,
+    WorkflowProvenanceDigest, WorkflowReceipt,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
@@ -153,18 +153,6 @@ fn sign_request(name: &str) -> SignRequest {
     )
 }
 
-fn authorization_scope() -> AuthorizationScope {
-    AuthorizationScope::new(("deploy-zeus-full-os").to_string())
-}
-
-fn contract_name() -> ContractName {
-    ContractName::new(("signal-lojix").to_string())
-}
-
-fn contract_operation_head() -> ContractOperationHead {
-    ContractOperationHead::new(("Deploy").to_string())
-}
-
 fn signal_call_authorization(seed: &[u8]) -> SignalCallAuthorization {
     signal_call_authorization_with_nonce(seed, "authorization-nonce")
 }
@@ -262,13 +250,6 @@ fn unproven_evidence(seed: &[u8]) -> Evidence {
         Vec::new(),
         Vec::new(),
     )
-}
-
-fn pending_authorization(reply: CriomeReply) -> signal_criome::AuthorizationPending {
-    let CriomeReply::AuthorizationPending(pending) = reply else {
-        panic!("expected AuthorizationPending, got {reply:?}");
-    };
-    pending
 }
 
 fn expired_authorization(reply: CriomeReply) -> AuthorizationExpired {
@@ -1046,7 +1027,7 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
     let accepted_receipt = root
         .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
             AuthorizationEvaluation {
-                contract_digest: contract_digest,
+                contract_digest,
                 authorized_object_reference: object,
                 evidence: evidence.with_workflow_receipts(vec![receipt]),
             },
