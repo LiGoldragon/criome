@@ -105,9 +105,7 @@ pub struct CriomeRoot {
 /// window timer.
 struct PendingHeadAuthorization {
     askers: Vec<HeadAuthorizationAsker>,
-    object: AuthorizedObjectReference,
     contract: ContractDigest,
-    window: TimeWindow,
 }
 
 /// One asker waiting on a pending head authorization: the observable request
@@ -1422,9 +1420,7 @@ impl CriomeRoot {
                     request_slot: request_slot.clone(),
                     authorization,
                 }],
-                object,
                 contract: contract.clone(),
-                window: window.clone(),
             },
         );
         // 5. Fail-closed at window close: an event-scheduled one-shot push,
@@ -1557,9 +1553,7 @@ impl CriomeRoot {
                     requested_key.clone(),
                     PendingHeadAuthorization {
                         askers: vec![asker],
-                        object: object.clone(),
                         contract,
-                        window: window.clone(),
                     },
                 );
             }
