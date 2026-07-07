@@ -1,7 +1,5 @@
 # Agent instructions — criome
 
-You **MUST** read AGENTS.md at `github:ligoldragon/lore` — the workspace contract.
-
 This repo's `ARCHITECTURE.md` describes **today's Spartan criome**
 — a minimal BLS-signature authentication and attestation substrate
 for the Persona ecosystem.
@@ -27,9 +25,8 @@ attestation daemon described in `ARCHITECTURE.md`.
 
 ## Carve-outs worth knowing
 
-- **Kameo, not ractor.** The new daemon is direct Kameo per
-  `~/primary/skills/kameo.md`. The prior shape used ractor; that
-  vocabulary is retired.
+- **Kameo, not ractor.** The daemon is direct Kameo. The prior shape used
+  ractor; that vocabulary is retired.
 - **Out-of-band attestations.** Attestations live in separate
   `signal-criome` records that reference content records
   (`signal-mind` channel-grant records, etc.). Content records
@@ -37,14 +34,10 @@ attestation daemon described in `ARCHITECTURE.md`.
   discipline (origin context, not proof material) stays
   inviolate.
 - **One store, one writer.** `StoreKernel` is the only actor that
-  opens `criome.sema`. Other store actors route through it (per
-  `~/primary/skills/rust/storage-and-wire.md`).
+  opens `criome.sema`. Other store actors route through it.
 - **Blocking belongs in plane actors.** BLS signature
   generation/verification is blocking work; it lives behind
-  `DelegatedReply` or a dedicated thread per
-  `~/primary/skills/kameo.md` §"Blocking-plane templates".
+  `DelegatedReply` or a dedicated thread.
 - **One NOTA record at the CLI.** The `criome` CLI accepts
   exactly one NOTA request record and prints exactly one NOTA
-  reply record, per
-  `~/primary/skills/rust/crate-layout.md` §"CLIs are daemon
-  clients".
+  reply record.
