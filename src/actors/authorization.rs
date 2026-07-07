@@ -101,60 +101,67 @@ impl AuthorizationCoordinator {
     }
 
     async fn verify_authorization(&self, verification: AuthorizationVerification) -> CriomeReply {
-        if &verification.request_digest == verification.authorization.authorized_object_digest() {
-            CriomeReply::AuthorizationGranted(verification.authorization)
+        if &verification.object_digest
+            == verification.authorization_grant.authorized_object_digest()
+        {
+            CriomeReply::AuthorizationGranted(verification.authorization_grant)
         } else {
             CriomeReply::AuthorizationDenied(AuthorizationDenied {
-                request_slot: verification.authorization.request_slot,
-                denial: AuthorizationDenial {
-                    source: AuthorizationDenialSource::Policy,
-                    reason: AuthorizationDenialReason::RequestDigestMismatch,
+                authorization_request_slot: verification
+                    .authorization_grant
+                    .authorization_request_slot,
+                authorization_denial: AuthorizationDenial {
+                    authorization_denial_source: AuthorizationDenialSource::Policy,
+                    authorization_denial_reason: AuthorizationDenialReason::RequestDigestMismatch,
                 },
             })
         }
     }
 
     async fn route_signature_request(&self, route: SignatureSolicitationRoute) -> CriomeReply {
-        let request_slot = route.solicitation.request_slot.clone();
-        let routed_to = route.routed_to.clone();
+        let request_slot = route
+            .signature_solicitation
+            .authorization_request_slot
+            .clone();
+        let routed_to = route.identity.clone();
         if self.store_signature_solicitation(route).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);
         }
         CriomeReply::SignatureRouteReceipt(SignatureRouteReceipt {
-            request_slot,
-            routed_to,
+            authorization_request_slot: request_slot,
+            identity: routed_to,
         })
     }
 
     async fn submit_signature(&self, submission: SignatureSubmission) -> CriomeReply {
-        let request_slot = submission.request_slot.clone();
-        let signer = submission.signer.clone();
+        let request_slot = submission.authorization_request_slot.clone();
+        let signer = submission.identity.clone();
         if self.store_signature_submission(submission).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);
         }
         CriomeReply::SignatureSubmissionReceipt(SignatureSubmissionReceipt {
-            request_slot,
-            signer,
+            authorization_request_slot: request_slot,
+            identity: signer,
         })
     }
 
     async fn reject_authorization(&self, rejection: AuthorizationRejection) -> CriomeReply {
         let denial = AuthorizationDenial {
-            source: AuthorizationDenialSource::Signers,
-            reason: rejection.reason,
+            authorization_denial_source: AuthorizationDenialSource::Signers,
+            authorization_denial_reason: rejection.authorization_denial_reason,
         };
         if let Ok(Some(stored)) = self
-            .lookup_authorization_state(rejection.request_slot.clone())
+            .lookup_authorization_state(rejection.authorization_request_slot.clone())
             .await
         {
             let state = stored.into_state();
             let missing_authorities = state.missing_authorities().to_vec();
-            let grant = state.grant().cloned();
+            let grant = state.optional_authorization_grant().cloned();
             let parked_evaluation = state.parked_evaluation().cloned();
-            let signal_authorization = state.signal_authorization().cloned();
+            let signal_authorization = state.optional_signal_call_authorization().cloned();
             let mut state = AuthorizationStateRecord::new(
-                state.request_slot,
-                state.request_digest,
+                state.authorization_request_slot,
+                state.object_digest,
                 AuthorizationStatus::Denied,
                 missing_authorities,
                 grant,
@@ -169,8 +176,8 @@ impl AuthorizationCoordinator {
             let _ = self.store_authorization_state(state).await;
         }
         CriomeReply::AuthorizationDenied(AuthorizationDenied {
-            request_slot: rejection.request_slot,
-            denial,
+            authorization_request_slot: rejection.authorization_request_slot,
+            authorization_denial: denial,
         })
     }
 

@@ -69,16 +69,16 @@ async fn start_node(name: &str, node_identity: Identity) -> kameo::actor::ActorR
 fn sign_request(requester: Identity) -> SignRequest {
     SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"distinct-identity-fixture"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new("distinct-identity-schema".to_string()),
+            object_digest: ObjectDigest::from_bytes(b"distinct-identity-fixture"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new("distinct-identity-schema".to_string()),
         },
         requester,
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new("distinct-identity-audience".to_string()),
             policy_version: PrincipalName::new("distinct-identity-policy".to_string()),
-            nonce: ReplayNonce::new("distinct-identity-nonce".to_string()),
+            replay_nonce: ReplayNonce::new("distinct-identity-nonce".to_string()),
         },
         None,
     )
@@ -136,19 +136,19 @@ async fn verify_on(
     node: &kameo::actor::ActorRef<CriomeRoot>,
     attestation: signal_criome::Attestation,
 ) -> VerificationDecision {
-    let content = attestation.content.clone();
+    let content = attestation.content_reference.clone();
     let reply = node
         .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
             VerifyRequest {
                 attestation,
-                content,
+                content_reference: content,
             },
         )))
         .await
         .expect("submit verify request")
         .into_reply();
     match reply {
-        CriomeReply::VerificationResult(result) => result.decision,
+        CriomeReply::VerificationResult(result) => result.verification_decision,
         other => panic!("expected VerificationResult, got {other:?}"),
     }
 }
@@ -170,13 +170,13 @@ async fn distinct_criome_identities_cross_verify_and_refuse_foreign_keys() {
 
     // criome A signs as Host("node-a") with key Ka. The envelope carries Ka.
     let attestation_a = attest_as(&node_a, identity_a.clone()).await;
-    let key_a = attestation_a.envelope.public_key.clone();
+    let key_a = attestation_a.signature_envelope.bls_public_key.clone();
 
     // The foreign criome ALSO calls itself Host("node-a"), but signs with its
     // own independent key Kf (different store -> different master key).
     let attestation_foreign = attest_as(&foreign, identity_a.clone()).await;
     assert_ne!(
-        attestation_foreign.envelope.public_key, key_a,
+        attestation_foreign.signature_envelope.bls_public_key, key_a,
         "the foreign criome must have an independent key for the refusal to be meaningful"
     );
 

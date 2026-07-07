@@ -111,21 +111,21 @@ fn ask(socket: &Path, request: CriomeRequest) -> CriomeReply {
 fn node_public_key(socket: &Path, identity: Identity) -> BlsPublicKey {
     let request = SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"two-round-key-probe"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new("two-round-probe"),
+            object_digest: ObjectDigest::from_bytes(b"two-round-key-probe"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new("two-round-probe"),
         },
         identity,
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new("two-round-probe-audience"),
             policy_version: PrincipalName::new("two-round-probe-policy"),
-            nonce: ReplayNonce::new("two-round-probe-nonce"),
+            replay_nonce: ReplayNonce::new("two-round-probe-nonce"),
         },
         None,
     );
     match ask(socket, CriomeRequest::Sign(request)) {
-        CriomeReply::SignReceipt(receipt) => receipt.attestation.envelope.public_key,
+        CriomeReply::SignReceipt(receipt) => receipt.attestation.signature_envelope.bls_public_key,
         other => panic!("expected SignReceipt, got {other:?}"),
     }
 }
@@ -165,9 +165,9 @@ fn mirror_contract(alpha: &Identity, beta: &Identity) -> Contract {
 /// are distinct successors from the same head.
 fn successor(tag: &[u8]) -> AuthorizedObjectReference {
     AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: ObjectDigest::from_bytes(tag),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: ObjectDigest::from_bytes(tag),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     }
 }
 
@@ -185,9 +185,9 @@ fn two_of_two_moment(
 
 fn forged_envelope() -> SignatureEnvelope {
     SignatureEnvelope {
-        scheme: SignatureScheme::Bls12_381MinPk,
-        public_key: BlsPublicKey::new("forged-foreign-key"),
-        signature: BlsSignature::new("forged-signature"),
+        signature_scheme: SignatureScheme::Bls12_381MinPk,
+        bls_public_key: BlsPublicKey::new("forged-foreign-key"),
+        bls_signature: BlsSignature::new("forged-signature"),
     }
 }
 
@@ -197,15 +197,15 @@ fn propose_request(
     object: AuthorizedObjectReference,
     window: TimeWindow,
 ) -> CriomeReply {
-    let round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
+    let round = QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Request);
     ask(
         socket,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
-            round,
-            phase: RoundPhase::Request,
-            contract,
-            object,
-            window,
+            quorum_round_identifier: round,
+            round_phase: RoundPhase::Request,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: window,
         }),
     )
 }
@@ -222,7 +222,7 @@ fn wait_until_authorized(socket: &Path, round: &QuorumRoundIdentifier) -> Quorum
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(state) = try_observe(socket, round)
-            && state.status == QuorumRoundStatus::Authorized
+            && state.quorum_round_status == QuorumRoundStatus::Authorized
         {
             return state;
         }
@@ -274,14 +274,15 @@ fn found_then_two_round_commit_authorizes_on_round_two() {
     let _ = admit(&socket_b, mirror_contract(&alpha, &beta));
 
     let object = successor(b"two-round-head-advance");
-    let request_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
-    let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+    let request_round =
+        QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Request);
+    let commit_round = QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Commit);
 
     match propose_request(&socket_a, contract, object, shared_window()) {
         CriomeReply::QuorumRoundOpened(state) => {
-            assert_eq!(state.phase, RoundPhase::Request);
+            assert_eq!(state.round_phase, RoundPhase::Request);
             assert_eq!(
-                state.status,
+                state.quorum_round_status,
                 QuorumRoundStatus::Gathering,
                 "the lone self-vote is one short of the 2-of-2 round-1 majority"
             );
@@ -292,14 +293,14 @@ fn found_then_two_round_commit_authorizes_on_round_two() {
     // Round 1 (Request) reaches a majority — but this is NOT approval; it only
     // opens the commit round.
     let request_authorized = wait_until_authorized(&socket_a, &request_round);
-    assert_eq!(request_authorized.phase, RoundPhase::Request);
+    assert_eq!(request_authorized.round_phase, RoundPhase::Request);
     assert_eq!(request_authorized.gathered.into_u16(), 2);
 
     // Round 2 (Commit) reaches a majority — THIS is the real approval. Each signer
     // verified the round-1 majority within the window before co-signing.
     let commit_authorized = wait_until_authorized(&socket_a, &commit_round);
     assert_eq!(
-        commit_authorized.phase,
+        commit_authorized.round_phase,
         RoundPhase::Commit,
         "real approval lands on the COMMIT round"
     );
@@ -309,7 +310,7 @@ fn found_then_two_round_commit_authorizes_on_round_two() {
         "both members co-signed the commit after verifying the round-1 majority"
     );
     assert!(
-        commit_authorized.authorized_evidence.is_some(),
+        commit_authorized.optional_evidence.is_some(),
         "the authorized commit round carries its assembled Evidence"
     );
 }
@@ -336,23 +337,23 @@ fn a_commit_is_refused_when_round_one_is_short() {
     // Open a round-1 that never gathers the peer — it stays one short of majority.
     match propose_request(&socket_a, contract.clone(), object.clone(), shared_window()) {
         CriomeReply::QuorumRoundOpened(state) => {
-            assert_eq!(state.status, QuorumRoundStatus::Gathering);
+            assert_eq!(state.quorum_round_status, QuorumRoundStatus::Gathering);
             assert_eq!(state.gathered.into_u16(), 1);
         }
         other => panic!("propose must open the Request round, got {other:?}"),
     }
 
     // A commit solicitation for that same object must be refused: round 1 is short.
-    let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+    let commit_round = QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Commit);
     let reply = ask(
         &socket_a,
         CriomeRequest::solicit_quorum_vote(QuorumVoteSolicitation {
-            round: commit_round,
-            phase: RoundPhase::Commit,
-            contract,
-            object,
-            proposition: two_of_two_moment(&alpha, &beta, shared_window()),
-            originator: beta.clone(),
+            quorum_round_identifier: commit_round,
+            round_phase: RoundPhase::Commit,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            attested_moment_proposition: two_of_two_moment(&alpha, &beta, shared_window()),
+            identity: beta.clone(),
         }),
     );
     match reply {
@@ -385,7 +386,8 @@ fn a_commit_is_refused_when_round_one_is_forged() {
 
     let contract = admit(&socket_a, mirror_contract(&alpha, &beta));
     let object = successor(b"forged-round-one");
-    let request_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
+    let request_round =
+        QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Request);
 
     match propose_request(&socket_a, contract.clone(), object.clone(), shared_window()) {
         CriomeReply::QuorumRoundOpened(state) => assert_eq!(state.gathered.into_u16(), 1),
@@ -395,9 +397,9 @@ fn a_commit_is_refused_when_round_one_is_forged() {
     // Inject a forged member vote into round 1 — refused at ingress, never
     // recorded.
     let forged = QuorumVote {
-        round: request_round.clone(),
-        phase: RoundPhase::Request,
-        voter: beta.clone(),
+        quorum_round_identifier: request_round.clone(),
+        round_phase: RoundPhase::Request,
+        identity: beta.clone(),
         operation_signature: forged_envelope(),
         time_signature: forged_envelope(),
     };
@@ -408,22 +410,26 @@ fn a_commit_is_refused_when_round_one_is_forged() {
     );
     match try_observe(&socket_a, &request_round) {
         Some(state) => {
-            assert_eq!(state.gathered.into_u16(), 1, "only the real self-vote stands");
-            assert_eq!(state.status, QuorumRoundStatus::Gathering);
+            assert_eq!(
+                state.gathered.into_u16(),
+                1,
+                "only the real self-vote stands"
+            );
+            assert_eq!(state.quorum_round_status, QuorumRoundStatus::Gathering);
         }
         None => panic!("the proposed round exists"),
     }
 
-    let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+    let commit_round = QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Commit);
     let reply = ask(
         &socket_a,
         CriomeRequest::solicit_quorum_vote(QuorumVoteSolicitation {
-            round: commit_round,
-            phase: RoundPhase::Commit,
-            contract,
-            object,
-            proposition: two_of_two_moment(&alpha, &beta, shared_window()),
-            originator: beta.clone(),
+            quorum_round_identifier: commit_round,
+            round_phase: RoundPhase::Commit,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            attested_moment_proposition: two_of_two_moment(&alpha, &beta, shared_window()),
+            identity: beta.clone(),
         }),
     );
     match reply {
@@ -465,7 +471,7 @@ fn a_conflicting_second_successor_is_refused_with_quorum_conflict() {
         shared_window(),
     ) {
         CriomeReply::QuorumRoundOpened(state) => {
-            assert_eq!(state.status, QuorumRoundStatus::Gathering)
+            assert_eq!(state.quorum_round_status, QuorumRoundStatus::Gathering)
         }
         other => panic!("the first successor must open its round, got {other:?}"),
     }
@@ -475,11 +481,11 @@ fn a_conflicting_second_successor_is_refused_with_quorum_conflict() {
     match reply {
         CriomeReply::QuorumConflict(conflict) => {
             assert_eq!(
-                conflict.contract, contract,
+                conflict.contract_digest, contract,
                 "the conflict names the contract it protects"
             );
             assert_eq!(
-                conflict.existing_successor.digest, successor_one.digest,
+                conflict.authorized_object_reference.object_digest, successor_one.object_digest,
                 "the loser is told which successor already holds the state-point"
             );
         }
@@ -528,8 +534,9 @@ fn both_rounds_are_window_gated_an_out_of_window_peer_commits_neither() {
     let _ = admit(&socket_b, mirror_contract(&alpha, &beta));
 
     let object = successor(b"window-gated-advance");
-    let request_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
-    let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+    let request_round =
+        QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Request);
+    let commit_round = QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Commit);
 
     match propose_request(&socket_a, contract, object, shared_window()) {
         CriomeReply::QuorumRoundOpened(state) => assert_eq!(state.gathered.into_u16(), 1),
@@ -541,14 +548,14 @@ fn both_rounds_are_window_gated_an_out_of_window_peer_commits_neither() {
     while Instant::now() < deadline {
         if let Some(state) = try_observe(&socket_a, &request_round) {
             assert_eq!(
-                state.status,
+                state.quorum_round_status,
                 QuorumRoundStatus::Gathering,
                 "an out-of-window peer leaves round 1 short"
             );
         }
         assert!(
             try_observe(&socket_a, &commit_round)
-                .map(|state| state.status != QuorumRoundStatus::Authorized)
+                .map(|state| state.quorum_round_status != QuorumRoundStatus::Authorized)
                 .unwrap_or(true),
             "the commit round must never authorize when round 1 cannot gather a majority"
         );
@@ -601,7 +608,7 @@ fn two_committed_successors_converge_both_heads() {
     // the 2-of-2 majority — the peer's commit round authorizing is the proof it
     // received the initiator's commit vote and advanced its head to S1.
     let s1 = successor(b"successor-one-converge");
-    let s1_commit = QuorumRoundIdentifier::for_phase(&s1.digest, RoundPhase::Commit);
+    let s1_commit = QuorumRoundIdentifier::for_phase(&s1.object_digest, RoundPhase::Commit);
     match propose_request(&socket_a, contract.clone(), s1.clone(), shared_window()) {
         CriomeReply::QuorumRoundOpened(_) => {}
         other => panic!("S1 propose must open the Request round, got {other:?}"),
@@ -625,13 +632,13 @@ fn two_committed_successors_converge_both_heads() {
     // nodes now hold. It commits only if BOTH advanced to S1; a stale peer head
     // would refuse it as a conflict from genesis and it would never authorize.
     let s2 = successor(b"successor-two-converge");
-    let s2_commit = QuorumRoundIdentifier::for_phase(&s2.digest, RoundPhase::Commit);
+    let s2_commit = QuorumRoundIdentifier::for_phase(&s2.object_digest, RoundPhase::Commit);
     match propose_request(&socket_a, contract.clone(), s2.clone(), shared_window()) {
         CriomeReply::QuorumRoundOpened(_) => {}
         CriomeReply::QuorumConflict(conflict) => panic!(
             "S2 must not conflict after S1 committed, but the initiator refused it \
              naming already-co-signed {:?}",
-            conflict.existing_successor.digest
+            conflict.authorized_object_reference.object_digest
         ),
         other => panic!("S2 propose must open the Request round, got {other:?}"),
     }

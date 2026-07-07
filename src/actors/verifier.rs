@@ -38,11 +38,11 @@ impl AttestationVerifier {
     }
 
     async fn verify(&self, request: VerifyRequest) -> CriomeReply {
-        if request.attestation.content != request.content {
+        if request.attestation.content_reference != request.content_reference {
             return self.result(VerificationDecision::InvalidSignature, None, None);
         }
 
-        let signer = request.attestation.signer.clone();
+        let signer = request.attestation.identity.clone();
         let stored = self
             .registry
             .ask(registry::ResolveIdentity::new(signer.clone()))
@@ -56,13 +56,13 @@ impl AttestationVerifier {
         if identity.status() == PrincipalStatus::Revoked {
             return self.result(VerificationDecision::Revoked, Some(signer), None);
         }
-        if identity.public_key() != &request.attestation.envelope.public_key {
+        if identity.public_key() != &request.attestation.signature_envelope.bls_public_key {
             return self.result(VerificationDecision::InvalidSignature, Some(signer), None);
         }
 
         // Only the implemented scheme is accepted; an envelope claiming another
         // scheme is rejected, never parsed as min-pk bytes (algorithm confusion).
-        match request.attestation.envelope.scheme {
+        match request.attestation.signature_envelope.signature_scheme {
             SignatureScheme::Bls12_381MinPk => {}
             SignatureScheme::Bls12_381MinSig => {
                 return self.result(
@@ -77,9 +77,12 @@ impl AttestationVerifier {
             AttestationPreimage::from_attestation(&request.attestation).to_signing_bytes();
         if !request
             .attestation
-            .envelope
-            .public_key
-            .verify_bls(&request.attestation.envelope.signature, &signing_bytes)
+            .signature_envelope
+            .bls_public_key
+            .verify_bls(
+                &request.attestation.signature_envelope.bls_signature,
+                &signing_bytes,
+            )
         {
             return self.result(
                 VerificationDecision::InvalidSignature,

@@ -333,7 +333,10 @@ impl StoreAuthorizationState {
 impl CreateAuthorizationState {
     pub fn signing(authorization: &signal_criome::SignalCallAuthorization) -> Self {
         Self {
-            request_digest: authorization.object.digest.clone(),
+            request_digest: authorization
+                .authorized_object_reference
+                .object_digest
+                .clone(),
             status: AuthorizationStatus::Signing,
             missing_authorities: Vec::new(),
             grant: None,
@@ -341,15 +344,18 @@ impl CreateAuthorizationState {
             parked_evaluation: None,
             signal_authorization: Some(authorization.clone()),
             replay_identity: Some(AuthorizationReplayIdentity::new(
-                authorization.requester.clone(),
-                authorization.nonce.clone(),
+                authorization.identity.clone(),
+                authorization.replay_nonce.clone(),
             )),
         }
     }
 
     pub fn expired(authorization: &signal_criome::SignalCallAuthorization) -> Self {
         Self {
-            request_digest: authorization.object.digest.clone(),
+            request_digest: authorization
+                .authorized_object_reference
+                .object_digest
+                .clone(),
             status: AuthorizationStatus::Expired,
             missing_authorities: Vec::new(),
             grant: None,
@@ -357,8 +363,8 @@ impl CreateAuthorizationState {
             parked_evaluation: None,
             signal_authorization: Some(authorization.clone()),
             replay_identity: Some(AuthorizationReplayIdentity::new(
-                authorization.requester.clone(),
-                authorization.nonce.clone(),
+                authorization.identity.clone(),
+                authorization.replay_nonce.clone(),
             )),
         }
     }
@@ -367,7 +373,10 @@ impl CreateAuthorizationState {
         authorization: signal_criome::SignalCallAuthorization,
     ) -> Self {
         Self {
-            request_digest: authorization.object.digest.clone(),
+            request_digest: authorization
+                .authorized_object_reference
+                .object_digest
+                .clone(),
             status: AuthorizationStatus::Parked,
             missing_authorities: Vec::new(),
             grant: None,
@@ -375,8 +384,8 @@ impl CreateAuthorizationState {
             parked_evaluation: None,
             signal_authorization: Some(authorization.clone()),
             replay_identity: Some(AuthorizationReplayIdentity::new(
-                authorization.requester,
-                authorization.nonce,
+                authorization.identity,
+                authorization.replay_nonce,
             )),
         }
     }
@@ -385,7 +394,10 @@ impl CreateAuthorizationState {
         authorization: signal_criome::SignalCallAuthorization,
     ) -> Self {
         Self {
-            request_digest: authorization.object.digest.clone(),
+            request_digest: authorization
+                .authorized_object_reference
+                .object_digest
+                .clone(),
             status: AuthorizationStatus::Pending,
             missing_authorities: Vec::new(),
             grant: None,
@@ -393,15 +405,15 @@ impl CreateAuthorizationState {
             parked_evaluation: None,
             signal_authorization: Some(authorization.clone()),
             replay_identity: Some(AuthorizationReplayIdentity::new(
-                authorization.requester,
-                authorization.nonce,
+                authorization.identity,
+                authorization.replay_nonce,
             )),
         }
     }
 
     pub fn parked(evaluation: AuthorizationEvaluation) -> Self {
         Self {
-            request_digest: evaluation.object.digest.clone(),
+            request_digest: evaluation.authorized_object_reference.object_digest.clone(),
             status: AuthorizationStatus::Parked,
             missing_authorities: Vec::new(),
             grant: None,
@@ -814,8 +826,8 @@ impl StoreKernel {
     fn authorization_snapshot(&self) -> crate::Result<Vec<StoredAuthorizationState>> {
         let mut states = self.tables.authorization_states()?;
         states.sort_by(|left, right| {
-            Self::authorization_slot_sort_key(&left.state().request_slot).cmp(
-                &Self::authorization_slot_sort_key(&right.state().request_slot),
+            Self::authorization_slot_sort_key(&left.state().authorization_request_slot).cmp(
+                &Self::authorization_slot_sort_key(&right.state().authorization_request_slot),
             )
         });
         Ok(states)

@@ -162,8 +162,8 @@ impl PeerActorRoute {
     /// destination-actor identifier into `signal_router`'s own type.
     pub fn from_configuration(route: &signal_criome::PeerActorRoute) -> Self {
         Self::new(
-            route.peer().clone(),
-            ActorIdentifier::new(route.destination().as_str()),
+            route.identity().clone(),
+            ActorIdentifier::new(route.actor_identifier().as_str()),
         )
     }
 }
@@ -202,10 +202,10 @@ impl RouterSubmission {
         configuration: &signal_criome::RouterSubmissionConfiguration,
     ) -> Self {
         Self::new(
-            configuration.router_socket_path().as_str(),
-            ActorIdentifier::new(configuration.source_actor().as_str()),
+            configuration.daemon_path().as_str(),
+            ActorIdentifier::new(configuration.actor_identifier().as_str()),
             configuration
-                .peer_routes()
+                .peer_actor_route_vector()
                 .iter()
                 .map(PeerActorRoute::from_configuration)
                 .collect(),

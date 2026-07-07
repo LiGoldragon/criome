@@ -105,7 +105,7 @@ impl SubscriptionRegistry {
         &mut self,
         token: AuthorizedObjectUpdateToken,
     ) -> CriomeReply {
-        let interest = token.interest.clone();
+        let interest = token.authorized_object_interest.clone();
         if !self.authorized_object_subscriptions.contains(&token) {
             self.authorized_object_subscriptions.push(token);
         }
@@ -151,11 +151,15 @@ impl SubscriptionRegistry {
     }
 
     fn run_due_contract_checks(&mut self, stamp: AttestedMoment) -> CriomeReply {
-        let closed_at = *stamp.proposition.window.closes_at.payload();
+        let closed_at = *stamp
+            .attested_moment_proposition
+            .time_window
+            .closes_at
+            .payload();
         let (due, pending): (Vec<_>, Vec<_>) = self
             .contract_time_checks
             .drain(..)
-            .partition(|check| *check.due_at.payload() <= closed_at);
+            .partition(|check| *check.timestamp_nanos.payload() <= closed_at);
         self.contract_time_checks = pending;
 
         let mut triggered = Vec::new();
@@ -163,16 +167,16 @@ impl SubscriptionRegistry {
             if self
                 .authorized_object_updates
                 .iter()
-                .any(|update| check.absent.matches_update(update))
+                .any(|update| check.authorized_object_interest.matches_update(update))
             {
                 continue;
             }
 
             triggered.push(AuthorizedObjectUpdate {
-                object: check.result,
-                contract: check.contract,
-                decision: signal_criome::EvaluationDecision::Authorized,
-                stamp: stamp.clone(),
+                authorized_object_reference: check.authorized_object_reference,
+                contract_digest: check.contract_digest,
+                evaluation_decision: signal_criome::EvaluationDecision::Authorized,
+                attested_moment: stamp.clone(),
             });
         }
 
@@ -205,11 +209,16 @@ impl AuthorizedObjectFilter for AuthorizedObjectInterest {
     fn matches_update(&self, update: &AuthorizedObjectUpdate) -> bool {
         match self {
             Self::AnyAuthorizedObject => true,
-            Self::Component(component) => update.object.component == *component,
-            Self::ObjectKind(kind) => update.object.kind == *kind,
+            Self::Component(component) => {
+                update.authorized_object_reference.component_kind == *component
+            }
+            Self::ObjectKind(kind) => {
+                update.authorized_object_reference.authorized_object_kind == *kind
+            }
             Self::ComponentObject(component_object) => {
-                update.object.component == component_object.component
-                    && update.object.kind == component_object.kind
+                update.authorized_object_reference.component_kind == component_object.component_kind
+                    && update.authorized_object_reference.authorized_object_kind
+                        == component_object.authorized_object_kind
             }
         }
     }

@@ -37,8 +37,8 @@ impl<'a> RegistrationStatement<'a> {
     pub fn from_registration(registration: &'a IdentityRegistration) -> Self {
         Self {
             identity: &registration.identity,
-            public_key: &registration.public_key,
-            purpose: &registration.purpose,
+            public_key: &registration.bls_public_key,
+            purpose: &registration.key_purpose,
         }
     }
 
@@ -90,14 +90,15 @@ impl ClusterRoot {
     ) -> bool {
         // Only the implemented scheme is accepted; an envelope claiming another
         // scheme is rejected, never verified as min-pk bytes (algorithm confusion).
-        if !matches!(admission.scheme, SignatureScheme::Bls12_381MinPk) {
+        if !matches!(admission.signature_scheme, SignatureScheme::Bls12_381MinPk) {
             return false;
         }
-        if admission.public_key != self.public_key {
+        if admission.bls_public_key != self.public_key {
             return false;
         }
         let statement = RegistrationStatement::from_registration(registration).to_signing_bytes();
-        self.public_key.verify_bls(&admission.signature, &statement)
+        self.public_key
+            .verify_bls(&admission.bls_signature, &statement)
     }
 }
 
@@ -124,9 +125,9 @@ mod tests {
     ) -> SignatureEnvelope {
         let statement = RegistrationStatement::from_registration(registration).to_signing_bytes();
         SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: root.public_key(),
-            signature: root.sign(&statement),
+            signature_scheme: SignatureScheme::Bls12_381MinPk,
+            bls_public_key: root.public_key(),
+            bls_signature: root.sign(&statement),
         }
     }
 
@@ -174,9 +175,9 @@ mod tests {
         let registration =
             member_registration(Identity::agent("worker".to_string()), member.public_key());
         let admission = SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: root.public_key(),
-            signature: BlsSignature::new("not-a-real-signature".to_string()),
+            signature_scheme: SignatureScheme::Bls12_381MinPk,
+            bls_public_key: root.public_key(),
+            bls_signature: BlsSignature::new("not-a-real-signature".to_string()),
         };
         let gate = ClusterRoot::new(root.public_key());
         assert!(!gate.admits(&registration, &admission));
@@ -190,7 +191,7 @@ mod tests {
             member_registration(Identity::agent("worker".to_string()), member.public_key());
         let mut admission = cluster_root_admission(&root, &registration);
         // A valid min-pk signature, but the envelope claims a different scheme.
-        admission.scheme = SignatureScheme::Bls12_381MinSig;
+        admission.signature_scheme = SignatureScheme::Bls12_381MinSig;
         let gate = ClusterRoot::new(root.public_key());
         assert!(!gate.admits(&registration, &admission));
     }

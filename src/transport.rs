@@ -354,7 +354,10 @@ impl CriomeClient {
         &self,
         authorization: SignalCallAuthorization,
     ) -> Result<CriomeAuthorizationObservationSession> {
-        let submitted_digest = authorization.object.digest.clone();
+        let submitted_digest = authorization
+            .authorized_object_reference
+            .object_digest
+            .clone();
         let mut stream = BufReader::new(self.connect()?);
         self.codec.write_request(
             stream.get_mut(),
@@ -373,8 +376,8 @@ impl CriomeClient {
         let Some(request_slot) = snapshot
             .states()
             .iter()
-            .find(|state| state.request_digest == submitted_digest)
-            .map(|state| state.request_slot.clone())
+            .find(|state| state.object_digest == submitted_digest)
+            .map(|state| state.authorization_request_slot.clone())
         else {
             return Err(Error::UnexpectedSignalFrame {
                 got: format!("{snapshot:?}"),
@@ -409,7 +412,7 @@ impl CriomeAuthorizationObservationSession {
                 CriomeStreamItem::Event(event) => {
                     if let CriomeEvent::AuthorizationUpdate(update) = *event {
                         let state = update.into_payload();
-                        if state.request_slot == *self.token.payload() {
+                        if state.authorization_request_slot == *self.token.payload() {
                             return Ok(state);
                         }
                     }

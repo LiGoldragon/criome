@@ -68,10 +68,10 @@ impl RootFounding {
     /// compute its committed anchor. Identity exists the instant this succeeds;
     /// the returned record carries no signatures yet.
     pub fn found(genesis: RootGenesis) -> Result<Self, FoundingError> {
-        if genesis.founding_keys().is_empty() {
+        if genesis.founding_member_vector().is_empty() {
             return Err(FoundingError::EmptyCohort);
         }
-        if !matches!(genesis.root_contract.parent(), ContractParent::Root) {
+        if !matches!(genesis.contract.contract_parent(), ContractParent::Root) {
             return Err(FoundingError::NonRootParent);
         }
         let anchor = genesis.anchor().map_err(|_| FoundingError::AnchorEncode)?;
@@ -112,25 +112,25 @@ impl RootFounding {
     /// The statement every founder signs: the committed anchor plus the domain
     /// tag, so a signature is domain-separated and bound to this exact cohort.
     pub fn statement(&self) -> RootFoundingStatement {
-        RootFoundingStatement::new(self.anchor.clone(), self.genesis.domain)
+        RootFoundingStatement::new(self.anchor.clone(), self.genesis.genesis_domain_tag)
     }
 
     pub fn domain(&self) -> GenesisDomainTag {
-        self.genesis.domain
+        self.genesis.genesis_domain_tag
     }
 
     /// The founding member whose registered public key is `public_key`, if any —
     /// how a node finds its own seat in the cohort by its master key.
     pub fn member_by_key(&self, public_key: &BlsPublicKey) -> Option<&FoundingMember> {
         self.genesis
-            .founding_keys()
+            .founding_member_vector()
             .iter()
-            .find(|member| &member.public_key == public_key)
+            .find(|member| &member.bls_public_key == public_key)
     }
 
     fn member(&self, identity: &Identity) -> Option<&FoundingMember> {
         self.genesis
-            .founding_keys()
+            .founding_member_vector()
             .iter()
             .find(|member| &member.identity == identity)
     }
@@ -138,20 +138,20 @@ impl RootFounding {
     pub fn has_signature_from(&self, identity: &Identity) -> bool {
         self.signatures
             .iter()
-            .any(|signature| &signature.signer == identity)
+            .any(|signature| &signature.identity == identity)
     }
 
     /// Attach `signature`, replacing an earlier one from the same signer. A
     /// non-member's signature is refused (returns `false`); a member votes once,
     /// so redelivery updates in place rather than double-counting.
     pub fn attach_signature(&mut self, signature: FoundingSignature) -> bool {
-        if self.member(&signature.signer).is_none() {
+        if self.member(&signature.identity).is_none() {
             return false;
         }
         if let Some(existing) = self
             .signatures
             .iter_mut()
-            .find(|held| held.signer == signature.signer)
+            .find(|held| held.identity == signature.identity)
         {
             *existing = signature;
         } else {
@@ -165,7 +165,7 @@ impl RootFounding {
     /// leaves the root un-founded by design.
     pub fn is_unanimous(&self) -> bool {
         self.genesis
-            .founding_keys()
+            .founding_member_vector()
             .iter()
             .all(|member| self.has_signature_from(&member.identity))
     }
@@ -197,20 +197,23 @@ impl RootFounding {
     }
 
     fn signature_valid(&self, signature: &FoundingSignature, statement_bytes: &[u8]) -> bool {
-        let Some(member) = self.member(&signature.signer) else {
+        let Some(member) = self.member(&signature.identity) else {
             return false;
         };
         // Only the implemented scheme is accepted; an envelope claiming another
         // scheme is refused, never verified as min-pk bytes (algorithm confusion).
-        if !matches!(signature.envelope.scheme, SignatureScheme::Bls12_381MinPk) {
+        if !matches!(
+            signature.signature_envelope.signature_scheme,
+            SignatureScheme::Bls12_381MinPk
+        ) {
             return false;
         }
-        if signature.envelope.public_key != member.public_key {
+        if signature.signature_envelope.bls_public_key != member.bls_public_key {
             return false;
         }
         member
-            .public_key
-            .verify_bls(&signature.envelope.signature, statement_bytes)
+            .bls_public_key
+            .verify_bls(&signature.signature_envelope.bls_signature, statement_bytes)
     }
 
     /// The full founded-root gate run on boot: the stored anchor equals the anchor
@@ -230,13 +233,13 @@ impl RootFounding {
     /// superseding a single configured cluster-root seed.
     pub fn seed_registrations(&self) -> Vec<IdentityRegistration> {
         self.genesis
-            .founding_keys()
+            .founding_member_vector()
             .iter()
             .map(|member| {
                 IdentityRegistration::new(
                     member.identity.clone(),
-                    member.public_key.clone(),
-                    member.public_key.fingerprint(),
+                    member.bls_public_key.clone(),
+                    member.bls_public_key.fingerprint(),
                     KeyPurpose::CriomeRoot,
                     None,
                 )
@@ -290,9 +293,9 @@ mod tests {
         FoundingSignature::new(
             identity.clone(),
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: key.public_key(),
-                signature: key.sign(&bytes),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: key.public_key(),
+                bls_signature: key.sign(&bytes),
             },
         )
     }
@@ -332,9 +335,9 @@ mod tests {
         let forged = FoundingSignature::new(
             alpha.clone(),
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: alpha_key.public_key(),
-                signature: alpha_key.sign(b"not the founding statement"),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: alpha_key.public_key(),
+                bls_signature: alpha_key.sign(b"not the founding statement"),
             },
         );
         assert!(founding.attach_signature(forged));
@@ -367,9 +370,9 @@ mod tests {
         let forged = FoundingSignature::new(
             beta.clone(),
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: beta_key.public_key(),
-                signature: beta_key.sign(b"not the founding statement"),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: beta_key.public_key(),
+                bls_signature: beta_key.sign(b"not the founding statement"),
             },
         );
         assert!(
@@ -386,7 +389,7 @@ mod tests {
         let mut founding = RootFounding::found(genesis(&cohort, "scheme")).expect("found");
         let mut signature = sign(&founding, &alpha, &alpha_key);
         // A valid min-pk signature, but the envelope claims a different scheme.
-        signature.envelope.scheme = SignatureScheme::Bls12_381MinSig;
+        signature.signature_envelope.signature_scheme = SignatureScheme::Bls12_381MinSig;
         assert!(founding.attach_signature(signature));
         assert!(!founding.signatures_valid());
     }
@@ -455,10 +458,10 @@ mod tests {
         let registrations = founding.seed_registrations();
         assert_eq!(registrations.len(), 1);
         assert_eq!(registrations[0].identity, alpha);
-        assert_eq!(registrations[0].public_key, alpha_key.public_key());
-        assert_eq!(registrations[0].purpose, KeyPurpose::CriomeRoot);
+        assert_eq!(registrations[0].bls_public_key, alpha_key.public_key());
+        assert_eq!(registrations[0].key_purpose, KeyPurpose::CriomeRoot);
         assert_eq!(
-            registrations[0].fingerprint,
+            registrations[0].public_key_fingerprint,
             alpha_key.fingerprint(),
             "the seeded fingerprint matches the one the node stamps on its own key"
         );

@@ -193,7 +193,7 @@ impl SuccessorLedgerPoint {
     /// judgment ever sees it.
     fn new(head: ContractOperationHead, recorded: Option<AuthorizedObjectReference>) -> Self {
         let recorded =
-            recorded.filter(|successor| successor.digest.as_str() != head.as_str());
+            recorded.filter(|successor| successor.object_digest.as_str() != head.as_str());
         Self { head, recorded }
     }
 
@@ -213,7 +213,7 @@ impl SuccessorLedgerPoint {
         existing: &AuthorizedObjectReference,
         proposed: &AuthorizedObjectReference,
     ) -> bool {
-        existing.digest != proposed.digest
+        existing.object_digest != proposed.object_digest
     }
 
     /// Judge one proposed successor against this state point — the closed
@@ -225,7 +225,7 @@ impl SuccessorLedgerPoint {
         proposed: &AuthorizedObjectReference,
         recorded_life: RecordedRoundLife,
     ) -> CoSignAdmission {
-        if proposed.digest.as_str() == self.head.as_str() {
+        if proposed.object_digest.as_str() == self.head.as_str() {
             return CoSignAdmission::RefusedSelfLoop;
         }
         match &self.recorded {
@@ -235,9 +235,7 @@ impl SuccessorLedgerPoint {
                     // §3.3 dead-round supersession: a window-dead,
                     // never-committed row has no driver left — admit the
                     // differing successor, durably replacing the row.
-                    RecordedRoundLife::Dead => {
-                        CoSignAdmission::SupersedeDeadRow(existing.clone())
-                    }
+                    RecordedRoundLife::Dead => CoSignAdmission::SupersedeDeadRow(existing.clone()),
                     // A committed round is never dead, and a live round
                     // keeps its veto: refused as the typed QuorumConflict.
                     RecordedRoundLife::Committed | RecordedRoundLife::Live => {
@@ -513,8 +511,8 @@ impl CriomeRoot {
             }
             CriomeRequest::AttestAuthorization(request) => {
                 let AuthorizationAttestationRequest {
-                    authorization_content,
-                    source,
+                    content_reference: authorization_content,
+                    identity: source,
                     audit_context,
                 } = request;
                 self.ask_signer(signer::AttestAuthorization::new(
@@ -575,8 +573,8 @@ impl CriomeRoot {
             CriomeRequest::ObserveAuthorizedObjects(request) => {
                 self.ask_subscription(subscription::OpenAuthorizedObjectSubscription {
                     token: AuthorizedObjectUpdateToken {
-                        subscriber: request.subscriber,
-                        interest: request.interest,
+                        identity: request.identity,
+                        authorized_object_interest: request.authorized_object_interest,
                     },
                 })
                 .await
@@ -698,7 +696,9 @@ impl CriomeRoot {
         &self,
         authorization: SignalCallAuthorization,
     ) -> Option<CriomeReply> {
-        let context = authorization.spirit_context()?.clone();
+        let context = authorization
+            .optional_spirit_authorization_context()?
+            .clone();
         match self
             .intercept_spirit_authorization(context, self.timestamp())
             .await
@@ -714,12 +714,12 @@ impl CriomeRoot {
                 {
                     Ok(stored) => {
                         let state = stored.state();
-                        let request_slot = state.request_slot.clone();
+                        let request_slot = state.authorization_request_slot.clone();
                         self.publish_authorization_update(state.clone());
                         Some(CriomeReply::AuthorizationPending(
                             AuthorizationPending::new(
                                 request_slot.clone(),
-                                state.request_digest.clone(),
+                                state.object_digest.clone(),
                                 Vec::new(),
                                 AuthorizationObservationToken::new(request_slot),
                             ),
@@ -738,8 +738,8 @@ impl CriomeRoot {
 
     fn unimplemented_meta_request(operation: OperationKind) -> meta_signal_criome::Output {
         meta_signal_criome::Output::request_unimplemented(RequestUnimplemented {
-            operation,
-            reason: UnimplementedReason::DependencyNotReady,
+            operation_kind: operation,
+            unimplemented_reason: UnimplementedReason::DependencyNotReady,
         })
     }
 
@@ -759,7 +759,10 @@ impl CriomeRoot {
             );
         }
         self.authorization_mode = *configuration.authorization_mode();
-        let cluster_root = configuration.cluster_root().cloned().map(ClusterRoot::new);
+        let cluster_root = configuration
+            .optional_bls_public_key()
+            .cloned()
+            .map(ClusterRoot::new);
         let _ = self
             .registry
             .ask(registry::ConfigureClusterRoot::new(cluster_root))
@@ -939,12 +942,12 @@ impl CriomeRoot {
         answer: ParkedRequestAnswer,
     ) -> meta_signal_criome::Output {
         let parked_request = self
-            .parked_spirit_request(&answer.identifier)
+            .parked_spirit_request(&answer.parked_request_identifier)
             .await
             .ok()
             .flatten()
             .map(|stored| stored.request().clone());
-        let decision = answer.decision;
+        let decision = answer.parked_request_decision;
         match self
             .answer_parked_spirit_request(answer, self.timestamp())
             .await
@@ -972,7 +975,7 @@ impl CriomeRoot {
         Ok(reply
             .into_requests()
             .into_iter()
-            .find(|request| &request.request().identifier == identifier))
+            .find(|request| &request.request().parked_request_identifier == identifier))
     }
 
     async fn apply_parked_spirit_request_authorization_resolution(
@@ -986,7 +989,7 @@ impl CriomeRoot {
         else {
             return;
         };
-        let Some(authorization) = state.signal_authorization().cloned() else {
+        let Some(authorization) = state.optional_signal_call_authorization().cloned() else {
             return;
         };
         let decision = match decision {
@@ -1002,7 +1005,11 @@ impl CriomeRoot {
         request: &ParkedSpiritRequest,
     ) -> Option<AuthorizationStateRecord> {
         let request_digest = signal_criome::ObjectDigest::from_bytes(
-            request.context.raw_payload.as_str().as_bytes(),
+            request
+                .spirit_authorization_context
+                .raw_spirit_operation_payload
+                .as_str()
+                .as_bytes(),
         );
         let reply = self
             .store
@@ -1015,18 +1022,20 @@ impl CriomeRoot {
             .map(crate::tables::StoredAuthorizationState::into_state)
             .find(|state| {
                 matches!(
-                    state.status,
+                    state.authorization_status,
                     AuthorizationStatus::Pending | AuthorizationStatus::Parked
-                ) && state.request_digest == request_digest
+                ) && state.object_digest == request_digest
                     && state
-                        .signal_authorization()
-                        .and_then(SignalCallAuthorization::spirit_context)
-                        == Some(&request.context)
+                        .optional_signal_call_authorization()
+                        .and_then(SignalCallAuthorization::optional_spirit_authorization_context)
+                        == Some(&request.spirit_authorization_context)
             })
     }
 
     async fn evaluate_authorization(&self, evaluation: AuthorizationEvaluation) -> CriomeReply {
-        if &evaluation.object.digest != evaluation.evidence.operation.object_digest() {
+        if &evaluation.authorized_object_reference.object_digest
+            != evaluation.evidence.operation_digest.object_digest()
+        {
             return rejection(RejectionReason::MalformedRequest);
         }
 
@@ -1042,7 +1051,7 @@ impl CriomeRoot {
 
         match (self.key_registry().await, self.contract_store().await) {
             (Some(registry), Some(store)) => {
-                match store.evaluate(&evaluation.contract, &evaluation.evidence, &registry) {
+                match store.evaluate(&evaluation.contract_digest, &evaluation.evidence, &registry) {
                     Ok(decision) => self.record_evaluation_decision(evaluation, decision).await,
                     Err(EvaluationError::MissingContract(digest)) => {
                         CriomeReply::ContractMissing(ContractMissing::new(digest))
@@ -1062,10 +1071,10 @@ impl CriomeRoot {
                 let state = stored.state();
                 self.publish_authorization_update(state.clone());
                 CriomeReply::AuthorizationPending(AuthorizationPending::new(
-                    state.request_slot.clone(),
-                    state.request_digest.clone(),
+                    state.authorization_request_slot.clone(),
+                    state.object_digest.clone(),
                     Vec::new(),
-                    AuthorizationObservationToken::new(state.request_slot.clone()),
+                    AuthorizationObservationToken::new(state.authorization_request_slot.clone()),
                 ))
             }
             Err(_error) => rejection(RejectionReason::MalformedRequest),
@@ -1086,10 +1095,10 @@ impl CriomeRoot {
                 let state = stored.state();
                 self.publish_authorization_update(state.clone());
                 CriomeReply::AuthorizationPending(AuthorizationPending::new(
-                    state.request_slot.clone(),
-                    state.request_digest.clone(),
+                    state.authorization_request_slot.clone(),
+                    state.object_digest.clone(),
                     Vec::new(),
-                    AuthorizationObservationToken::new(state.request_slot.clone()),
+                    AuthorizationObservationToken::new(state.authorization_request_slot.clone()),
                 ))
             }
             Err(Error::AuthorizationReplayAttempted) => rejection(RejectionReason::ReplayAttempted),
@@ -1113,16 +1122,16 @@ impl CriomeRoot {
     ) -> CriomeReply {
         if decision == EvaluationDecision::Authorized {
             self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                object: evaluation.object,
-                contract: evaluation.contract.clone(),
-                decision: decision.clone(),
-                stamp: evaluation.evidence.stamp.clone(),
+                authorized_object_reference: evaluation.authorized_object_reference,
+                contract_digest: evaluation.contract_digest.clone(),
+                evaluation_decision: decision.clone(),
+                attested_moment: evaluation.evidence.attested_moment.clone(),
             })
             .await;
         }
         CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
-            contract: evaluation.contract,
-            decision,
+            contract_digest: evaluation.contract_digest,
+            evaluation_decision: decision,
         })
     }
 
@@ -1131,8 +1140,8 @@ impl CriomeRoot {
         approval: AuthorizationApproval,
     ) -> meta_signal_criome::Output {
         let AuthorizationApproval {
-            request_slot,
-            decision,
+            authorization_request_slot: request_slot,
+            authorization_approval_decision: decision,
         } = approval;
         let recorded_decision = match self
             .lookup_authorization_state(request_slot.clone())
@@ -1147,15 +1156,15 @@ impl CriomeRoot {
             }
             None => {
                 return meta_signal_criome::Output::request_unimplemented(RequestUnimplemented {
-                    operation: OperationKind::SubmitAuthorizationApproval,
-                    reason: UnimplementedReason::DependencyNotReady,
+                    operation_kind: OperationKind::SubmitAuthorizationApproval,
+                    unimplemented_reason: UnimplementedReason::DependencyNotReady,
                 });
             }
         };
 
         meta_signal_criome::Output::authorization_approval_recorded(AuthorizationApprovalRecorded {
-            request_slot,
-            decision: recorded_decision,
+            authorization_request_slot: request_slot,
+            authorization_approval_decision: recorded_decision,
         })
     }
 
@@ -1167,7 +1176,7 @@ impl CriomeRoot {
         if decision == AuthorizationApprovalDecision::Defer {
             return;
         }
-        if let Some(authorization) = state.signal_authorization().cloned() {
+        if let Some(authorization) = state.optional_signal_call_authorization().cloned() {
             self.apply_signal_authorization_approval(state, decision, authorization)
                 .await;
             return;
@@ -1177,17 +1186,17 @@ impl CriomeRoot {
         };
         if decision == AuthorizationApprovalDecision::Approve {
             self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                object: evaluation.object.clone(),
-                contract: evaluation.contract.clone(),
-                decision: EvaluationDecision::Authorized,
-                stamp: evaluation.evidence.stamp.clone(),
+                authorized_object_reference: evaluation.authorized_object_reference.clone(),
+                contract_digest: evaluation.contract_digest.clone(),
+                evaluation_decision: EvaluationDecision::Authorized,
+                attested_moment: evaluation.evidence.attested_moment.clone(),
             })
             .await;
         }
         let denial =
             (decision == AuthorizationApprovalDecision::Reject).then_some(AuthorizationDenial {
-                source: AuthorizationDenialSource::Policy,
-                reason: AuthorizationDenialReason::PolicyRefused,
+                authorization_denial_source: AuthorizationDenialSource::Policy,
+                authorization_denial_reason: AuthorizationDenialReason::PolicyRefused,
             });
         let status = match decision {
             AuthorizationApprovalDecision::Approve => AuthorizationStatus::Granted,
@@ -1195,8 +1204,8 @@ impl CriomeRoot {
             AuthorizationApprovalDecision::Defer => AuthorizationStatus::Parked,
         };
         let state = AuthorizationStateRecord::new(
-            state.request_slot,
-            state.request_digest,
+            state.authorization_request_slot,
+            state.object_digest,
             status,
             Vec::new(),
             None,
@@ -1214,13 +1223,13 @@ impl CriomeRoot {
     ) {
         let denial =
             (decision == AuthorizationApprovalDecision::Reject).then_some(AuthorizationDenial {
-                source: AuthorizationDenialSource::Policy,
-                reason: AuthorizationDenialReason::PolicyRefused,
+                authorization_denial_source: AuthorizationDenialSource::Policy,
+                authorization_denial_reason: AuthorizationDenialReason::PolicyRefused,
             });
         if decision == AuthorizationApprovalDecision::Reject {
             let state = AuthorizationStateRecord::new(
-                state.request_slot,
-                state.request_digest,
+                state.authorization_request_slot,
+                state.object_digest,
                 AuthorizationStatus::Denied,
                 Vec::new(),
                 None,
@@ -1231,8 +1240,8 @@ impl CriomeRoot {
             return;
         }
 
-        let request_slot = state.request_slot.clone();
-        let request_digest = state.request_digest.clone();
+        let request_slot = state.authorization_request_slot.clone();
+        let request_digest = state.object_digest.clone();
         let reply = self
             .ask_signer(signer::SignAuthorizationGrant::new(
                 request_slot.clone(),
@@ -1269,8 +1278,8 @@ impl CriomeRoot {
             Err(_error) => return rejection(RejectionReason::MalformedRequest),
         };
         let state = stored.into_state();
-        let request_slot = state.request_slot.clone();
-        let request_digest = state.request_digest.clone();
+        let request_slot = state.authorization_request_slot.clone();
+        let request_digest = state.object_digest.clone();
         let reply = self
             .ask_signer(signer::SignAuthorizationGrant::new(
                 request_slot.clone(),
@@ -1325,8 +1334,8 @@ impl CriomeRoot {
                     let state = stored.into_state();
                     self.publish_authorization_update(state.clone());
                     CriomeReply::AuthorizationExpired(AuthorizationExpired {
-                        request_slot: state.request_slot,
-                        expired_at: expires_at,
+                        authorization_request_slot: state.authorization_request_slot,
+                        timestamp_nanos: expires_at,
                     })
                 }
                 Err(Error::AuthorizationReplayAttempted) => {
@@ -1348,7 +1357,7 @@ impl CriomeRoot {
             Err(_error) => return rejection(RejectionReason::MalformedRequest),
         };
         let state = stored.into_state();
-        let request_slot = state.request_slot.clone();
+        let request_slot = state.authorization_request_slot.clone();
         self.publish_authorization_update(state.clone());
         // 2. The operational quorum contract, resolved criome-side. Unfounded
         //    ⇒ refuse loudly with a terminal Unavailable (settled): founding is
@@ -1366,8 +1375,8 @@ impl CriomeRoot {
         };
         // 3. The round window [now, now + Δ], capped by the ask's own expiry.
         let window = self.head_authorization_window(&authorization);
-        let object = authorization.object.clone();
-        let requested_key = object.digest.as_str().to_string();
+        let object = authorization.authorized_object_reference.clone();
+        let requested_key = object.object_digest.as_str().to_string();
         // 4a. Already-authorized guard (audit F1): a requested digest EQUAL to
         //     the contract's current head has already committed on this node —
         //     the asker is behind (a drain's idle or coalesced re-ask, or a
@@ -1375,7 +1384,7 @@ impl CriomeRoot {
         //     from the stored committed round; proposing it again would record
         //     the self-loop veto row `(contract, D) → D` that turns every
         //     later successor into a permanent QuorumConflict wedge.
-        if self.state_head(&contract).as_str() == object.digest.as_str() {
+        if self.state_head(&contract).as_str() == object.object_digest.as_str() {
             return self
                 .re_grant_standing_head(request_slot, authorization, contract, window, state)
                 .await;
@@ -1392,7 +1401,7 @@ impl CriomeRoot {
             self.arm_head_authorization_expiry(request_slot.clone(), requested_key, &window);
             return CriomeReply::AuthorizationPending(AuthorizationPending::new(
                 request_slot.clone(),
-                state.request_digest,
+                state.object_digest,
                 Vec::new(),
                 AuthorizationObservationToken::new(request_slot),
             ));
@@ -1427,11 +1436,14 @@ impl CriomeRoot {
         //    ask to its window timer — refused exactly like any refused
         //    advance, head held.
         let proposal = QuorumProposal {
-            round: QuorumRoundIdentifier::for_phase(&proposed_object.digest, RoundPhase::Request),
-            phase: RoundPhase::Request,
-            contract,
-            object: proposed_object,
-            window,
+            quorum_round_identifier: QuorumRoundIdentifier::for_phase(
+                &proposed_object.object_digest,
+                RoundPhase::Request,
+            ),
+            round_phase: RoundPhase::Request,
+            contract_digest: contract,
+            authorized_object_reference: proposed_object,
+            time_window: window,
         };
         match self.propose_quorum_authorization(proposal).await {
             CriomeReply::QuorumRoundOpened(round_state) => {
@@ -1439,8 +1451,10 @@ impl CriomeRoot {
                 // authorizes the Request round on the self-vote alone; drive
                 // it forward now rather than waiting for a vote that never
                 // arrives.
-                if round_state.status == QuorumRoundStatus::Authorized
-                    && let Some(stored_round) = self.stored_quorum_round(&round_state.round).await
+                if round_state.quorum_round_status == QuorumRoundStatus::Authorized
+                    && let Some(stored_round) = self
+                        .stored_quorum_round(&round_state.quorum_round_identifier)
+                        .await
                 {
                     self.progress_authorized_rounds(vec![(stored_round, RoundPhase::Request)])
                         .await;
@@ -1456,7 +1470,7 @@ impl CriomeRoot {
         }
         CriomeReply::AuthorizationPending(AuthorizationPending::new(
             request_slot.clone(),
-            state.request_digest,
+            state.object_digest,
             Vec::new(),
             AuthorizationObservationToken::new(request_slot),
         ))
@@ -1473,8 +1487,12 @@ impl CriomeRoot {
         if !founding.verify() {
             return None;
         }
-        let contract = founding.genesis().root_contract.clone();
-        let reply = self.store.ask(store::StoreContract::new(contract)).await.ok()?;
+        let contract = founding.genesis().contract.clone();
+        let reply = self
+            .store
+            .ask(store::StoreContract::new(contract))
+            .await
+            .ok()?;
         match reply.into_result() {
             Ok(stored) => Some(stored.into_parts().0),
             Err(_error) => None,
@@ -1490,7 +1508,10 @@ impl CriomeRoot {
     ) -> CriomeReply {
         let unavailable = AuthorizationStateRecord::new(
             request_slot.clone(),
-            authorization.object.digest.clone(),
+            authorization
+                .authorized_object_reference
+                .object_digest
+                .clone(),
             AuthorizationStatus::Unavailable,
             Vec::new(),
             None,
@@ -1499,8 +1520,10 @@ impl CriomeRoot {
         .with_signal_authorization(authorization);
         self.store_authorization_update(unavailable).await;
         CriomeReply::AuthorizationUnavailable(AuthorizationUnavailable {
-            request_slot,
-            reason: PrincipalName::new("criome is unfounded: no operational quorum contract"),
+            authorization_request_slot: request_slot,
+            principal_name: PrincipalName::new(
+                "criome is unfounded: no operational quorum contract",
+            ),
         })
     }
 
@@ -1519,8 +1542,8 @@ impl CriomeRoot {
         window: TimeWindow,
         state: AuthorizationStateRecord,
     ) -> CriomeReply {
-        let object = authorization.object.clone();
-        let requested_key = object.digest.as_str().to_string();
+        let object = authorization.authorized_object_reference.clone();
+        let requested_key = object.object_digest.as_str().to_string();
         let asker = HeadAuthorizationAsker {
             request_slot: request_slot.clone(),
             authorization,
@@ -1541,12 +1564,9 @@ impl CriomeRoot {
                 );
             }
         }
-        self.arm_head_authorization_expiry(
-            request_slot.clone(),
-            requested_key.clone(),
-            &window,
-        );
-        let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+        self.arm_head_authorization_expiry(request_slot.clone(), requested_key.clone(), &window);
+        let commit_round =
+            QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Commit);
         match self.stored_quorum_round(&commit_round).await {
             Some(committed) => {
                 self.grant_head_authorization(&requested_key, &committed)
@@ -1560,13 +1580,13 @@ impl CriomeRoot {
                     "criome cluster authorization for slot {} asks the standing head {} but \
                      no committed round is stored for it (held until window close)",
                     request_slot.as_str(),
-                    object.digest.as_str()
+                    object.object_digest.as_str()
                 );
             }
         }
         CriomeReply::AuthorizationPending(AuthorizationPending::new(
             request_slot.clone(),
-            state.request_digest,
+            state.object_digest,
             Vec::new(),
             AuthorizationObservationToken::new(request_slot),
         ))
@@ -1599,11 +1619,7 @@ impl CriomeRoot {
         requested_digest: String,
         window: &TimeWindow,
     ) {
-        let Some(root) = self
-            .self_reference
-            .as_ref()
-            .and_then(WeakActorRef::upgrade)
-        else {
+        let Some(root) = self.self_reference.as_ref().and_then(WeakActorRef::upgrade) else {
             return;
         };
         let wait = Duration::from_nanos(
@@ -1644,23 +1660,23 @@ impl CriomeRoot {
                     }
                     self.drive_commit_round(&stored).await;
                     let commit_round = QuorumRoundIdentifier::for_phase(
-                        &stored.object().digest,
+                        &stored.object().object_digest,
                         RoundPhase::Commit,
                     );
                     if let Some(commit_stored) = self.stored_quorum_round(&commit_round).await
-                        && self.round_state(&commit_stored).await.status
+                        && self.round_state(&commit_stored).await.quorum_round_status
                             == QuorumRoundStatus::Authorized
                     {
                         ready.push((commit_stored, RoundPhase::Commit));
                     }
                 }
                 RoundPhase::Commit => {
-                    let stamp = self.assemble_evidence(&stored).stamp;
+                    let stamp = self.assemble_evidence(&stored).attested_moment;
                     self.publish_authorized_object_update(AuthorizedObjectUpdate {
-                        object: stored.object().clone(),
-                        contract: stored.contract().clone(),
-                        decision: EvaluationDecision::Authorized,
-                        stamp,
+                        authorized_object_reference: stored.object().clone(),
+                        contract_digest: stored.contract().clone(),
+                        evaluation_decision: EvaluationDecision::Authorized,
+                        attested_moment: stamp,
                     })
                     .await;
                     self.advance_head(stored.contract(), stored.object()).await;
@@ -1673,8 +1689,11 @@ impl CriomeRoot {
     /// A commit majority landed for `committed`'s object. Settle the bridge:
     /// grant a pending ask whose requested head just committed.
     async fn settle_head_authorization(&mut self, committed: &StoredQuorumRound) {
-        let committed_key = committed.object().digest.as_str().to_string();
-        if self.pending_head_authorizations.contains_key(&committed_key) {
+        let committed_key = committed.object().object_digest.as_str().to_string();
+        if self
+            .pending_head_authorizations
+            .contains_key(&committed_key)
+        {
             self.grant_head_authorization(&committed_key, committed)
                 .await;
         }
@@ -1716,7 +1735,7 @@ impl CriomeRoot {
             committed
                 .votes()
                 .iter()
-                .map(|vote| vote.voter.clone())
+                .map(|vote| vote.identity.clone())
                 .collect(),
         );
         let mut granted_slots = Vec::new();
@@ -1740,7 +1759,10 @@ impl CriomeRoot {
             };
             let granted = AuthorizationStateRecord::new(
                 request_slot.clone(),
-                authorization.object.digest.clone(),
+                authorization
+                    .authorized_object_reference
+                    .object_digest
+                    .clone(),
                 AuthorizationStatus::Granted,
                 Vec::new(),
                 Some(grant),
@@ -1748,8 +1770,8 @@ impl CriomeRoot {
             )
             .with_signal_authorization(authorization.clone())
             .with_granted_evidence(AuthorizationEvaluation {
-                contract: contract.clone(),
-                object: authorization.object,
+                contract_digest: contract.clone(),
+                authorized_object_reference: authorization.authorized_object_reference,
                 evidence: evidence.clone(),
             });
             if self.store_authorization_update(granted).await {
@@ -1813,21 +1835,24 @@ impl CriomeRoot {
                 .into_iter()
                 .filter_map(|stored| {
                     let state = stored.into_state();
-                    if state.status != AuthorizationStatus::Parked {
+                    if state.authorization_status != AuthorizationStatus::Parked {
                         return None;
                     }
                     if let Some(evaluation) = state.parked_evaluation().cloned() {
                         return Some(ParkedAuthorization::from_evaluation(
-                            state.request_slot,
+                            state.authorization_request_slot,
                             evaluation,
                         ));
                     }
-                    state.signal_authorization().cloned().map(|authorization| {
-                        ParkedAuthorization::from_signal_authorization(
-                            state.request_slot,
-                            authorization,
-                        )
-                    })
+                    state
+                        .optional_signal_call_authorization()
+                        .cloned()
+                        .map(|authorization| {
+                            ParkedAuthorization::from_signal_authorization(
+                                state.authorization_request_slot,
+                                authorization,
+                            )
+                        })
                 })
                 .collect(),
             Err(_error) => Vec::new(),
@@ -1921,7 +1946,10 @@ impl CriomeRoot {
             Ok(reply) => match reply.into_contract() {
                 Some(stored) => {
                     let (digest, contract) = stored.into_parts();
-                    CriomeReply::ContractFound(ContractFound { digest, contract })
+                    CriomeReply::ContractFound(ContractFound {
+                        contract_digest: digest,
+                        contract,
+                    })
                 }
                 None => CriomeReply::ContractMissing(ContractMissing::new(digest)),
             },
@@ -1997,15 +2025,15 @@ impl CriomeRoot {
     /// withheld round state.
     async fn propose_quorum_authorization(&mut self, proposal: QuorumProposal) -> CriomeReply {
         let QuorumProposal {
-            round,
+            quorum_round_identifier: round,
             // The round is phase-aware: round 1 (Request) and round 2 (Commit) over
             // the same object occupy DISTINCT durable rounds (`for_phase`), so their
             // signatures are never interchangeable. An external propose opens the
             // Request round; the originator drives the Commit round itself.
-            phase,
-            contract,
-            object,
-            window,
+            round_phase: phase,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: window,
         } = proposal;
         // Round-id bound to the change's fingerprint AND phase: the round key MUST
         // be the one derived from the operation digest and phase, so two distinct
@@ -2013,7 +2041,7 @@ impl CriomeRoot {
         // and a colliding proposal cannot clobber an unrelated in-flight round
         // (audit S1). Enforced at every round-creation ingress; `submit_quorum_vote`
         // inherits it via the round key.
-        if round != QuorumRoundIdentifier::for_phase(&object.digest, phase) {
+        if round != QuorumRoundIdentifier::for_phase(&object.object_digest, phase) {
             return rejection(RejectionReason::MalformedRequest);
         }
         // A round that already judges Authorized is never re-opened: an
@@ -2025,7 +2053,7 @@ impl CriomeRoot {
         // fresh-window recovery of an expired round.)
         if let Some(existing) = self.stored_quorum_round(&round).await {
             let state = self.round_state(&existing).await;
-            if state.status == QuorumRoundStatus::Authorized {
+            if state.quorum_round_status == QuorumRoundStatus::Authorized {
                 if phase == RoundPhase::Request {
                     self.originated_request_rounds
                         .insert(round.as_str().to_string());
@@ -2079,21 +2107,21 @@ impl CriomeRoot {
     /// originator across the conveyance, and record it locally for idempotent redial.
     async fn solicit_quorum_vote(&mut self, solicitation: QuorumVoteSolicitation) -> CriomeReply {
         let QuorumVoteSolicitation {
-            round,
+            quorum_round_identifier: round,
             // Phase-aware: a Request solicitation opens round 1; a Commit
             // solicitation opens round 2, gated on an independently verified
             // round-1 majority below.
-            phase,
-            contract,
-            object,
-            proposition,
-            originator,
+            round_phase: phase,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            attested_moment_proposition: proposition,
+            identity: originator,
         } = solicitation;
         // Same round-id ⇄ (operation-digest, phase) binding the originator
         // enforced, so a dishonest originator cannot make this peer open a round
         // under a round key that is not the one its operation and phase dictate
         // (audit S1).
-        if round != QuorumRoundIdentifier::for_phase(&object.digest, phase) {
+        if round != QuorumRoundIdentifier::for_phase(&object.object_digest, phase) {
             return rejection(RejectionReason::MalformedRequest);
         }
         let Some(store) = self.contract_store().await else {
@@ -2118,7 +2146,7 @@ impl CriomeRoot {
         // its own clock — the same gate the signer enforces (defence in depth), so
         // a proposer's convenient window is refused independently by every honest
         // peer, not merely on the originator's say-so.
-        match self.clock.admits_window(&proposition.window) {
+        match self.clock.admits_window(&proposition.time_window) {
             WindowAdmission::Inside => {}
             WindowAdmission::OutsideTimeWindow => {
                 return rejection(RejectionReason::MalformedRequest);
@@ -2184,7 +2212,10 @@ impl CriomeRoot {
     /// is the real approval, so it publishes the authorized-object update and
     /// advances this node's head.
     async fn submit_quorum_vote(&mut self, vote: QuorumVote) -> CriomeReply {
-        let Some(mut stored) = self.stored_quorum_round(&vote.round).await else {
+        let Some(mut stored) = self
+            .stored_quorum_round(&vote.quorum_round_identifier)
+            .await
+        else {
             return rejection(RejectionReason::MalformedRequest);
         };
         // Drop votes from non-members of the admitted contract at ingress. The
@@ -2198,7 +2229,7 @@ impl CriomeRoot {
         let Some((_required, members)) = self.quorum_members(&store, stored.contract()) else {
             return rejection(RejectionReason::MalformedRequest);
         };
-        if !members.contains(&vote.voter) {
+        if !members.contains(&vote.identity) {
             return rejection(RejectionReason::UnknownIdentity);
         }
         // A vote must VERIFY over THIS round's stored proposition before it
@@ -2215,13 +2246,13 @@ impl CriomeRoot {
             VoteVerification::Forged => return rejection(RejectionReason::ForgedVote),
             VoteVerification::Stale => return rejection(RejectionReason::StaleVote),
         }
-        let phase = vote.phase;
+        let phase = vote.round_phase;
         stored.record_vote(vote);
         if self.persist_quorum_round(stored.clone()).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);
         }
         let state = self.round_state(&stored).await;
-        if state.status == QuorumRoundStatus::Authorized {
+        if state.quorum_round_status == QuorumRoundStatus::Authorized {
             // A round reached its majority. `progress_authorized_rounds` owns
             // every consequence: a Request majority drives the commit round
             // (on the ORIGINATOR only — a peer whose round-1 round reached a
@@ -2256,17 +2287,17 @@ impl CriomeRoot {
     ) -> VoteVerification {
         use crate::master_key::VerifyBls;
         if !matches!(
-            vote.operation_signature.scheme,
+            vote.operation_signature.signature_scheme,
             signal_criome::SignatureScheme::Bls12_381MinPk
         ) || !matches!(
-            vote.time_signature.scheme,
+            vote.time_signature.signature_scheme,
             signal_criome::SignatureScheme::Bls12_381MinPk
         ) {
             return VoteVerification::Forged;
         }
         let Ok(lookup) = self
             .registry
-            .ask(registry::ResolveIdentity::new(vote.voter.clone()))
+            .ask(registry::ResolveIdentity::new(vote.identity.clone()))
             .await
         else {
             return VoteVerification::Forged;
@@ -2275,17 +2306,19 @@ impl CriomeRoot {
             return VoteVerification::Forged;
         };
         let voter_key = identity.public_key();
-        if &vote.operation_signature.public_key != voter_key
-            || &vote.time_signature.public_key != voter_key
+        if &vote.operation_signature.bls_public_key != voter_key
+            || &vote.time_signature.bls_public_key != voter_key
         {
             return VoteVerification::Forged;
         }
-        let operation = OperationDigest::new(stored.object().digest.clone());
+        let operation = OperationDigest::new(stored.object().object_digest.clone());
         let provisional_stamp = AttestedMoment::new(stored.proposition().clone(), Vec::new());
-        let Ok(operation_bytes) =
-            crate::language::OperationStatement::new(&vote.voter, &operation, &provisional_stamp)
-                .to_signing_bytes()
-        else {
+        let Ok(operation_bytes) = crate::language::OperationStatement::new(
+            &vote.identity,
+            &operation,
+            &provisional_stamp,
+        )
+        .to_signing_bytes() else {
             return VoteVerification::Stale;
         };
         let Ok(moment_bytes) =
@@ -2293,8 +2326,8 @@ impl CriomeRoot {
         else {
             return VoteVerification::Stale;
         };
-        if voter_key.verify_bls(&vote.operation_signature.signature, &operation_bytes)
-            && voter_key.verify_bls(&vote.time_signature.signature, &moment_bytes)
+        if voter_key.verify_bls(&vote.operation_signature.bls_signature, &operation_bytes)
+            && voter_key.verify_bls(&vote.time_signature.bls_signature, &moment_bytes)
         {
             VoteVerification::Verified
         } else {
@@ -2340,15 +2373,15 @@ impl CriomeRoot {
         let phase = stored
             .votes()
             .first()
-            .map_or(RoundPhase::Request, |vote| vote.phase);
+            .map_or(RoundPhase::Request, |vote| vote.round_phase);
         QuorumRoundState {
-            round: stored.round().clone(),
-            phase,
-            contract: stored.contract().clone(),
-            status,
+            quorum_round_identifier: stored.round().clone(),
+            round_phase: phase,
+            contract_digest: stored.contract().clone(),
+            quorum_round_status: status,
             gathered,
             required,
-            authorized_evidence,
+            optional_evidence: authorized_evidence,
         }
     }
 
@@ -2362,8 +2395,8 @@ impl CriomeRoot {
                 .votes()
                 .iter()
                 .map(|vote| TimeSignature {
-                    signer: vote.voter.clone(),
-                    envelope: vote.time_signature.clone(),
+                    identity: vote.identity.clone(),
+                    signature_envelope: vote.time_signature.clone(),
                 })
                 .collect(),
         );
@@ -2371,13 +2404,13 @@ impl CriomeRoot {
             .votes()
             .iter()
             .map(|vote| StampedSignatureEnvelope {
-                stamp: stamp.clone(),
-                envelope: vote.operation_signature.clone(),
+                attested_moment: stamp.clone(),
+                signature_envelope: vote.operation_signature.clone(),
             })
             .collect();
-        let operation = OperationDigest::new(stored.object().digest.clone());
+        let operation = OperationDigest::new(stored.object().object_digest.clone());
         Evidence::new(
-            stored.object().component,
+            stored.object().component_kind,
             operation,
             stamp,
             evidence_signatures,
@@ -2396,16 +2429,16 @@ impl CriomeRoot {
         proposition: &AttestedMomentProposition,
         phase: RoundPhase,
     ) -> std::result::Result<QuorumVote, CriomeReply> {
-        let operation = OperationDigest::new(object.digest.clone());
+        let operation = OperationDigest::new(object.object_digest.clone());
         let signatures = self
             .signer
             .ask(signer::SignQuorumVote::new(operation, proposition.clone()))
             .await
             .map_err(|_error| rejection(RejectionReason::MalformedRequest))?;
         Ok(QuorumVote {
-            round: round.clone(),
-            phase,
-            voter: self.node_identity.clone(),
+            quorum_round_identifier: round.clone(),
+            round_phase: phase,
+            identity: self.node_identity.clone(),
             operation_signature: signatures.operation_signature,
             time_signature: signatures.time_signature,
         })
@@ -2415,17 +2448,17 @@ impl CriomeRoot {
     /// the conveyance in the given `phase`. Best-effort: an unreachable peer leaves the
     /// round pending.
     fn solicit_peers(&self, stored: &StoredQuorumRound, phase: RoundPhase) {
-        for peer in stored.proposition().authorities() {
+        for peer in stored.proposition().identity_vector() {
             if peer == &self.node_identity {
                 continue;
             }
             let solicitation = QuorumVoteSolicitation {
-                round: stored.round().clone(),
-                phase,
-                contract: stored.contract().clone(),
-                object: stored.object().clone(),
-                proposition: stored.proposition().clone(),
-                originator: self.node_identity.clone(),
+                quorum_round_identifier: stored.round().clone(),
+                round_phase: phase,
+                contract_digest: stored.contract().clone(),
+                authorized_object_reference: stored.object().clone(),
+                attested_moment_proposition: stored.proposition().clone(),
+                identity: self.node_identity.clone(),
             };
             self.conveyance
                 .convey(peer, CriomeRequest::solicit_quorum_vote(solicitation));
@@ -2447,7 +2480,8 @@ impl CriomeRoot {
         let contract = request_round.contract().clone();
         let object = request_round.object().clone();
         let proposition = request_round.proposition().clone();
-        let commit_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Commit);
+        let commit_round =
+            QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Commit);
 
         // Drive the commit round at most once. A redelivered round-1 vote can bring
         // an already-Authorized round-1 round through here again; if this node has
@@ -2458,7 +2492,7 @@ impl CriomeRoot {
             stored
                 .votes()
                 .iter()
-                .any(|vote| vote.voter == self.node_identity)
+                .any(|vote| vote.identity == self.node_identity)
         }) {
             return;
         }
@@ -2502,14 +2536,14 @@ impl CriomeRoot {
         // QuorumConflict and wedges the cluster). The ordered conveyance closes the
         // race the best-effort conveyance would otherwise open.
         let commit_solicitation = CriomeRequest::solicit_quorum_vote(QuorumVoteSolicitation {
-            round: commit_round.clone(),
-            phase: RoundPhase::Commit,
-            contract: contract.clone(),
-            object: object.clone(),
-            proposition: proposition.clone(),
-            originator: self.node_identity.clone(),
+            quorum_round_identifier: commit_round.clone(),
+            round_phase: RoundPhase::Commit,
+            contract_digest: contract.clone(),
+            authorized_object_reference: object.clone(),
+            attested_moment_proposition: proposition.clone(),
+            identity: self.node_identity.clone(),
         });
-        for peer in proposition.authorities() {
+        for peer in proposition.identity_vector() {
             if peer == &self.node_identity {
                 continue;
             }
@@ -2537,9 +2571,12 @@ impl CriomeRoot {
     /// `Authorized` over the round-1 evidence this node gathered. A forged or short
     /// round-1 never reaches `Authorized`, so it cannot be committed.
     async fn round_one_verified(&self, object: &AuthorizedObjectReference) -> bool {
-        let request_round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
+        let request_round =
+            QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Request);
         match self.stored_quorum_round(&request_round).await {
-            Some(stored) => self.round_state(&stored).await.status == QuorumRoundStatus::Authorized,
+            Some(stored) => {
+                self.round_state(&stored).await.quorum_round_status == QuorumRoundStatus::Authorized
+            }
             None => false,
         }
     }
@@ -2567,7 +2604,10 @@ impl CriomeRoot {
     /// and the (possibly void) successor row recorded from it. Every
     /// successor-ledger judgment (veto conflict, self-loop refusal, dead-round
     /// predicate) is decided on this one contact point.
-    fn successor_ledger_point(&self, contract: &signal_criome::ContractDigest) -> SuccessorLedgerPoint {
+    fn successor_ledger_point(
+        &self,
+        contract: &signal_criome::ContractDigest,
+    ) -> SuccessorLedgerPoint {
         let head = self.state_head(contract);
         let recorded = self
             .co_signed_successors
@@ -2593,15 +2633,15 @@ impl CriomeRoot {
             return RecordedRoundLife::Live;
         };
         let commit_round =
-            QuorumRoundIdentifier::for_phase(&recorded.digest, RoundPhase::Commit);
+            QuorumRoundIdentifier::for_phase(&recorded.object_digest, RoundPhase::Commit);
         let commit_stored = self.stored_quorum_round(&commit_round).await;
         if let Some(stored) = &commit_stored
-            && self.round_state(stored).await.status == QuorumRoundStatus::Authorized
+            && self.round_state(stored).await.quorum_round_status == QuorumRoundStatus::Authorized
         {
             return RecordedRoundLife::Committed;
         }
         let request_round =
-            QuorumRoundIdentifier::for_phase(&recorded.digest, RoundPhase::Request);
+            QuorumRoundIdentifier::for_phase(&recorded.object_digest, RoundPhase::Request);
         let request_stored = self.stored_quorum_round(&request_round).await;
         // The latest window close across the stored phase rounds — the
         // conservative bound (an idempotent re-open refreshes the request
@@ -2609,7 +2649,7 @@ impl CriomeRoot {
         let latest_close = [&request_stored, &commit_stored]
             .into_iter()
             .flatten()
-            .map(|stored| stored.proposition().window.closes_at.into_u64())
+            .map(|stored| stored.proposition().time_window.closes_at.into_u64())
             .max();
         match latest_close {
             Some(closes_at) if self.clock.is_past(&TimestampNanos::new(closes_at)) => {
@@ -2637,16 +2677,10 @@ impl CriomeRoot {
             CoSignAdmission::RecordFresh
             | CoSignAdmission::AlreadyRecorded
             | CoSignAdmission::SupersedeDeadRow(_) => None,
-            CoSignAdmission::RefusedSelfLoop => {
-                Some(rejection(RejectionReason::SelfLoopSuccessor))
-            }
-            CoSignAdmission::RefusedConflict(existing) => {
-                Some(CriomeReply::quorum_conflict(QuorumConflict::new(
-                    contract.clone(),
-                    point.head().clone(),
-                    existing,
-                )))
-            }
+            CoSignAdmission::RefusedSelfLoop => Some(rejection(RejectionReason::SelfLoopSuccessor)),
+            CoSignAdmission::RefusedConflict(existing) => Some(CriomeReply::quorum_conflict(
+                QuorumConflict::new(contract.clone(), point.head().clone(), existing),
+            )),
         }
     }
 
@@ -2698,8 +2732,8 @@ impl CriomeRoot {
                      recorded {} replaced by {}",
                     contract.as_str(),
                     point.head().as_str(),
-                    replaced.digest.as_str(),
-                    object.digest.as_str()
+                    replaced.object_digest.as_str(),
+                    object.object_digest.as_str()
                 );
             }
         }
@@ -2730,7 +2764,7 @@ impl CriomeRoot {
         contract: &signal_criome::ContractDigest,
         object: &AuthorizedObjectReference,
     ) {
-        let head = ContractOperationHead::new(object.digest.as_str().to_string());
+        let head = ContractOperationHead::new(object.object_digest.as_str().to_string());
         self.contract_heads
             .insert(contract.as_str().to_string(), head.clone());
         let _ = self
@@ -2813,14 +2847,14 @@ impl CriomeRoot {
             return None;
         };
         let members = threshold
-            .members()
+            .policy_member_vector()
             .iter()
             .filter_map(|member| match member {
                 PolicyMember::KeyMember(identity) => Some(identity.clone()),
                 PolicyMember::ObjectMember(_) => None,
             })
             .collect();
-        Some((threshold.required_signatures, members))
+        Some((threshold.required_signature_threshold, members))
     }
 
     /// Whether a solicited moment proposition names exactly this contract's member
@@ -2832,8 +2866,8 @@ impl CriomeRoot {
         required: RequiredSignatureThreshold,
         members: &[Identity],
     ) -> bool {
-        let authorities = proposition.authorities();
-        proposition.required_signatures.into_u16() == required.into_u16()
+        let authorities = proposition.identity_vector();
+        proposition.required_signature_threshold.into_u16() == required.into_u16()
             && authorities.len() == members.len()
             && members.iter().all(|member| authorities.contains(member))
     }
@@ -2902,7 +2936,10 @@ impl CriomeRoot {
         &self,
         acceptance: RootFoundingAcceptance,
     ) -> meta_signal_criome::Output {
-        let RootFoundingAcceptance { anchor, cohort } = acceptance;
+        let RootFoundingAcceptance {
+            root_anchor_digest: anchor,
+            root_genesis: cohort,
+        } = acceptance;
         // A malformed genesis (empty cohort, non-root parent, un-encodable anchor)
         // is refused before any signing.
         let candidate = match RootFounding::found(cohort) {
@@ -2959,8 +2996,8 @@ impl CriomeRoot {
                 pending.initiator(),
                 CriomeRequest::convey_founding(FoundingConveyance::Signature(
                     FoundingSignatureReturn {
-                        anchor: anchor.clone(),
-                        signature: signature.clone(),
+                        root_anchor_digest: anchor.clone(),
+                        founding_signature: signature.clone(),
                     },
                 )),
             );
@@ -3028,7 +3065,7 @@ impl CriomeRoot {
         let _ = self
             .store
             .ask(store::StoreContract::new(
-                founding.genesis().root_contract.clone(),
+                founding.genesis().contract.clone(),
             ))
             .await;
     }
@@ -3072,7 +3109,10 @@ impl CriomeRoot {
     /// this node does NOT sign on receipt (no auto-approval). A malformed proposal
     /// is refused, never stored.
     async fn receive_founding_proposal(&self, proposal: FoundingProposal) -> CriomeReply {
-        let FoundingProposal { genesis, initiator } = proposal;
+        let FoundingProposal {
+            root_genesis: genesis,
+            identity: initiator,
+        } = proposal;
         let founding = match RootFounding::found(genesis) {
             Ok(founding) => founding,
             Err(_) => return rejection(RejectionReason::MalformedRequest),
@@ -3095,7 +3135,10 @@ impl CriomeRoot {
         &self,
         signature_return: FoundingSignatureReturn,
     ) -> CriomeReply {
-        let FoundingSignatureReturn { anchor, signature } = signature_return;
+        let FoundingSignatureReturn {
+            root_anchor_digest: anchor,
+            founding_signature: signature,
+        } = signature_return;
         let mut founding = match self.stored_root_founding().await {
             Some(existing) if existing.anchor() == &anchor => existing,
             Some(_) => return Self::founding_conveyed(anchor, FoundingConveyanceOutcome::Refused),
@@ -3151,8 +3194,8 @@ impl CriomeRoot {
     /// refused.
     async fn receive_founded_root(&self, founded: FoundedRoot) -> CriomeReply {
         let FoundedRoot {
-            genesis,
-            signatures,
+            root_genesis: genesis,
+            founding_signature_vector: signatures,
         } = founded;
         let founding = match RootFounding::adopt(genesis, signatures) {
             Ok(founding) => founding,
@@ -3173,7 +3216,10 @@ impl CriomeRoot {
         anchor: RootAnchorDigest,
         outcome: FoundingConveyanceOutcome,
     ) -> CriomeReply {
-        CriomeReply::founding_conveyed(FoundingConveyanceReceipt { anchor, outcome })
+        CriomeReply::founding_conveyed(FoundingConveyanceReceipt {
+            root_anchor_digest: anchor,
+            founding_conveyance_outcome: outcome,
+        })
     }
 
     /// The initiator has gathered every cohort member's signature. Seed this node's
@@ -3189,10 +3235,10 @@ impl CriomeRoot {
     /// node, over the same best-effort conveyance.
     fn distribute_founded(&self, founding: &RootFounding) {
         let founded = FoundedRoot {
-            genesis: founding.genesis().clone(),
-            signatures: founding.signatures().to_vec(),
+            root_genesis: founding.genesis().clone(),
+            founding_signature_vector: founding.signatures().to_vec(),
         };
-        for member in founding.genesis().founding_keys() {
+        for member in founding.genesis().founding_member_vector() {
             if member.identity == self.node_identity {
                 continue;
             }
@@ -3226,15 +3272,15 @@ impl CriomeRoot {
         if self.store_pending_founding(pending).await.is_err() {
             return Self::reject_founding(RootFoundingRejectionReason::MalformedGenesis);
         }
-        for member in founding.genesis().founding_keys() {
+        for member in founding.genesis().founding_member_vector() {
             if member.identity == self.node_identity {
                 continue;
             }
             self.conveyance.convey(
                 &member.identity,
                 CriomeRequest::convey_founding(FoundingConveyance::Proposal(FoundingProposal {
-                    genesis: founding.genesis().clone(),
-                    initiator: self.node_identity.clone(),
+                    root_genesis: founding.genesis().clone(),
+                    identity: self.node_identity.clone(),
                 })),
             );
         }
@@ -3263,13 +3309,16 @@ impl CriomeRoot {
             .map(|stored| {
                 let (anchor, cohort, initiator) = stored.into_parts();
                 PendingFounding {
-                    anchor,
-                    cohort,
-                    initiator,
+                    root_anchor_digest: anchor,
+                    root_genesis: cohort,
+                    identity: initiator,
                 }
             })
             .collect();
-        RootFoundingStatus { state, pending }
+        RootFoundingStatus {
+            root_founding_state: state,
+            pending_founding_vector: pending,
+        }
     }
 
     async fn store_pending_founding(
@@ -3384,7 +3433,7 @@ impl Actor for CriomeRoot {
             // applies at founding time.
             let _ = store
                 .ask(store::StoreContract::new(
-                    founding.genesis().root_contract.clone(),
+                    founding.genesis().contract.clone(),
                 ))
                 .await;
         }
@@ -3522,7 +3571,11 @@ impl Message<ExpireHeadAuthorization> for CriomeRoot {
         // supersedes the window-dead row (§3.3).
         let expired = AuthorizationStateRecord::new(
             asker.request_slot,
-            asker.authorization.object.digest.clone(),
+            asker
+                .authorization
+                .authorized_object_reference
+                .object_digest
+                .clone(),
             AuthorizationStatus::Expired,
             Vec::new(),
             None,
@@ -3568,20 +3621,22 @@ mod tests {
     //! end-to-end dead-round supersession) live in
     //! `tests/cluster_authorization_bridge.rs`.
 
-    use signal_criome::{AuthorizedObjectKind, AuthorizedObjectReference, ComponentKind, ObjectDigest};
+    use signal_criome::{
+        AuthorizedObjectKind, AuthorizedObjectReference, ComponentKind, ObjectDigest,
+    };
 
     use super::{CoSignAdmission, ContractOperationHead, RecordedRoundLife, SuccessorLedgerPoint};
 
     fn object(seed: &[u8]) -> AuthorizedObjectReference {
         AuthorizedObjectReference {
-            component: ComponentKind::Spirit,
-            digest: ObjectDigest::from_bytes(seed),
-            kind: AuthorizedObjectKind::Head,
+            component_kind: ComponentKind::Spirit,
+            object_digest: ObjectDigest::from_bytes(seed),
+            authorized_object_kind: AuthorizedObjectKind::Head,
         }
     }
 
     fn head_of(reference: &AuthorizedObjectReference) -> ContractOperationHead {
-        ContractOperationHead::new(reference.digest.as_str().to_string())
+        ContractOperationHead::new(reference.object_digest.as_str().to_string())
     }
 
     #[test]
@@ -3629,11 +3684,9 @@ mod tests {
         );
         match point.co_sign_admission(&conflicting, RecordedRoundLife::Live) {
             CoSignAdmission::RefusedConflict(existing) => {
-                assert_eq!(existing.digest, recorded.digest);
+                assert_eq!(existing.object_digest, recorded.object_digest);
             }
-            _other => panic!(
-                "a different successor against a window-live row is the veto case"
-            ),
+            _other => panic!("a different successor against a window-live row is the veto case"),
         }
     }
 
@@ -3649,7 +3702,7 @@ mod tests {
         );
         match point.co_sign_admission(&conflicting, RecordedRoundLife::Committed) {
             CoSignAdmission::RefusedConflict(existing) => {
-                assert_eq!(existing.digest, recorded.digest);
+                assert_eq!(existing.object_digest, recorded.object_digest);
             }
             _other => panic!("a committed row is never superseded"),
         }
@@ -3669,7 +3722,7 @@ mod tests {
         match point.co_sign_admission(&conflicting, RecordedRoundLife::Dead) {
             CoSignAdmission::SupersedeDeadRow(replaced) => {
                 assert_eq!(
-                    replaced.digest, recorded.digest,
+                    replaced.object_digest, recorded.object_digest,
                     "the superseded verdict carries the replaced row"
                 );
             }

@@ -147,10 +147,10 @@ impl FoundingOperator {
         let anchor = RootAnchorDigest::new(ObjectDigest::new(anchor_argument.to_string()));
         let cohort = self
             .observe_status()?
-            .pending
+            .pending_founding_vector
             .into_iter()
-            .find(|pending| pending.anchor == anchor)
-            .map(|pending| pending.cohort)
+            .find(|pending| pending.root_anchor_digest == anchor)
+            .map(|pending| pending.root_genesis)
             .ok_or_else(|| OperatorError::NoPendingFounding(anchor_argument.to_string()))?;
         let reply =
             self.meta_client()

@@ -109,7 +109,7 @@ impl IdentityRegistry {
         // over the registration statement. Dev/virgin daemons (no configured
         // root) skip the gate.
         if let Some(root) = &self.cluster_root {
-            match registration.admission() {
+            match registration.optional_signature_envelope() {
                 Some(admission) if root.admits(&registration, admission) => {}
                 _ => return rejection(RejectionReason::UnauthorizedRegistration),
             }
@@ -156,7 +156,7 @@ impl IdentityRegistry {
                     .into_iter()
                     .map(|identity| IdentityReceipt {
                         identity: identity.identity().clone(),
-                        status: identity.status(),
+                        principal_status: identity.status(),
                     })
                     .collect(),
             )),

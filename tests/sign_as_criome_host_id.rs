@@ -89,16 +89,16 @@ async fn attest_as_host_id(
 ) -> signal_criome::Attestation {
     let request = SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"criome-host-id-fixture"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new("criome-host-id-schema".to_string()),
+            object_digest: ObjectDigest::from_bytes(b"criome-host-id-fixture"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new("criome-host-id-schema".to_string()),
         },
         host_id,
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new("criome-host-id-audience".to_string()),
             policy_version: PrincipalName::new("criome-host-id-policy".to_string()),
-            nonce: ReplayNonce::new("criome-host-id-nonce".to_string()),
+            replay_nonce: ReplayNonce::new("criome-host-id-nonce".to_string()),
         },
         None,
     );
@@ -143,19 +143,19 @@ async fn verify_on(
     node: &kameo::actor::ActorRef<CriomeRoot>,
     attestation: signal_criome::Attestation,
 ) -> VerificationDecision {
-    let content = attestation.content.clone();
+    let content = attestation.content_reference.clone();
     let reply = node
         .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
             VerifyRequest {
                 attestation,
-                content,
+                content_reference: content,
             },
         )))
         .await
         .expect("submit verify request")
         .into_reply();
     match reply {
-        CriomeReply::VerificationResult(result) => result.decision,
+        CriomeReply::VerificationResult(result) => result.verification_decision,
         other => panic!("expected VerificationResult, got {other:?}"),
     }
 }
@@ -181,11 +181,11 @@ async fn a_node_attests_as_its_criome_host_id_and_a_peer_verifies_by_that_key() 
     // A attests as its own host ID Host(key_a) — no OS name in the signer.
     let attestation_a = attest_as_host_id(&node_a, host_id_a.clone()).await;
     assert_eq!(
-        attestation_a.signer, host_id_a,
+        attestation_a.identity, host_id_a,
         "the attestation is signed under the Criome host ID, not the OS node identity"
     );
     assert_eq!(
-        attestation_a.envelope.public_key, key_a,
+        attestation_a.signature_envelope.bls_public_key, key_a,
         "the signing key is the master public key that IS the host ID"
     );
 

@@ -197,12 +197,12 @@ impl<'a> AuthorizationGrantStatement<'a> {
     // contract/operation/scope string trio (retired with the typed ask).
     fn to_signing_bytes(&self) -> Vec<u8> {
         let mut bytes = b"CRIOME-AUTHORIZATION-GRANT-V2".to_vec();
-        self.push_text(&mut bytes, self.grant.request_slot.as_str());
+        self.push_text(&mut bytes, self.grant.authorization_request_slot.as_str());
         self.push_authorized_object(&mut bytes);
         self.push_policy_satisfaction(&mut bytes);
         self.push_signature_result(&mut bytes);
-        self.push_identity(&mut bytes, &self.grant.issued_by);
-        self.push_timestamp(&mut bytes, self.grant.issued_at);
+        self.push_identity(&mut bytes, &self.grant.identity);
+        self.push_timestamp(&mut bytes, self.grant.timestamp_nanos);
         match self.expires_at {
             Some(expires_at) => {
                 bytes.extend_from_slice(b"some");
@@ -214,7 +214,7 @@ impl<'a> AuthorizationGrantStatement<'a> {
     }
 
     fn push_authorized_object(&self, bytes: &mut Vec<u8>) {
-        let component_tag: u8 = match self.grant.authorized_object.component {
+        let component_tag: u8 = match self.grant.authorized_object_reference.component_kind {
             ComponentKind::Spirit => 0,
             ComponentKind::Criome => 1,
             ComponentKind::Router => 2,
@@ -224,8 +224,18 @@ impl<'a> AuthorizationGrantStatement<'a> {
             ComponentKind::Agent => 6,
         };
         bytes.push(component_tag);
-        self.push_text(bytes, self.grant.authorized_object.digest.as_str());
-        let kind_tag: u8 = match self.grant.authorized_object.kind {
+        self.push_text(
+            bytes,
+            self.grant
+                .authorized_object_reference
+                .object_digest
+                .as_str(),
+        );
+        let kind_tag: u8 = match self
+            .grant
+            .authorized_object_reference
+            .authorized_object_kind
+        {
             AuthorizedObjectKind::Operation => 0,
             AuthorizedObjectKind::Contract => 1,
             AuthorizedObjectKind::Agreement => 2,
@@ -236,28 +246,37 @@ impl<'a> AuthorizationGrantStatement<'a> {
     }
 
     fn push_policy_satisfaction(&self, bytes: &mut Vec<u8>) {
-        match self.grant.policy_satisfaction.policy_class {
+        match self
+            .grant
+            .authorization_policy_satisfaction
+            .authorization_policy_class
+        {
             AuthorizationPolicyClass::SimpleSelfSigned => bytes.push(0),
             AuthorizationPolicyClass::ComplexQuorum => bytes.push(1),
         }
         bytes.extend_from_slice(
             &self
                 .grant
-                .policy_satisfaction
+                .authorization_policy_satisfaction
                 .required_signature_threshold
                 .into_u16()
                 .to_le_bytes(),
         );
         bytes.extend_from_slice(
-            &(self.grant.policy_satisfaction.satisfied_signers().len() as u32).to_le_bytes(),
+            &(self
+                .grant
+                .authorization_policy_satisfaction
+                .vec_identity()
+                .len() as u32)
+                .to_le_bytes(),
         );
-        for signer in self.grant.policy_satisfaction.satisfied_signers() {
+        for signer in self.grant.authorization_policy_satisfaction.vec_identity() {
             self.push_identity(bytes, signer);
         }
     }
 
     fn push_signature_result(&self, bytes: &mut Vec<u8>) {
-        let tag = match self.grant.signature_result {
+        let tag = match self.grant.signature_authorization_result {
             SignatureAuthorizationResult::SingleSignature => 0,
             SignatureAuthorizationResult::RequiredSignaturesSatisfied => 1,
             SignatureAuthorizationResult::PendingSignatures => 2,
@@ -324,11 +343,11 @@ impl AttestationSigner {
         // active identity, and the attestation is signed as this criome's own
         // node identity (self-owned policy); the requester and the kernel-vouched
         // caller live in the audit context.
-        let signer = if request.signer == self.own_criome_host_id() {
-            request.signer.clone()
+        let signer = if request.identity == self.own_criome_host_id() {
+            request.identity.clone()
         } else {
             if self
-                .active_public_key(request.signer.clone())
+                .active_public_key(request.identity.clone())
                 .await
                 .is_none()
             {
@@ -339,12 +358,12 @@ impl AttestationSigner {
         let issued_at = self.clock.timestamp();
         let expires_at = request.expires_at();
         let mut attestation = Attestation::new(
-            request.content,
+            request.content_reference,
             signer,
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.master_key.public_key(),
-                signature: BlsSignature::new(String::new()),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.master_key.public_key(),
+                bls_signature: BlsSignature::new(String::new()),
             },
             issued_at,
             expires_at,
@@ -353,24 +372,24 @@ impl AttestationSigner {
         // Sign the full attestation statement (everything but the signature),
         // then fill in the real signature.
         let signing_bytes = AttestationPreimage::from_attestation(&attestation).to_signing_bytes();
-        attestation.envelope.signature = self.master_key.sign(&signing_bytes);
+        attestation.signature_envelope.bls_signature = self.master_key.sign(&signing_bytes);
         if self.record_attestation(attestation.clone()).await.is_err() {
             return rejection(RejectionReason::MalformedRequest);
         }
         CriomeReply::SignReceipt(SignReceipt {
             attestation,
-            issued_at,
+            timestamp_nanos: issued_at,
         })
     }
 
     async fn attest_archive(&self, request: ArchiveAttestationRequest) -> CriomeReply {
         let sign = SignRequest::new(
             ContentReference {
-                digest: request.release.artifact,
-                purpose: ContentPurpose::Archive,
-                schema_version: request.release.component,
+                object_digest: request.component_release.object_digest,
+                content_purpose: ContentPurpose::Archive,
+                principal_name: request.component_release.principal_name,
             },
-            request.release.authorized_by,
+            request.component_release.identity,
             request.audit_context,
             None,
         );
@@ -379,8 +398,8 @@ impl AttestationSigner {
 
     async fn attest_channel_grant(&self, request: ChannelGrantAttestationRequest) -> CriomeReply {
         let sign = SignRequest::new(
-            request.grant_content,
-            request.source,
+            request.content_reference,
+            request.identity,
             request.audit_context,
             None,
         );
@@ -411,7 +430,7 @@ impl AttestationSigner {
         };
         let mut grant = AuthorizationGrant::new(
             request.request_slot,
-            request.authorization.object.clone(),
+            request.authorization.authorized_object_reference.clone(),
             policy_satisfaction,
             signature_result,
             Vec::new(),
@@ -422,14 +441,14 @@ impl AttestationSigner {
         let signing_bytes = AuthorizationGrantStatement::new(&grant, expires_at).to_signing_bytes();
         let stamp = self.grant_stamp(issued_at);
         let signature = StampedSignatureEnvelope {
-            stamp,
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.master_key.public_key(),
-                signature: self.master_key.sign(&signing_bytes),
+            attested_moment: stamp,
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.master_key.public_key(),
+                bls_signature: self.master_key.sign(&signing_bytes),
             },
         };
-        grant.authorization_grant_signatures = vec![signature];
+        grant.vec_stamped_signature_envelope = vec![signature];
         CriomeReply::AuthorizationGranted(grant)
     }
 
@@ -449,7 +468,7 @@ impl AttestationSigner {
         // convenient window; an honest signer refuses a window its clock is not
         // inside, refusing the whole vote (a vote without a valid time-signature is
         // worthless to the round).
-        match self.clock.admits_window(&proposition.window) {
+        match self.clock.admits_window(&proposition.time_window) {
             WindowAdmission::Inside => {}
             WindowAdmission::OutsideTimeWindow => return Err(crate::Error::OutsideTimeWindow),
         }
@@ -463,14 +482,14 @@ impl AttestationSigner {
             .map_err(|error| crate::Error::VoteSigning(error.to_string()))?;
         Ok(QuorumVoteSignatures {
             operation_signature: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.master_key.public_key(),
-                signature: self.master_key.sign(&operation_bytes),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.master_key.public_key(),
+                bls_signature: self.master_key.sign(&operation_bytes),
             },
             time_signature: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.master_key.public_key(),
-                signature: self.master_key.sign(&moment_bytes),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.master_key.public_key(),
+                bls_signature: self.master_key.sign(&moment_bytes),
             },
         })
     }
@@ -493,9 +512,9 @@ impl AttestationSigner {
             .signing_bytes()
             .map_err(|error| crate::Error::RootFounding(error.to_string()))?;
         Ok(SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: self.master_key.public_key(),
-            signature: self.master_key.sign(&signing_bytes),
+            signature_scheme: SignatureScheme::Bls12_381MinPk,
+            bls_public_key: self.master_key.public_key(),
+            bls_signature: self.master_key.sign(&signing_bytes),
         })
     }
 

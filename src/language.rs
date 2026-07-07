@@ -141,7 +141,7 @@ impl ContractStore {
         registry: &KeyRegistry,
     ) -> Result<EvaluationDecision, EvaluationError> {
         let contract = self.resolve(digest)?;
-        if let Some(reason) = evidence.stamp.rejection_reason(registry) {
+        if let Some(reason) = evidence.attested_moment.rejection_reason(registry) {
             return Ok(EvaluationDecision::Rejected(reason));
         }
         contract.rule().decide(evidence, self, registry)
@@ -211,7 +211,7 @@ impl<'a> OperationStatement<'a> {
         self.signer.encode_into(&mut bytes);
         self.operation.object_digest().encode_into(&mut bytes);
         self.stamp
-            .proposition
+            .attested_moment_proposition
             .digest()?
             .object_digest()
             .encode_into(&mut bytes);
@@ -262,7 +262,7 @@ impl<'a> ContractAdmission<'a> {
     /// digest), so a founded root admits with an empty reference set.
     fn referenced_digests(&self) -> Vec<ContractDigest> {
         let mut references = self.contract.rule().referenced_digests();
-        if let ContractParent::Parent(parent) = self.contract.parent() {
+        if let ContractParent::Parent(parent) = self.contract.contract_parent() {
             references.push(parent.clone());
         }
         references
@@ -299,8 +299,10 @@ impl RuleEvaluation for Rule {
             }
             Self::Threshold(threshold) => threshold.decide(evidence, store, registry),
             Self::ActiveAfter(timed_rule) => {
-                if evidence.stamp.closes_at().into_u64() >= timed_rule.boundary.into_u64() {
-                    Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
+                if evidence.attested_moment.closes_at().into_u64()
+                    >= timed_rule.timestamp_nanos.into_u64()
+                {
+                    Ok(evidence.decision_for_signature(&timed_rule.identity, registry))
                 } else {
                     Ok(EvaluationDecision::Rejected(
                         EvaluationRejectionReason::OutsideTimeWindow,
@@ -308,8 +310,10 @@ impl RuleEvaluation for Rule {
                 }
             }
             Self::ActiveUntil(timed_rule) => {
-                if evidence.stamp.closes_at().into_u64() < timed_rule.boundary.into_u64() {
-                    Ok(evidence.decision_for_signature(&timed_rule.signed_by, registry))
+                if evidence.attested_moment.closes_at().into_u64()
+                    < timed_rule.timestamp_nanos.into_u64()
+                {
+                    Ok(evidence.decision_for_signature(&timed_rule.identity, registry))
                 } else {
                     Ok(EvaluationDecision::Rejected(
                         EvaluationRejectionReason::OutsideTimeWindow,
@@ -372,14 +376,17 @@ trait WorkflowGuardEvaluation {
 impl WorkflowGuardEvaluation for WorkflowGuard {
     fn decision_from_receipt(&self, evidence: &Evidence) -> EvaluationDecision {
         evidence
-            .workflow_receipts()
+            .workflow_receipt_vector()
             .iter()
             .find(|receipt| {
-                receipt.workflow == self.workflow && receipt.operation == evidence.operation
+                receipt.workflow_digest == self.workflow_digest
+                    && receipt.operation_digest == evidence.operation_digest
             })
-            .map(|receipt| receipt.outcome.clone())
+            .map(|receipt| receipt.evaluation_decision.clone())
             .unwrap_or_else(|| {
-                EvaluationDecision::Escalate(EscalationTarget::Workflow(self.workflow.clone()))
+                EvaluationDecision::Escalate(EscalationTarget::Workflow(
+                    self.workflow_digest.clone(),
+                ))
             })
     }
 }
@@ -427,14 +434,14 @@ impl ThresholdEvaluation for Threshold {
         registry: &KeyRegistry,
     ) -> Result<EvaluationDecision, EvaluationError> {
         let mut satisfied_members: Vec<PolicyMember> = Vec::new();
-        for member in self.members() {
+        for member in self.policy_member_vector() {
             if member.is_satisfied(evidence, store, registry)?
                 && !satisfied_members.contains(member)
             {
                 satisfied_members.push(member.clone());
             }
         }
-        let required = self.required_signatures.into_u16();
+        let required = self.required_signature_threshold.into_u16();
         let satisfied = satisfied_members.len() as u16;
         Ok(if satisfied >= required {
             EvaluationDecision::Authorized
@@ -447,7 +454,7 @@ impl ThresholdEvaluation for Threshold {
     }
 
     fn referenced_digests(&self) -> Vec<ContractDigest> {
-        self.members()
+        self.policy_member_vector()
             .iter()
             .filter_map(|member| match member {
                 PolicyMember::ObjectMember(digest) => Some(digest.clone()),
@@ -457,19 +464,19 @@ impl ThresholdEvaluation for Threshold {
     }
 
     fn validate_shape(&self) -> Result<(), AdmissionError> {
-        if self.members().is_empty() {
+        if self.policy_member_vector().is_empty() {
             return Err(AdmissionError::rejected(
                 ContractAdmissionRejectionReason::EmptyThreshold,
             ));
         }
-        let required = self.required_signatures.into_u16();
-        if !QuorumShape::new(required, self.members().len()).is_valid_majority() {
+        let required = self.required_signature_threshold.into_u16();
+        if !QuorumShape::new(required, self.policy_member_vector().len()).is_valid_majority() {
             return Err(AdmissionError::rejected(
                 ContractAdmissionRejectionReason::ThresholdUnsatisfiable,
             ));
         }
         let mut unique_members: Vec<&PolicyMember> = Vec::new();
-        for member in self.members() {
+        for member in self.policy_member_vector() {
             if unique_members.contains(&member) {
                 return Err(AdmissionError::rejected(
                     ContractAdmissionRejectionReason::DuplicatePolicyMember,
@@ -487,7 +494,7 @@ trait TimeSwitchEvaluation {
 
 impl TimeSwitchEvaluation for signal_criome::TimeSwitch {
     fn active_threshold<'a>(&'a self, evidence: &Evidence) -> &'a Threshold {
-        if evidence.stamp.closes_at().into_u64() < self.boundary.into_u64() {
+        if evidence.attested_moment.closes_at().into_u64() < self.timestamp_nanos.into_u64() {
             &self.before
         } else {
             &self.after
@@ -574,15 +581,19 @@ impl EvidenceVerification for Evidence {
             return false;
         };
         let Ok(statement) =
-            OperationStatement::new(identity, &self.operation, &self.stamp).to_signing_bytes()
+            OperationStatement::new(identity, &self.operation_digest, &self.attested_moment)
+                .to_signing_bytes()
         else {
             return false;
         };
         self.signatures().iter().any(|envelope| {
-            envelope.stamp == self.stamp
-                && matches!(envelope.envelope.scheme, SignatureScheme::Bls12_381MinPk)
-                && &envelope.envelope.public_key == admitted_key
-                && admitted_key.verify_bls(&envelope.envelope.signature, &statement)
+            envelope.attested_moment == self.attested_moment
+                && matches!(
+                    envelope.signature_envelope.signature_scheme,
+                    SignatureScheme::Bls12_381MinPk
+                )
+                && &envelope.signature_envelope.bls_public_key == admitted_key
+                && admitted_key.verify_bls(&envelope.signature_envelope.bls_signature, &statement)
         })
     }
 
@@ -591,21 +602,39 @@ impl EvidenceVerification for Evidence {
         agreement: &signal_criome::AgreementRule,
         registry: &KeyRegistry,
     ) -> bool {
-        let Some(resolver_key) = registry.public_key(&agreement.resolver) else {
+        let Some(resolver_key) = registry.public_key(&agreement.identity) else {
             return false;
         };
-        self.agreements().iter().any(|fact| {
-            let Ok(statement) = agreement.reconciliation_bytes(&fact.signature.stamp) else {
+        self.agreement_fact_vector().iter().any(|fact| {
+            let Ok(statement) =
+                agreement.reconciliation_bytes(&fact.stamped_signature_envelope.attested_moment)
+            else {
                 return false;
             };
             agreement.matches(fact)
-                && fact.signature.stamp.rejection_reason(registry).is_none()
+                && fact
+                    .stamped_signature_envelope
+                    .attested_moment
+                    .rejection_reason(registry)
+                    .is_none()
                 && matches!(
-                    fact.signature.envelope.scheme,
+                    fact.stamped_signature_envelope
+                        .signature_envelope
+                        .signature_scheme,
                     SignatureScheme::Bls12_381MinPk
                 )
-                && &fact.signature.envelope.public_key == resolver_key
-                && resolver_key.verify_bls(&fact.signature.envelope.signature, &statement)
+                && &fact
+                    .stamped_signature_envelope
+                    .signature_envelope
+                    .bls_public_key
+                    == resolver_key
+                && resolver_key.verify_bls(
+                    &fact
+                        .stamped_signature_envelope
+                        .signature_envelope
+                        .bls_signature,
+                    &statement,
+                )
         })
     }
 }
@@ -618,36 +647,51 @@ trait AttestedMomentVerification {
 
 impl AttestedMomentVerification for AttestedMoment {
     fn closes_at(&self) -> TimestampNanos {
-        self.proposition.window.closes_at
+        self.attested_moment_proposition.time_window.closes_at
     }
 
     fn rejection_reason(&self, registry: &KeyRegistry) -> Option<EvaluationRejectionReason> {
-        let authorities = self.proposition.authorities();
-        let required = self.proposition.required_signatures.into_u16();
-        if self.proposition.window.opens_at.into_u64()
-            >= self.proposition.window.closes_at.into_u64()
+        let authorities = self.attested_moment_proposition.identity_vector();
+        let required = self
+            .attested_moment_proposition
+            .required_signature_threshold
+            .into_u16();
+        if self
+            .attested_moment_proposition
+            .time_window
+            .opens_at
+            .into_u64()
+            >= self
+                .attested_moment_proposition
+                .time_window
+                .closes_at
+                .into_u64()
             || !QuorumShape::new(required, authorities.len()).is_valid_majority()
             || DuplicateIdentityScan::new(authorities).has_duplicates()
         {
             return Some(EvaluationRejectionReason::TimeNotProven);
         }
-        let Ok(statement) = AttestedMomentStatement::new(&self.proposition).to_signing_bytes()
+        let Ok(statement) =
+            AttestedMomentStatement::new(&self.attested_moment_proposition).to_signing_bytes()
         else {
             return Some(EvaluationRejectionReason::TimeNotProven);
         };
         let mut satisfied: Vec<Identity> = Vec::new();
         for signature in self.signatures() {
-            if !authorities.contains(&signature.signer) || satisfied.contains(&signature.signer) {
+            if !authorities.contains(&signature.identity) || satisfied.contains(&signature.identity)
+            {
                 continue;
             }
-            let Some(admitted_key) = registry.public_key(&signature.signer) else {
+            let Some(admitted_key) = registry.public_key(&signature.identity) else {
                 continue;
             };
-            if matches!(signature.envelope.scheme, SignatureScheme::Bls12_381MinPk)
-                && &signature.envelope.public_key == admitted_key
-                && admitted_key.verify_bls(&signature.envelope.signature, &statement)
+            if matches!(
+                signature.signature_envelope.signature_scheme,
+                SignatureScheme::Bls12_381MinPk
+            ) && &signature.signature_envelope.bls_public_key == admitted_key
+                && admitted_key.verify_bls(&signature.signature_envelope.bls_signature, &statement)
             {
-                satisfied.push(signature.signer.clone());
+                satisfied.push(signature.identity.clone());
             }
         }
         if satisfied.len() as u16 >= required {
@@ -786,9 +830,9 @@ impl AgreementRuleVerification for signal_criome::AgreementRule {
         let mut bytes = b"CRIOME-RECONCILIATION-V1".to_vec();
         self.divergence.encode_into(&mut bytes);
         self.resolution.encode_into(&mut bytes);
-        self.resolver.encode_into(&mut bytes);
+        self.identity.encode_into(&mut bytes);
         stamp
-            .proposition
+            .attested_moment_proposition
             .digest()?
             .object_digest()
             .encode_into(&mut bytes);
@@ -798,7 +842,7 @@ impl AgreementRuleVerification for signal_criome::AgreementRule {
     fn matches(&self, fact: &signal_criome::AgreementFact) -> bool {
         self.divergence == fact.divergence
             && self.resolution == fact.resolution
-            && self.resolver == fact.resolver
+            && self.identity == fact.identity
     }
 }
 

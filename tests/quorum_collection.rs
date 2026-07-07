@@ -111,21 +111,21 @@ fn ask(socket: &Path, request: CriomeRequest) -> CriomeReply {
 fn node_public_key(socket: &Path, identity: Identity) -> BlsPublicKey {
     let request = SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"quorum-key-probe"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new("quorum-probe"),
+            object_digest: ObjectDigest::from_bytes(b"quorum-key-probe"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new("quorum-probe"),
         },
         identity,
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new("quorum-probe-audience"),
             policy_version: PrincipalName::new("quorum-probe-policy"),
-            nonce: ReplayNonce::new("quorum-probe-nonce"),
+            replay_nonce: ReplayNonce::new("quorum-probe-nonce"),
         },
         None,
     );
     match ask(socket, CriomeRequest::Sign(request)) {
-        CriomeReply::SignReceipt(receipt) => receipt.attestation.envelope.public_key,
+        CriomeReply::SignReceipt(receipt) => receipt.attestation.signature_envelope.bls_public_key,
         other => panic!("expected SignReceipt, got {other:?}"),
     }
 }
@@ -177,9 +177,9 @@ fn submit(socket: &Path, vote: QuorumVote) -> QuorumRoundState {
 /// key differs, so the judge does not count it.
 fn forged_envelope() -> SignatureEnvelope {
     SignatureEnvelope {
-        scheme: SignatureScheme::Bls12_381MinPk,
-        public_key: BlsPublicKey::new("forged-foreign-key"),
-        signature: BlsSignature::new("forged-signature"),
+        signature_scheme: SignatureScheme::Bls12_381MinPk,
+        bls_public_key: BlsPublicKey::new("forged-foreign-key"),
+        bls_signature: BlsSignature::new("forged-signature"),
     }
 }
 
@@ -190,12 +190,12 @@ fn evaluate(
     evidence: Evidence,
 ) -> EvaluationDecision {
     let evaluation = AuthorizationEvaluation {
-        contract,
-        object,
+        contract_digest: contract,
+        authorized_object_reference: object,
         evidence,
     };
     match ask(socket, CriomeRequest::EvaluateAuthorization(evaluation)) {
-        CriomeReply::AuthorizationEvaluated(evaluated) => evaluated.decision,
+        CriomeReply::AuthorizationEvaluated(evaluated) => evaluated.evaluation_decision,
         other => panic!("expected AuthorizationEvaluated, got {other:?}"),
     }
 }
@@ -212,9 +212,9 @@ fn mirror_contract(alpha: &Identity, beta: &Identity) -> Contract {
 
 fn mirror_object() -> AuthorizedObjectReference {
     AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: ObjectDigest::from_bytes(b"mirror-head-operation"),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: ObjectDigest::from_bytes(b"mirror-head-operation"),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     }
 }
 
@@ -268,37 +268,40 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
     let object = mirror_object();
     // The round-id is bound to the change's fingerprint (the operation digest);
     // the originator derives it and the criome ingress enforces the binding.
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let opened = propose(
         &socket_a,
         QuorumProposal {
-            phase: RoundPhase::Request,
-            round: round.clone(),
-            contract: contract_digest.clone(),
-            object: object.clone(),
-            window: open_window(),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round.clone(),
+            contract_digest: contract_digest.clone(),
+            authorized_object_reference: object.clone(),
+            time_window: open_window(),
         },
     );
     assert_eq!(
-        opened.status,
+        opened.quorum_round_status,
         QuorumRoundStatus::Gathering,
         "the originator's own change is WITHHELD until the peer co-signs"
     );
     assert_eq!(opened.gathered.into_u16(), 1);
     assert_eq!(opened.required.into_u16(), 2);
-    assert!(opened.authorized_evidence.is_none());
+    assert!(opened.optional_evidence.is_none());
 
     // The solicitation crosses the conveyance, B votes, the vote comes back, and the
     // gathered 2-of-2 quorum authorizes.
     let authorized = wait_until_authorized(&socket_a, &round);
-    assert_eq!(authorized.status, QuorumRoundStatus::Authorized);
+    assert_eq!(
+        authorized.quorum_round_status,
+        QuorumRoundStatus::Authorized
+    );
     assert_eq!(
         authorized.gathered.into_u16(),
         2,
         "both members' votes gathered"
     );
     let evidence = authorized
-        .authorized_evidence
+        .optional_evidence
         .expect("an authorized round carries its assembled Evidence");
     assert_eq!(
         evidence.signatures().len(),
@@ -306,7 +309,7 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
         "the Evidence carries both members' operation signatures"
     );
     assert_eq!(
-        evidence.stamp.signatures().len(),
+        evidence.attested_moment.signatures().len(),
         2,
         "the shared moment carries both members' time signatures"
     );
@@ -329,8 +332,8 @@ fn two_criomes_gather_a_real_bls_quorum_and_withhold_until_majority() {
     // the same judge returns QuorumShort.
     let short = Evidence::new(
         ComponentKind::Spirit,
-        OperationDigest::new(object.digest.clone()),
-        evidence.stamp.clone(),
+        OperationDigest::new(object.object_digest.clone()),
+        evidence.attested_moment.clone(),
         evidence.signatures()[..1].to_vec(),
         Vec::new(),
     );
@@ -363,29 +366,29 @@ fn a_proposal_waits_when_the_peer_cannot_be_reached() {
 
     let contract_digest = admit(&socket_a, mirror_contract(&alpha, &beta));
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let opened = propose(
         &socket_a,
         QuorumProposal {
-            phase: RoundPhase::Request,
-            round: round.clone(),
-            contract: contract_digest,
-            object,
-            window: open_window(),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round.clone(),
+            contract_digest: contract_digest,
+            authorized_object_reference: object,
+            time_window: open_window(),
         },
     );
-    assert_eq!(opened.status, QuorumRoundStatus::Gathering);
+    assert_eq!(opened.quorum_round_status, QuorumRoundStatus::Gathering);
 
     // The peer never answers; the round must stay pending, never becoming valid.
     let deadline = Instant::now() + Duration::from_millis(1500);
     while Instant::now() < deadline {
         let state = observe(&socket_a, &round);
         assert_eq!(
-            state.status,
+            state.quorum_round_status,
             QuorumRoundStatus::Gathering,
             "an unreachable peer must leave the round WITHHELD — never last-writer-wins"
         );
-        assert!(state.authorized_evidence.is_none());
+        assert!(state.optional_evidence.is_none());
         std::thread::sleep(Duration::from_millis(150));
     }
 }
@@ -417,25 +420,25 @@ fn a_forged_member_vote_is_refused_at_ingress() {
 
     let contract_digest = admit(&socket_a, mirror_contract(&alpha, &beta));
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let opened = propose(
         &socket_a,
         QuorumProposal {
-            phase: RoundPhase::Request,
-            round: round.clone(),
-            contract: contract_digest,
-            object: object.clone(),
-            window: open_window(),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round.clone(),
+            contract_digest: contract_digest,
+            authorized_object_reference: object.clone(),
+            time_window: open_window(),
         },
     );
-    assert_eq!(opened.status, QuorumRoundStatus::Gathering);
+    assert_eq!(opened.quorum_round_status, QuorumRoundStatus::Gathering);
     assert_eq!(opened.gathered.into_u16(), 1);
 
     // Inject the forged vote for member beta.
     let forged = QuorumVote {
-        phase: RoundPhase::Request,
-        round: round.clone(),
-        voter: beta.clone(),
+        round_phase: RoundPhase::Request,
+        quorum_round_identifier: round.clone(),
+        identity: beta.clone(),
         operation_signature: forged_envelope(),
         time_signature: forged_envelope(),
     };
@@ -448,9 +451,13 @@ fn a_forged_member_vote_is_refused_at_ingress() {
     // And the round stays withheld at the self-vote under an independent
     // re-read — the forged row never landed.
     let observed = observe(&socket_a, &round);
-    assert_eq!(observed.gathered.into_u16(), 1, "only the valid self-vote stands");
-    assert_eq!(observed.status, QuorumRoundStatus::Gathering);
-    assert!(observed.authorized_evidence.is_none());
+    assert_eq!(
+        observed.gathered.into_u16(),
+        1,
+        "only the valid self-vote stands"
+    );
+    assert_eq!(observed.quorum_round_status, QuorumRoundStatus::Gathering);
+    assert!(observed.optional_evidence.is_none());
 }
 
 #[test]
@@ -461,18 +468,18 @@ fn router_submission_frames_a_criome_request_the_working_socket_reads() {
     // codec reads. Round-trip through the daemon's OWN codec to prove the peer
     // criome decodes a router-carried vote unchanged — no router source needed.
     let request = CriomeRequest::submit_quorum_vote(QuorumVote {
-        phase: RoundPhase::Request,
-        round: QuorumRoundIdentifier::new("framing-round-1"),
-        voter: host("mirror-beta"),
+        round_phase: RoundPhase::Request,
+        quorum_round_identifier: QuorumRoundIdentifier::new("framing-round-1"),
+        identity: host("mirror-beta"),
         operation_signature: SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: BlsPublicKey::new("operation-key"),
-            signature: BlsSignature::new("operation-signature"),
+            signature_scheme: SignatureScheme::Bls12_381MinPk,
+            bls_public_key: BlsPublicKey::new("operation-key"),
+            bls_signature: BlsSignature::new("operation-signature"),
         },
         time_signature: SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: BlsPublicKey::new("time-key"),
-            signature: BlsSignature::new("time-signature"),
+            signature_scheme: SignatureScheme::Bls12_381MinPk,
+            bls_public_key: BlsPublicKey::new("time-key"),
+            bls_signature: BlsSignature::new("time-signature"),
         },
     });
 
@@ -497,13 +504,15 @@ fn router_submission_frames_a_criome_request_the_working_socket_reads() {
 /// being a live founding's real signature.
 fn founding_signature_conveyance(voter: Identity) -> CriomeRequest {
     CriomeRequest::convey_founding(FoundingConveyance::Signature(FoundingSignatureReturn {
-        anchor: RootAnchorDigest::new(ObjectDigest::from_bytes(b"router-origination-anchor")),
-        signature: FoundingSignature {
-            signer: voter,
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: BlsPublicKey::new("origination-key"),
-                signature: BlsSignature::new("origination-signature"),
+        root_anchor_digest: RootAnchorDigest::new(ObjectDigest::from_bytes(
+            b"router-origination-anchor",
+        )),
+        founding_signature: FoundingSignature {
+            identity: voter,
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: BlsPublicKey::new("origination-key"),
+                bls_signature: BlsSignature::new("origination-signature"),
             },
         },
     }))
@@ -814,7 +823,7 @@ fn wait_until_authorized(socket: &Path, round: &QuorumRoundIdentifier) -> Quorum
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let state = observe(socket, round);
-        if state.status == QuorumRoundStatus::Authorized {
+        if state.quorum_round_status == QuorumRoundStatus::Authorized {
             return state;
         }
         assert!(

@@ -149,9 +149,9 @@ fn found(meta_socket: &Path, cohort: &RootGenesis) {
 fn head_advance(seed: &[u8], nonce: &str) -> SignalCallAuthorization {
     SignalCallAuthorization::new(
         AuthorizedObjectReference {
-            component: ComponentKind::Spirit,
-            digest: ObjectDigest::from_bytes(seed),
-            kind: AuthorizedObjectKind::Head,
+            component_kind: ComponentKind::Spirit,
+            object_digest: ObjectDigest::from_bytes(seed),
+            authorized_object_kind: AuthorizedObjectKind::Head,
         },
         host("spirit"),
         ReplayNonce::new(nonce),
@@ -166,7 +166,10 @@ fn terminal_state(
     authorization: SignalCallAuthorization,
     deadline: Duration,
 ) -> signal_criome::AuthorizationStateRecord {
-    let submitted_digest = authorization.object.digest.clone();
+    let submitted_digest = authorization
+        .authorized_object_reference
+        .object_digest
+        .clone();
     let mut session = CriomeClient::new(socket)
         .authorize_signal_call(authorization)
         .expect("open authorization session");
@@ -179,10 +182,10 @@ fn terminal_state(
         .states()
         .iter()
         .find(|state| {
-            state.request_slot == token_slot
-                && state.request_digest == submitted_digest
+            state.authorization_request_slot == token_slot
+                && state.object_digest == submitted_digest
                 && matches!(
-                    state.status,
+                    state.authorization_status,
                     AuthorizationStatus::Granted
                         | AuthorizationStatus::Denied
                         | AuthorizationStatus::Expired
@@ -195,9 +198,9 @@ fn terminal_state(
     }
     loop {
         let state = session.next_update().expect("session pushes an update");
-        assert_eq!(state.request_digest, submitted_digest);
+        assert_eq!(state.object_digest, submitted_digest);
         if matches!(
-            state.status,
+            state.authorization_status,
             AuthorizationStatus::Granted
                 | AuthorizationStatus::Denied
                 | AuthorizationStatus::Expired
@@ -231,21 +234,25 @@ fn founded_single_node_bridge_grants_with_quorum_evidence() {
     found(&meta_socket, &cohort);
 
     let authorization = head_advance(b"bridge single-node head advance", "bridge-grant-nonce");
-    let requested = authorization.object.clone();
+    let requested = authorization.authorized_object_reference.clone();
     let state = terminal_state(&socket, authorization, Duration::from_secs(20));
 
     assert_eq!(
-        state.status,
+        state.authorization_status,
         AuthorizationStatus::Granted,
         "the founded 1-of-1 quorum grants through the full bridge, got {state:?}"
     );
-    let grant = state.grant().expect("a Granted state carries its grant");
+    let grant = state
+        .optional_authorization_grant()
+        .expect("a Granted state carries its grant");
     assert_eq!(
-        grant.authorized_object, requested,
+        grant.authorized_object_reference, requested,
         "the grant binds the requested typed object"
     );
     assert_eq!(
-        grant.policy_satisfaction.policy_class,
+        grant
+            .authorization_policy_satisfaction
+            .authorization_policy_class,
         AuthorizationPolicyClass::ComplexQuorum,
         "a cluster grant attests the quorum policy class, not self-signed"
     );
@@ -256,9 +263,12 @@ fn founded_single_node_bridge_grants_with_quorum_evidence() {
     let evidence = state
         .granted_evidence()
         .expect("the Granted state carries the assembled quorum Evidence hand-off");
-    assert_eq!(evidence.object, requested);
+    assert_eq!(evidence.authorized_object_reference, requested);
     assert!(
-        !evidence.evidence.evidence_signatures.is_empty(),
+        !evidence
+            .evidence
+            .stamped_signature_envelope_vector
+            .is_empty(),
         "the hand-off Evidence carries the commit round's stamped signatures"
     );
 }
@@ -305,13 +315,13 @@ fn window_expiry_pushes_expired_fail_closed() {
         .statement();
     let statement_bytes = statement.signing_bytes().expect("statement encodes");
     let returned = FoundingSignatureReturn {
-        anchor,
-        signature: FoundingSignature::new(
+        root_anchor_digest: anchor,
+        founding_signature: FoundingSignature::new(
             absent_member,
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: absent_key.public_key(),
-                signature: absent_key.sign(&statement_bytes),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: absent_key.public_key(),
+                bls_signature: absent_key.sign(&statement_bytes),
             },
         ),
     };
@@ -331,12 +341,12 @@ fn window_expiry_pushes_expired_fail_closed() {
     let authorization = head_advance(b"bridge expiring head advance", "bridge-expiry-nonce");
     let state = terminal_state(&socket, authorization, Duration::from_secs(30));
     assert_eq!(
-        state.status,
+        state.authorization_status,
         AuthorizationStatus::Expired,
         "a quorum that cannot complete expires fail-closed at window close, got {state:?}"
     );
     assert!(
-        state.grant().is_none(),
+        state.optional_authorization_grant().is_none(),
         "an expired ask carries no grant — status alone is never proof"
     );
     assert!(
@@ -382,9 +392,9 @@ fn drain_to_terminal(
         .states()
         .iter()
         .find(|state| {
-            state.request_slot == token_slot
-                && state.request_digest == *submitted_digest
-                && terminal(state.status)
+            state.authorization_request_slot == token_slot
+                && state.object_digest == *submitted_digest
+                && terminal(state.authorization_status)
         })
         .cloned()
     {
@@ -392,8 +402,8 @@ fn drain_to_terminal(
     }
     loop {
         let state = session.next_update().expect("session pushes an update");
-        assert_eq!(state.request_digest, *submitted_digest);
-        if terminal(state.status) {
+        assert_eq!(state.object_digest, *submitted_digest);
+        if terminal(state.authorization_status) {
             return state;
         }
     }
@@ -431,7 +441,11 @@ fn re_ask_of_a_standing_committed_head_re_grants_and_the_successor_still_grants(
         head_advance(b"re-ask head D", "re-ask-d-1"),
         Duration::from_secs(20),
     );
-    assert_eq!(first.status, AuthorizationStatus::Granted, "got {first:?}");
+    assert_eq!(
+        first.authorization_status,
+        AuthorizationStatus::Granted,
+        "got {first:?}"
+    );
 
     // The drain's re-ask of the STANDING head (fresh nonce, same digest):
     // re-granted from the committed round, never re-proposed.
@@ -441,20 +455,23 @@ fn re_ask_of_a_standing_committed_head_re_grants_and_the_successor_still_grants(
         Duration::from_secs(20),
     );
     assert_eq!(
-        re_ask.status,
+        re_ask.authorization_status,
         AuthorizationStatus::Granted,
         "a re-ask of the committed head re-grants, got {re_ask:?}"
     );
-    let grant = re_ask.grant().expect("the re-grant carries its grant");
+    let grant = re_ask
+        .optional_authorization_grant()
+        .expect("the re-grant carries its grant");
     assert_eq!(
         grant.authorized_object_digest().as_str(),
         ObjectDigest::from_bytes(b"re-ask head D").as_str(),
         "the re-grant binds the standing head digest"
     );
     assert!(
-        re_ask
-            .granted_evidence()
-            .is_some_and(|evidence| !evidence.evidence.evidence_signatures.is_empty()),
+        re_ask.granted_evidence().is_some_and(|evidence| !evidence
+            .evidence
+            .stamped_signature_envelope_vector
+            .is_empty()),
         "the re-grant hands off the committed round's quorum Evidence"
     );
 
@@ -466,7 +483,7 @@ fn re_ask_of_a_standing_committed_head_re_grants_and_the_successor_still_grants(
         Duration::from_secs(20),
     );
     assert_eq!(
-        ship_failure_retry.status,
+        ship_failure_retry.authorization_status,
         AuthorizationStatus::Granted,
         "the grant-then-ship-failure re-ask re-grants, got {ship_failure_retry:?}"
     );
@@ -479,7 +496,7 @@ fn re_ask_of_a_standing_committed_head_re_grants_and_the_successor_still_grants(
         Duration::from_secs(20),
     );
     assert_eq!(
-        successor.status,
+        successor.authorization_status,
         AuthorizationStatus::Granted,
         "the successor after a standing-head re-ask still grants — no poison row, got {successor:?}"
     );
@@ -490,7 +507,7 @@ fn re_ask_of_a_standing_committed_head_re_grants_and_the_successor_still_grants(
         Duration::from_secs(20),
     );
     assert_eq!(
-        successor_re_ask.status,
+        successor_re_ask.authorization_status,
         AuthorizationStatus::Granted,
         "got {successor_re_ask:?}"
     );
@@ -538,13 +555,13 @@ fn every_pending_slot_for_one_digest_settles_at_window_close() {
         .statement();
     let statement_bytes = statement.signing_bytes().expect("statement encodes");
     let returned = FoundingSignatureReturn {
-        anchor,
-        signature: FoundingSignature::new(
+        root_anchor_digest: anchor,
+        founding_signature: FoundingSignature::new(
             absent_member,
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: absent_key.public_key(),
-                signature: absent_key.sign(&statement_bytes),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: absent_key.public_key(),
+                bls_signature: absent_key.sign(&statement_bytes),
             },
         ),
     };
@@ -571,17 +588,17 @@ fn every_pending_slot_for_one_digest_settles_at_window_close() {
     let first = drain_to_terminal(session_one, &digest);
     let second = drain_to_terminal(session_two, &digest);
     assert_eq!(
-        first.status,
+        first.authorization_status,
         AuthorizationStatus::Expired,
         "the FIRST slot settles at window close — never orphaned, got {first:?}"
     );
     assert_eq!(
-        second.status,
+        second.authorization_status,
         AuthorizationStatus::Expired,
         "the joined second slot settles too, got {second:?}"
     );
     assert_ne!(
-        first.request_slot, second.request_slot,
+        first.authorization_request_slot, second.authorization_request_slot,
         "two asks occupy two observable slots"
     );
 }
@@ -591,7 +608,7 @@ fn observe_founding_state(meta_socket: &Path) -> RootFoundingState {
         meta_socket,
         MetaInput::ObserveRootFounding(RootFoundingObservation::new()),
     ) {
-        MetaOutput::RootFoundingStatus(status) => status.state,
+        MetaOutput::RootFoundingStatus(status) => status.root_founding_state,
         other => panic!("expected RootFoundingStatus, got {other:?}"),
     }
 }
@@ -680,9 +697,9 @@ fn a_window_dead_round_is_superseded_by_a_differing_successor() {
             MetaInput::ObserveRootFounding(RootFoundingObservation::new()),
         ) {
             MetaOutput::RootFoundingStatus(status) => status
-                .pending
+                .pending_founding_vector
                 .iter()
-                .any(|pending| pending.anchor == anchor),
+                .any(|pending| pending.root_anchor_digest == anchor),
             _other => false,
         }
     });
@@ -705,12 +722,12 @@ fn a_window_dead_round_is_superseded_by_a_differing_successor() {
         Duration::from_secs(30),
     );
     assert_eq!(
-        refused.status,
+        refused.authorization_status,
         AuthorizationStatus::Expired,
         "the unreachable-peer advance expires fail-closed, got {refused:?}"
     );
     assert!(
-        refused.grant().is_none(),
+        refused.optional_authorization_grant().is_none(),
         "an expired ask carries no grant — the operation was refused"
     );
 
@@ -723,12 +740,12 @@ fn a_window_dead_round_is_superseded_by_a_differing_successor() {
         Duration::from_secs(30),
     );
     assert_eq!(
-        superseding.status,
+        superseding.authorization_status,
         AuthorizationStatus::Granted,
         "a differing successor supersedes the window-dead row and grants, got {superseding:?}"
     );
     let grant = superseding
-        .grant()
+        .optional_authorization_grant()
         .expect("the superseding grant carries its grant");
     assert_eq!(
         grant.authorized_object_digest().as_str(),
@@ -738,7 +755,10 @@ fn a_window_dead_round_is_superseded_by_a_differing_successor() {
     assert!(
         superseding
             .granted_evidence()
-            .is_some_and(|evidence| !evidence.evidence.evidence_signatures.is_empty()),
+            .is_some_and(|evidence| !evidence
+                .evidence
+                .stamped_signature_envelope_vector
+                .is_empty()),
         "the superseding grant hands off the commit round's quorum Evidence"
     );
 
@@ -752,7 +772,7 @@ fn a_window_dead_round_is_superseded_by_a_differing_successor() {
         Duration::from_secs(30),
     );
     assert_eq!(
-        re_ask.status,
+        re_ask.authorization_status,
         AuthorizationStatus::Granted,
         "the superseding successor is the standing committed head, got {re_ask:?}"
     );

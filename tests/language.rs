@@ -48,11 +48,11 @@ impl Signer {
         stamp: &AttestedMoment,
     ) -> StampedSignatureEnvelope {
         StampedSignatureEnvelope {
-            stamp: stamp.clone(),
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.public_key(),
-                signature: self.key.sign(
+            attested_moment: stamp.clone(),
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.public_key(),
+                bls_signature: self.key.sign(
                     OperationStatement::new(&self.identity, operation, stamp)
                         .to_signing_bytes()
                         .expect("operation statement")
@@ -64,11 +64,11 @@ impl Signer {
 
     fn sign_moment(&self, proposition: &AttestedMomentProposition) -> TimeSignature {
         TimeSignature {
-            signer: self.identity(),
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.public_key(),
-                signature: self.key.sign(
+            identity: self.identity(),
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.public_key(),
+                bls_signature: self.key.sign(
                     AttestedMomentStatement::new(proposition)
                         .to_signing_bytes()
                         .expect("moment statement")
@@ -84,11 +84,11 @@ impl Signer {
         stamp: &AttestedMoment,
     ) -> StampedSignatureEnvelope {
         StampedSignatureEnvelope {
-            stamp: stamp.clone(),
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.public_key(),
-                signature: self.key.sign(
+            attested_moment: stamp.clone(),
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.public_key(),
+                bls_signature: self.key.sign(
                     ReconciliationStatement::new(agreement, stamp)
                         .to_signing_bytes()
                         .as_slice(),
@@ -153,9 +153,9 @@ impl<'a> ReconciliationStatement<'a> {
         let mut bytes = b"CRIOME-RECONCILIATION-V1".to_vec();
         self.agreement.divergence.as_str().encode_into(&mut bytes);
         self.agreement.resolution.as_str().encode_into(&mut bytes);
-        self.agreement.resolver.encode_into(&mut bytes);
+        self.agreement.identity.encode_into(&mut bytes);
         self.stamp
-            .proposition
+            .attested_moment_proposition
             .digest()
             .expect("stamp digest")
             .object_digest()
@@ -535,7 +535,7 @@ fn time_switch_changes_quorum_after_boundary() {
     let digest = admitted(
         &mut store,
         Contract::root(Rule::TimeSwitch(TimeSwitch {
-            boundary: moment(100),
+            timestamp_nanos: moment(100),
             before: threshold(
                 2,
                 vec![
@@ -605,8 +605,8 @@ fn active_after_rule_models_timelock_release() {
     let digest = admitted(
         &mut store,
         Contract::root(Rule::ActiveAfter(TimedRule {
-            boundary: moment(100),
-            signed_by: operator.identity(),
+            timestamp_nanos: moment(100),
+            identity: operator.identity(),
         })),
     );
 
@@ -642,7 +642,7 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
     let agreement = AgreementRule {
         divergence: divergence.clone(),
         resolution: resolution.clone(),
-        resolver: resolver.identity(),
+        identity: resolver.identity(),
     };
     let contract = Contract::root(Rule::Agreement(agreement.clone()));
     let mut store = ContractStore::new();
@@ -651,20 +651,20 @@ fn agreement_rule_accepts_only_signed_matching_resolver_fact() {
     let matching_fact = AgreementFact {
         divergence: divergence.clone(),
         resolution: resolution.clone(),
-        resolver: resolver.identity(),
-        signature: resolver.sign_reconciliation(&agreement, &agreement_stamp),
+        identity: resolver.identity(),
+        stamped_signature_envelope: resolver.sign_reconciliation(&agreement, &agreement_stamp),
     };
     let wrong_fact = AgreementFact {
         divergence,
         resolution: digest(b"other branch"),
-        resolver: resolver.identity(),
-        signature: resolver.sign_reconciliation(&agreement, &agreement_stamp),
+        identity: resolver.identity(),
+        stamped_signature_envelope: resolver.sign_reconciliation(&agreement, &agreement_stamp),
     };
     let impostor_fact = AgreementFact {
         divergence: agreement.divergence.clone(),
         resolution,
-        resolver: resolver.identity(),
-        signature: other.sign_reconciliation(&agreement, &agreement_stamp),
+        identity: resolver.identity(),
+        stamped_signature_envelope: other.sign_reconciliation(&agreement, &agreement_stamp),
     };
 
     let wrong = Evidence::new(
@@ -718,7 +718,7 @@ fn agreement_signature_is_bound_to_its_attested_moment() {
     let agreement = AgreementRule {
         divergence: divergence.clone(),
         resolution: resolution.clone(),
-        resolver: resolver.identity(),
+        identity: resolver.identity(),
     };
     let mut store = ContractStore::new();
     let contract_digest = admitted(
@@ -731,17 +731,17 @@ fn agreement_signature_is_bound_to_its_attested_moment() {
     let replayed_fact = AgreementFact {
         divergence: divergence.clone(),
         resolution: resolution.clone(),
-        resolver: resolver.identity(),
-        signature: StampedSignatureEnvelope {
-            stamp: replayed_stamp,
-            envelope: signed.envelope.clone(),
+        identity: resolver.identity(),
+        stamped_signature_envelope: StampedSignatureEnvelope {
+            attested_moment: replayed_stamp,
+            signature_envelope: signed.signature_envelope.clone(),
         },
     };
     let matching_fact = AgreementFact {
         divergence,
         resolution,
-        resolver: resolver.identity(),
-        signature: signed,
+        identity: resolver.identity(),
+        stamped_signature_envelope: signed,
     };
 
     let replayed = Evidence::new(
@@ -799,8 +799,8 @@ fn workflow_rule_escalates_when_matching_receipt_is_absent() {
     let digest = admitted(
         &mut store,
         Contract::root(Rule::Workflow(WorkflowGuard {
-            workflow: workflow.clone(),
-            executor: Identity::host("orchestrate".to_owned()),
+            workflow_digest: workflow.clone(),
+            identity: Identity::host("orchestrate".to_owned()),
         })),
     );
 
@@ -826,15 +826,15 @@ fn workflow_rule_adopts_matching_receipt_outcome() {
     let digest = admitted(
         &mut store,
         Contract::root(Rule::Workflow(WorkflowGuard {
-            workflow: workflow.clone(),
-            executor: Identity::host("orchestrate".to_owned()),
+            workflow_digest: workflow.clone(),
+            identity: Identity::host("orchestrate".to_owned()),
         })),
     );
     let receipt = WorkflowReceipt {
-        workflow,
-        operation: operation.clone(),
-        outcome: EvaluationDecision::Authorized,
-        provenance: workflow_provenance(b"run log for accepted operation"),
+        workflow_digest: workflow,
+        operation_digest: operation.clone(),
+        evaluation_decision: EvaluationDecision::Authorized,
+        workflow_provenance_digest: workflow_provenance(b"run log for accepted operation"),
     };
 
     assert_eq!(
@@ -858,15 +858,15 @@ fn workflow_rule_ignores_receipt_for_other_operation() {
     let digest = admitted(
         &mut store,
         Contract::root(Rule::Workflow(WorkflowGuard {
-            workflow: workflow.clone(),
-            executor: Identity::host("orchestrate".to_owned()),
+            workflow_digest: workflow.clone(),
+            identity: Identity::host("orchestrate".to_owned()),
         })),
     );
     let receipt = WorkflowReceipt {
-        workflow: workflow.clone(),
-        operation: other_operation,
-        outcome: EvaluationDecision::Authorized,
-        provenance: workflow_provenance(b"run log for other operation"),
+        workflow_digest: workflow.clone(),
+        operation_digest: other_operation,
+        evaluation_decision: EvaluationDecision::Authorized,
+        workflow_provenance_digest: workflow_provenance(b"run log for other operation"),
     };
 
     assert_eq!(

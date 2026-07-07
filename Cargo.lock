@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "criome"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "blake3",
  "blst",
@@ -362,8 +362,8 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "meta-signal-criome"
-version = "0.5.0"
-source = "git+https://github.com/LiGoldragon/meta-signal-criome.git?branch=main#8050a22bd9c9c022c00c8678587e47a16b9c9abb"
+version = "0.6.0"
+source = "git+https://github.com/LiGoldragon/meta-signal-criome.git?branch=main#3157b5ab1754df7ac4b9b35f14b86555d037ef8e"
 dependencies = [
  "nota",
  "rkyv",
@@ -582,21 +582,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "schema"
+name = "schema-language"
 version = "0.2.0"
-source = "git+https://github.com/LiGoldragon/schema.git?branch=main#f351f90d3b8898205cf3057f3c253a5e451180a9"
+source = "git+https://github.com/LiGoldragon/schema-language.git?rev=6aae825d668e3f607a2754afa6b7d94e9f246c41#6aae825d668e3f607a2754afa6b7d94e9f246c41"
 dependencies = [
  "blake3",
  "nota",
  "rkyv",
- "schema-cc",
+ "schema-language-cc",
  "thiserror",
 ]
 
 [[package]]
-name = "schema-cc"
+name = "schema-language-cc"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/schema.git?branch=main#f351f90d3b8898205cf3057f3c253a5e451180a9"
+source = "git+https://github.com/LiGoldragon/schema-language.git?rev=6aae825d668e3f607a2754afa6b7d94e9f246c41#6aae825d668e3f607a2754afa6b7d94e9f246c41"
 dependencies = [
  "nota",
  "prettyplease",
@@ -608,14 +608,14 @@ dependencies = [
 
 [[package]]
 name = "schema-rust"
-version = "0.5.3"
-source = "git+https://github.com/LiGoldragon/schema-rust.git?branch=main#0f306826f64622b375ad232f0a59d32904487b9d"
+version = "0.7.0"
+source = "git+https://github.com/LiGoldragon/schema-rust.git?rev=255823ab3d0d6c5cab26e26a8b1d60c63c52c7b4#255823ab3d0d6c5cab26e26a8b1d60c63c52c7b4"
 dependencies = [
  "nota",
  "prettyplease",
  "proc-macro2",
  "quote",
- "schema",
+ "schema-language",
  "syn",
  "thiserror",
  "triad-runtime",
@@ -682,8 +682,8 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal-criome"
-version = "0.10.0"
-source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#e3c9ad3eb74b7cb2e5add952bad2643e89b487a8"
+version = "0.11.0"
+source = "git+https://github.com/LiGoldragon/signal-criome.git?branch=main#5998cf27e6fd10b37f58bd7fba1d2e1bd9d4eaff"
 dependencies = [
  "blake3",
  "blst",
@@ -718,8 +718,8 @@ dependencies = [
 
 [[package]]
 name = "signal-router"
-version = "0.4.1"
-source = "git+https://github.com/LiGoldragon/signal-router.git?branch=main#4beda4a4d0b7c9db80b60395a2afd18dc0b77d85"
+version = "0.5.0"
+source = "git+https://github.com/LiGoldragon/signal-router.git?branch=main#74909bd92a9d4e0a87f6e4da097ead67116e2e43"
 dependencies = [
  "rkyv",
  "schema-rust",

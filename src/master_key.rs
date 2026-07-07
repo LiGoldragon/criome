@@ -189,11 +189,11 @@ impl<'a> AttestationPreimage<'a> {
     /// signature binds (all of the attestation except `envelope.signature`).
     pub fn from_attestation(attestation: &'a Attestation) -> Self {
         Self {
-            content: &attestation.content,
-            signer: &attestation.signer,
+            content: &attestation.content_reference,
+            signer: &attestation.identity,
             audit_context: &attestation.audit_context,
-            scheme: &attestation.envelope.scheme,
-            issued_at: attestation.issued_at.into_u64(),
+            scheme: &attestation.signature_envelope.signature_scheme,
+            issued_at: attestation.timestamp_nanos.into_u64(),
             expires_at: attestation.expires_at().map(TimestampNanos::into_u64),
         }
     }
@@ -201,8 +201,8 @@ impl<'a> AttestationPreimage<'a> {
     /// The length-delimited, domain-tagged bytes that the signature covers.
     pub fn to_signing_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.push(self.content.purpose.tag());
-        bytes.push(self.audit_context.purpose.tag());
+        bytes.push(self.content.content_purpose.tag());
+        bytes.push(self.audit_context.content_purpose.tag());
         bytes.push(match self.scheme {
             SignatureScheme::Bls12_381MinPk => 0u8,
             SignatureScheme::Bls12_381MinSig => 1u8,
@@ -225,11 +225,11 @@ impl<'a> AttestationPreimage<'a> {
         }
         for field in [
             signer_name,
-            self.content.digest.as_str(),
-            self.content.schema_version.as_str(),
+            self.content.object_digest.as_str(),
+            self.content.principal_name.as_str(),
             self.audit_context.audience.as_str(),
             self.audit_context.policy_version.as_str(),
-            self.audit_context.nonce.as_str(),
+            self.audit_context.replay_nonce.as_str(),
         ] {
             bytes.extend_from_slice(&(field.len() as u32).to_le_bytes());
             bytes.extend_from_slice(field.as_bytes());

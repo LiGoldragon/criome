@@ -147,9 +147,12 @@ fn an_owner_accept_founds_the_root_and_returns_a_verifiable_signature() {
 
     match accept(&bound, &meta, anchor.clone(), genesis) {
         MetaOutput::RootFoundingAccepted(accepted) => {
-            assert_eq!(accepted.anchor, anchor, "the founded anchor is echoed back");
             assert_eq!(
-                accepted.founding_signature.signer,
+                accepted.root_anchor_digest, anchor,
+                "the founded anchor is echoed back"
+            );
+            assert_eq!(
+                accepted.founding_signature.identity,
                 founder(),
                 "this node signs the founding as its own identity"
             );
@@ -159,7 +162,10 @@ fn an_owner_accept_founds_the_root_and_returns_a_verifiable_signature() {
                 RootFoundingStatement::new(anchor.clone(), GenesisDomainTag::CriomeRootFoundingV1);
             let bytes = statement.signing_bytes().expect("statement encodes");
             assert!(
-                public_key.verify_bls(&accepted.founding_signature.envelope.signature, &bytes),
+                public_key.verify_bls(
+                    &accepted.founding_signature.signature_envelope.bls_signature,
+                    &bytes
+                ),
                 "the founding signature verifies under the node's master key"
             );
         }

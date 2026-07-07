@@ -19,26 +19,25 @@ use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
 #[cfg(feature = "nota-text")]
 use nota::NotaEncode;
 use signal_criome::{
-    AuthorizedObjectReference,
     ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
     AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
     AuthorizationPolicySatisfaction, AuthorizationRejection, AuthorizationRequestSlot,
     AuthorizationScope, AuthorizationStatus, AuthorizedObjectInterest, AuthorizedObjectKind,
-    AuthorizedObjectObservation, AuthorizedObjectUpdateToken, BlsPublicKey, BlsSignature,
-    ComponentKind, ComponentObjectInterest, ContentPurpose, ContentReference, Contract,
-    ContractName, ContractOperationHead, ContractTimeCheck, CriomeFrame, CriomeFrameBody,
-    CriomeReply, CriomeRequest, EscalationTarget, EvaluationDecision, Evidence, ExpiryAction,
-    Identity, IdentityLookup, IdentityRegistration, InterceptPolicyCancellation,
-    InterceptPolicyProposal, InterceptTargetSelector, KeyPurpose, MentciSessionSlot, ObjectDigest,
-    OperationDigest, ParkedRequestAnswer, ParkedRequestDecision, ParkedRequestOutcome,
-    ParkedRequestQuery, PolicyDurationNanos, PolicyOverlapMode, PolicyPriority, PrincipalName,
-    PrincipalStatus, PublicKeyFingerprint, RawSpiritOperationPayload, RejectionReason, ReplayNonce,
-    RequiredSignatureThreshold, Rule, SignRequest, SignalCallAuthorization,
-    SignatureAuthorizationResult, SignatureEnvelope, SignatureScheme, SpiritAuthorizationContext,
-    SpiritOperationName, SpiritOperationNames, SpiritProcessKey, StampedSignatureEnvelope,
-    TimeSignature, TimeWindow, TimestampNanos, WorkflowDigest, WorkflowGuard,
-    WorkflowProvenanceDigest, WorkflowReceipt,
+    AuthorizedObjectObservation, AuthorizedObjectReference, AuthorizedObjectUpdateToken,
+    BlsPublicKey, BlsSignature, ComponentKind, ComponentObjectInterest, ContentPurpose,
+    ContentReference, Contract, ContractName, ContractOperationHead, ContractTimeCheck,
+    CriomeFrame, CriomeFrameBody, CriomeReply, CriomeRequest, EscalationTarget, EvaluationDecision,
+    Evidence, ExpiryAction, Identity, IdentityLookup, IdentityRegistration,
+    InterceptPolicyCancellation, InterceptPolicyProposal, InterceptTargetSelector, KeyPurpose,
+    MentciSessionSlot, ObjectDigest, OperationDigest, ParkedRequestAnswer, ParkedRequestDecision,
+    ParkedRequestOutcome, ParkedRequestQuery, PolicyDurationNanos, PolicyOverlapMode,
+    PolicyPriority, PrincipalName, PrincipalStatus, PublicKeyFingerprint,
+    RawSpiritOperationPayload, RejectionReason, ReplayNonce, RequiredSignatureThreshold, Rule,
+    SignRequest, SignalCallAuthorization, SignatureAuthorizationResult, SignatureEnvelope,
+    SignatureScheme, SpiritAuthorizationContext, SpiritOperationName, SpiritOperationNames,
+    SpiritProcessKey, StampedSignatureEnvelope, TimeSignature, TimeWindow, TimestampNanos,
+    WorkflowDigest, WorkflowGuard, WorkflowProvenanceDigest, WorkflowReceipt,
 };
 use signal_frame::{ExchangeIdentifier, ExchangeLane, LaneSequence, RequestPayload, SessionEpoch};
 
@@ -92,15 +91,15 @@ fn intercept_policy_proposal(
     priority: u64,
 ) -> InterceptPolicyProposal {
     InterceptPolicyProposal {
-        session_slot: MentciSessionSlot::new(session),
-        target: InterceptTargetSelector::new(SpiritProcessKey::new(target)),
+        mentci_session_slot: MentciSessionSlot::new(session),
+        intercept_target_selector: InterceptTargetSelector::new(SpiritProcessKey::new(target)),
         spirit_operation_names: SpiritOperationNames::from_names(vec![SpiritOperationName::new(
             operation,
         )]),
-        duration: PolicyDurationNanos::new(u64::MAX),
+        policy_duration_nanos: PolicyDurationNanos::new(u64::MAX),
         expiry_action: ExpiryAction::AutoApprove,
-        priority: PolicyPriority::new(priority),
-        overlap_mode: PolicyOverlapMode::RejectSamePriorityOverlap,
+        policy_priority: PolicyPriority::new(priority),
+        policy_overlap_mode: PolicyOverlapMode::RejectSamePriorityOverlap,
     }
 }
 
@@ -110,9 +109,9 @@ fn spirit_authorization_context(
     raw_payload: &str,
 ) -> SpiritAuthorizationContext {
     SpiritAuthorizationContext {
-        operation_name: SpiritOperationName::new(operation),
-        raw_payload: RawSpiritOperationPayload::new(raw_payload),
-        target_key: SpiritProcessKey::new(target),
+        spirit_operation_name: SpiritOperationName::new(operation),
+        raw_spirit_operation_payload: RawSpiritOperationPayload::new(raw_payload),
+        spirit_process_key: SpiritProcessKey::new(target),
     }
 }
 
@@ -139,16 +138,16 @@ fn registration_with_key(name: &str, public_key: BlsPublicKey) -> IdentityRegist
 fn sign_request(name: &str) -> SignRequest {
     SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"fixture"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new(("fixture-schema").to_string()),
+            object_digest: ObjectDigest::from_bytes(b"fixture"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new(("fixture-schema").to_string()),
         },
         Identity::developer((name).to_string()),
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new(("fixture-audience").to_string()),
             policy_version: PrincipalName::new(("fixture-policy").to_string()),
-            nonce: ReplayNonce::new(("fixture-nonce").to_string()),
+            replay_nonce: ReplayNonce::new(("fixture-nonce").to_string()),
         },
         None,
     )
@@ -181,23 +180,23 @@ fn signal_call_authorization_with_nonce(seed: &[u8], nonce: &str) -> SignalCallA
 
 fn authorized_object(seed: &[u8]) -> AuthorizedObjectReference {
     AuthorizedObjectReference {
-        component: ComponentKind::Lojix,
-        digest: ObjectDigest::from_bytes(seed),
-        kind: AuthorizedObjectKind::Operation,
+        component_kind: ComponentKind::Lojix,
+        object_digest: ObjectDigest::from_bytes(seed),
+        authorized_object_kind: AuthorizedObjectKind::Operation,
     }
 }
 
 fn signature_envelope() -> SignatureEnvelope {
     SignatureEnvelope {
-        scheme: SignatureScheme::Bls12_381MinPk,
-        public_key: BlsPublicKey::new(("public-key").to_string()),
-        signature: BlsSignature::new(("signature").to_string()),
+        signature_scheme: SignatureScheme::Bls12_381MinPk,
+        bls_public_key: BlsPublicKey::new(("public-key").to_string()),
+        bls_signature: BlsSignature::new(("signature").to_string()),
     }
 }
 
 fn stamped_signature_envelope() -> StampedSignatureEnvelope {
     StampedSignatureEnvelope {
-        stamp: AttestedMoment::new(
+        attested_moment: AttestedMoment::new(
             AttestedMomentProposition::new(
                 TimeWindow {
                     opens_at: TimestampNanos::new(1),
@@ -207,11 +206,11 @@ fn stamped_signature_envelope() -> StampedSignatureEnvelope {
                 vec![Identity::cluster(("timekeeper").to_string())],
             ),
             vec![TimeSignature {
-                signer: Identity::cluster(("timekeeper").to_string()),
-                envelope: signature_envelope(),
+                identity: Identity::cluster(("timekeeper").to_string()),
+                signature_envelope: signature_envelope(),
             }],
         ),
-        envelope: signature_envelope(),
+        signature_envelope: signature_envelope(),
     }
 }
 
@@ -350,7 +349,7 @@ async fn quorum_mode_on_an_unfounded_node_refuses_unavailable() {
 
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
-            AuthorizationObservation::new(unavailable.request_slot.clone()),
+            AuthorizationObservation::new(unavailable.authorization_request_slot.clone()),
         )))
         .await
         .expect("observe authorization")
@@ -359,10 +358,13 @@ async fn quorum_mode_on_an_unfounded_node_refuses_unavailable() {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
     assert_eq!(snapshot.states().len(), 1);
-    assert_eq!(snapshot.states()[0].request_slot, unavailable.request_slot);
-    assert_eq!(snapshot.states()[0].request_digest, request_digest);
     assert_eq!(
-        snapshot.states()[0].status,
+        snapshot.states()[0].authorization_request_slot,
+        unavailable.authorization_request_slot
+    );
+    assert_eq!(snapshot.states()[0].object_digest, request_digest);
+    assert_eq!(
+        snapshot.states()[0].authorization_status,
         AuthorizationStatus::Unavailable,
         "unfounded Quorum mode is a terminal Unavailable, never a silent park"
     );
@@ -390,8 +392,8 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     let second = unavailable_authorization(
         root.ask(SubmitRequest::new(CriomeRequest::AuthorizeSignalCall(
             SignalCallAuthorization::new(
-                authorization.object.clone(),
-                authorization.requester.clone(),
+                authorization.authorized_object_reference.clone(),
+                authorization.identity.clone(),
                 ReplayNonce::new(("second-nonce").to_string()),
                 authorization.expires_at(),
             ),
@@ -402,9 +404,18 @@ async fn authorization_slots_are_store_minted_not_request_digest_derived() {
     );
 
     let _ = request_digest;
-    assert_ne!(first.request_slot, second.request_slot);
-    assert_ne!(first.request_slot.as_str(), request_digest.as_str());
-    assert_ne!(second.request_slot.as_str(), request_digest.as_str());
+    assert_ne!(
+        first.authorization_request_slot,
+        second.authorization_request_slot
+    );
+    assert_ne!(
+        first.authorization_request_slot.as_str(),
+        request_digest.as_str()
+    );
+    assert_ne!(
+        second.authorization_request_slot.as_str(),
+        request_digest.as_str()
+    );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -430,11 +441,11 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
         .expect("submit expired authorization")
         .into_reply(),
     );
-    assert_eq!(expired.expired_at, TimestampNanos::new(0));
+    assert_eq!(expired.timestamp_nanos, TimestampNanos::new(0));
 
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorization(
-            AuthorizationObservation::new(expired.request_slot.clone()),
+            AuthorizationObservation::new(expired.authorization_request_slot.clone()),
         )))
         .await
         .expect("observe expired authorization")
@@ -443,9 +454,15 @@ async fn expired_authorization_records_expired_state_instead_of_signing() {
         panic!("expected AuthorizationObservationSnapshot, got {snapshot:?}");
     };
     assert_eq!(snapshot.states().len(), 1);
-    assert_eq!(snapshot.states()[0].request_slot, expired.request_slot);
-    assert_eq!(snapshot.states()[0].request_digest, request_digest);
-    assert_eq!(snapshot.states()[0].status, AuthorizationStatus::Expired);
+    assert_eq!(
+        snapshot.states()[0].authorization_request_slot,
+        expired.authorization_request_slot
+    );
+    assert_eq!(snapshot.states()[0].object_digest, request_digest);
+    assert_eq!(
+        snapshot.states()[0].authorization_status,
+        AuthorizationStatus::Expired
+    );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -495,8 +512,8 @@ async fn verify_authorization_rejects_digest_mismatch() {
     let reply = root
         .ask(SubmitRequest::new(CriomeRequest::VerifyAuthorization(
             signal_criome::AuthorizationVerification {
-                request_digest: ObjectDigest::from_bytes(b"request-b"),
-                authorization: authorization_grant(b"request-a"),
+                object_digest: ObjectDigest::from_bytes(b"request-b"),
+                authorization_grant: authorization_grant(b"request-a"),
             },
         )))
         .await
@@ -505,9 +522,12 @@ async fn verify_authorization_rejects_digest_mismatch() {
     let CriomeReply::AuthorizationDenied(denied) = reply else {
         panic!("expected AuthorizationDenied, got {reply:?}");
     };
-    assert_eq!(denied.denial.source, AuthorizationDenialSource::Policy);
     assert_eq!(
-        denied.denial.reason,
+        denied.authorization_denial.authorization_denial_source,
+        AuthorizationDenialSource::Policy
+    );
+    assert_eq!(
+        denied.authorization_denial.authorization_denial_reason,
         AuthorizationDenialReason::RequestDigestMismatch,
     );
 
@@ -539,14 +559,14 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
         panic!("expected SignReceipt, got {sign_reply:?}");
     };
     let attestation = receipt.attestation;
-    let content = attestation.content.clone();
+    let content = attestation.content_reference.clone();
 
     // A real BLS signature over the canonical preimage verifies as Valid.
     let verify_reply = root
         .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
             signal_criome::VerifyRequest {
                 attestation: attestation.clone(),
-                content,
+                content_reference: content,
             },
         )))
         .await
@@ -555,17 +575,20 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
     let CriomeReply::VerificationResult(result) = verify_reply else {
         panic!("expected VerificationResult, got {verify_reply:?}");
     };
-    assert_eq!(result.decision, signal_criome::VerificationDecision::Valid);
+    assert_eq!(
+        result.verification_decision,
+        signal_criome::VerificationDecision::Valid
+    );
 
     // A tampered attestation (different content digest) must not verify.
     let mut tampered = attestation;
-    tampered.content.digest = ObjectDigest::from_bytes(b"tampered");
-    let tampered_content = tampered.content.clone();
+    tampered.content_reference.object_digest = ObjectDigest::from_bytes(b"tampered");
+    let tampered_content = tampered.content_reference.clone();
     let tampered_reply = root
         .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
             signal_criome::VerifyRequest {
                 attestation: tampered,
-                content: tampered_content,
+                content_reference: tampered_content,
             },
         )))
         .await
@@ -575,7 +598,7 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
         panic!("expected VerificationResult, got {tampered_reply:?}");
     };
     assert_eq!(
-        tampered_result.decision,
+        tampered_result.verification_decision,
         signal_criome::VerificationDecision::InvalidSignature
     );
 
@@ -635,11 +658,11 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let stamp = AttestedMoment::new(
         proposition.clone(),
         vec![TimeSignature {
-            signer: timekeeper_identity.clone(),
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: timekeeper.public_key(),
-                signature: timekeeper.sign(
+            identity: timekeeper_identity.clone(),
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: timekeeper.public_key(),
+                bls_signature: timekeeper.sign(
                     AttestedMomentStatement::new(&proposition)
                         .to_signing_bytes()
                         .expect("moment statement")
@@ -656,24 +679,24 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         operation,
         stamp.clone(),
         vec![StampedSignatureEnvelope {
-            stamp,
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: signer.public_key(),
-                signature: signer.sign(&statement),
+            attested_moment: stamp,
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: signer.public_key(),
+                bls_signature: signer.sign(&statement),
             },
         }],
         Vec::new(),
     );
     let authorized_head = signal_criome::AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: evidence.operation.object_digest().clone(),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: evidence.operation_digest.object_digest().clone(),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     };
 
     let evaluation = AuthorizationEvaluation {
-        contract: digest.clone(),
-        object: authorized_head.clone(),
+        contract_digest: digest.clone(),
+        authorized_object_reference: authorized_head.clone(),
         evidence: evidence.clone(),
     };
     let evaluated = root
@@ -686,13 +709,18 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let CriomeReply::AuthorizationEvaluated(evaluated) = evaluated else {
         panic!("expected AuthorizationEvaluated, got {evaluated:?}");
     };
-    assert_eq!(evaluated.decision, EvaluationDecision::Authorized);
+    assert_eq!(
+        evaluated.evaluation_decision,
+        EvaluationDecision::Authorized
+    );
     let observer = Identity::agent("component-observer".to_string());
     let snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
             AuthorizedObjectObservation {
-                subscriber: observer.clone(),
-                interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+                identity: observer.clone(),
+                authorized_object_interest: AuthorizedObjectInterest::Component(
+                    ComponentKind::Spirit,
+                ),
             },
         )))
         .await
@@ -703,19 +731,22 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     };
     let updates = snapshot.into_updates();
     assert_eq!(updates.len(), 1);
-    assert_eq!(updates[0].object, authorized_head);
-    assert_eq!(updates[0].contract, digest);
-    assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
-    assert_eq!(updates[0].stamp, evidence.stamp);
+    assert_eq!(updates[0].authorized_object_reference, authorized_head);
+    assert_eq!(updates[0].contract_digest, digest);
+    assert_eq!(
+        updates[0].evaluation_decision,
+        EvaluationDecision::Authorized
+    );
+    assert_eq!(updates[0].attested_moment, evidence.attested_moment);
 
     let rejected_mismatch = root
         .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
             AuthorizationEvaluation {
-                contract: digest.clone(),
-                object: signal_criome::AuthorizedObjectReference {
-                    component: ComponentKind::Spirit,
-                    digest: ObjectDigest::from_bytes(b"not-the-signed-operation"),
-                    kind: AuthorizedObjectKind::Head,
+                contract_digest: digest.clone(),
+                authorized_object_reference: signal_criome::AuthorizedObjectReference {
+                    component_kind: ComponentKind::Spirit,
+                    object_digest: ObjectDigest::from_bytes(b"not-the-signed-operation"),
+                    authorized_object_kind: AuthorizedObjectKind::Head,
                 },
                 evidence: evidence.clone(),
             },
@@ -733,8 +764,10 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let mirror_snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
             AuthorizedObjectObservation {
-                subscriber: Identity::agent("mirror-observer".to_string()),
-                interest: AuthorizedObjectInterest::Component(ComponentKind::Mirror),
+                identity: Identity::agent("mirror-observer".to_string()),
+                authorized_object_interest: AuthorizedObjectInterest::Component(
+                    ComponentKind::Mirror,
+                ),
             },
         )))
         .await
@@ -749,18 +782,20 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     );
 
     let time_result = signal_criome::AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: ObjectDigest::from_bytes(b"timeout-result"),
-        kind: AuthorizedObjectKind::Time,
+        component_kind: ComponentKind::Spirit,
+        object_digest: ObjectDigest::from_bytes(b"timeout-result"),
+        authorized_object_kind: AuthorizedObjectKind::Time,
     };
     let check = ContractTimeCheck {
-        contract: digest.clone(),
-        due_at: TimestampNanos::new(25),
-        result: time_result.clone(),
-        absent: AuthorizedObjectInterest::ComponentObject(ComponentObjectInterest {
-            component: ComponentKind::Mirror,
-            kind: AuthorizedObjectKind::Operation,
-        }),
+        contract_digest: digest.clone(),
+        timestamp_nanos: TimestampNanos::new(25),
+        authorized_object_reference: time_result.clone(),
+        authorized_object_interest: AuthorizedObjectInterest::ComponentObject(
+            ComponentObjectInterest {
+                component_kind: ComponentKind::Mirror,
+                authorized_object_kind: AuthorizedObjectKind::Operation,
+            },
+        ),
     };
     let scheduled = root
         .ask(SubmitRequest::new(
@@ -787,11 +822,11 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let later_stamp = AttestedMoment::new(
         later_proposition.clone(),
         vec![TimeSignature {
-            signer: timekeeper_identity,
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: timekeeper.public_key(),
-                signature: timekeeper.sign(
+            identity: timekeeper_identity,
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: timekeeper.public_key(),
+                bls_signature: timekeeper.sign(
                     AttestedMomentStatement::new(&later_proposition)
                         .to_signing_bytes()
                         .expect("later moment statement")
@@ -812,15 +847,17 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     };
     let triggered = due.into_triggered();
     assert_eq!(triggered.len(), 1);
-    assert_eq!(triggered[0].object, time_result);
-    assert_eq!(triggered[0].contract, digest);
-    assert_eq!(triggered[0].stamp, later_stamp);
+    assert_eq!(triggered[0].authorized_object_reference, time_result);
+    assert_eq!(triggered[0].contract_digest, digest);
+    assert_eq!(triggered[0].attested_moment, later_stamp);
 
     let time_snapshot = root
         .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
             AuthorizedObjectObservation {
-                subscriber: observer.clone(),
-                interest: AuthorizedObjectInterest::ObjectKind(AuthorizedObjectKind::Time),
+                identity: observer.clone(),
+                authorized_object_interest: AuthorizedObjectInterest::ObjectKind(
+                    AuthorizedObjectKind::Time,
+                ),
             },
         )))
         .await
@@ -834,8 +871,10 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let retracted = root
         .ask(SubmitRequest::new(
             CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken {
-                subscriber: observer.clone(),
-                interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+                identity: observer.clone(),
+                authorized_object_interest: AuthorizedObjectInterest::Component(
+                    ComponentKind::Spirit,
+                ),
             }),
         ))
         .await
@@ -849,8 +888,10 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     let time_retracted = root
         .ask(SubmitRequest::new(
             CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken {
-                subscriber: observer,
-                interest: AuthorizedObjectInterest::ObjectKind(AuthorizedObjectKind::Time),
+                identity: observer,
+                authorized_object_interest: AuthorizedObjectInterest::ObjectKind(
+                    AuthorizedObjectKind::Time,
+                ),
             }),
         ))
         .await
@@ -879,7 +920,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
     assert_eq!(
         found,
         CriomeReply::ContractFound(signal_criome::ContractFound {
-            digest: digest.clone(),
+            contract_digest: digest.clone(),
             contract: expected_contract,
         })
     );
@@ -895,7 +936,7 @@ async fn criome_root_admits_and_evaluates_policy_contracts() {
         panic!("expected AuthorizationEvaluated, got {evaluated_after_restart:?}");
     };
     assert_eq!(
-        evaluated_after_restart.decision,
+        evaluated_after_restart.evaluation_decision,
         EvaluationDecision::Authorized
     );
 
@@ -927,8 +968,8 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
 
     let workflow = workflow_digest(b"spirit guardian workflow");
     let contract = Contract::root(Rule::Workflow(WorkflowGuard {
-        workflow: workflow.clone(),
-        executor: Identity::host(("orchestrate").to_string()),
+        workflow_digest: workflow.clone(),
+        identity: Identity::host(("orchestrate").to_string()),
     }));
     let admitted = root
         .ask(SubmitRequest::new(CriomeRequest::AdmitContract(contract)))
@@ -951,11 +992,11 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
     let stamp = AttestedMoment::new(
         proposition.clone(),
         vec![TimeSignature {
-            signer: timekeeper_identity,
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: timekeeper.public_key(),
-                signature: timekeeper.sign(
+            identity: timekeeper_identity,
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: timekeeper.public_key(),
+                bls_signature: timekeeper.sign(
                     AttestedMomentStatement::new(&proposition)
                         .to_signing_bytes()
                         .expect("moment statement")
@@ -972,16 +1013,16 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
         Vec::new(),
     );
     let object = signal_criome::AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: operation.object_digest().clone(),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: operation.object_digest().clone(),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     };
 
     let absent_receipt = root
         .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
             AuthorizationEvaluation {
-                contract: contract_digest.clone(),
-                object: object.clone(),
+                contract_digest: contract_digest.clone(),
+                authorized_object_reference: object.clone(),
                 evidence: evidence.clone(),
             },
         )))
@@ -992,21 +1033,21 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
         panic!("expected AuthorizationEvaluated, got {absent_receipt:?}");
     };
     assert_eq!(
-        absent_receipt.decision,
+        absent_receipt.evaluation_decision,
         EvaluationDecision::Escalate(EscalationTarget::Workflow(workflow.clone()))
     );
 
     let receipt = WorkflowReceipt {
-        workflow,
-        operation,
-        outcome: EvaluationDecision::Authorized,
-        provenance: workflow_provenance_digest(b"fixture-workflow-run-log"),
+        workflow_digest: workflow,
+        operation_digest: operation,
+        evaluation_decision: EvaluationDecision::Authorized,
+        workflow_provenance_digest: workflow_provenance_digest(b"fixture-workflow-run-log"),
     };
     let accepted_receipt = root
         .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
             AuthorizationEvaluation {
-                contract: contract_digest,
-                object,
+                contract_digest: contract_digest,
+                authorized_object_reference: object,
                 evidence: evidence.with_workflow_receipts(vec![receipt]),
             },
         )))
@@ -1016,7 +1057,10 @@ async fn criome_root_evaluates_workflow_rule_from_local_receipt() {
     let CriomeReply::AuthorizationEvaluated(accepted_receipt) = accepted_receipt else {
         panic!("expected AuthorizationEvaluated, got {accepted_receipt:?}");
     };
-    assert_eq!(accepted_receipt.decision, EvaluationDecision::Authorized);
+    assert_eq!(
+        accepted_receipt.evaluation_decision,
+        EvaluationDecision::Authorized
+    );
 
     CriomeRoot::stop(root).await.expect("stop criome root");
 }
@@ -1039,17 +1083,17 @@ async fn parked_authorization_snapshot_sorts_slots_numerically() {
     for index in 0..11 {
         let evidence = unproven_evidence(format!("parked-{index}").as_bytes());
         let object = signal_criome::AuthorizedObjectReference {
-            component: ComponentKind::Spirit,
-            digest: evidence.operation.object_digest().clone(),
-            kind: AuthorizedObjectKind::Head,
+            component_kind: ComponentKind::Spirit,
+            object_digest: evidence.operation_digest.object_digest().clone(),
+            authorized_object_kind: AuthorizedObjectKind::Head,
         };
         let reply = root
             .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
                 AuthorizationEvaluation {
-                    contract: signal_criome::ContractDigest::from_bytes(
+                    contract_digest: signal_criome::ContractDigest::from_bytes(
                         format!("contract-{index}").as_bytes(),
                     ),
-                    object,
+                    authorized_object_reference: object,
                     evidence,
                 },
             )))
@@ -1059,7 +1103,7 @@ async fn parked_authorization_snapshot_sorts_slots_numerically() {
         let CriomeReply::AuthorizationPending(pending) = reply else {
             panic!("expected AuthorizationPending, got {reply:?}");
         };
-        expected.push(pending.request_slot);
+        expected.push(pending.authorization_request_slot);
     }
 
     let snapshot = root
@@ -1077,7 +1121,7 @@ async fn parked_authorization_snapshot_sorts_slots_numerically() {
     let actual: Vec<_> = snapshot
         .parked()
         .iter()
-        .map(|parked| parked.request_slot.clone())
+        .map(|parked| parked.authorization_request_slot.clone())
         .collect();
     assert_eq!(actual, expected);
 
@@ -1098,16 +1142,16 @@ async fn expired_attestation_verifies_as_expired() {
     // Sign with an expiry one nanosecond after the epoch — long past.
     let request = SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"fixture"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new(("fixture-schema").to_string()),
+            object_digest: ObjectDigest::from_bytes(b"fixture"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new(("fixture-schema").to_string()),
         },
         Identity::developer(("operator").to_string()),
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new(("fixture-audience").to_string()),
             policy_version: PrincipalName::new(("fixture-policy").to_string()),
-            nonce: ReplayNonce::new(("fixture-nonce").to_string()),
+            replay_nonce: ReplayNonce::new(("fixture-nonce").to_string()),
         },
         Some(TimestampNanos::new(1)),
     );
@@ -1120,13 +1164,13 @@ async fn expired_attestation_verifies_as_expired() {
         panic!("expected SignReceipt, got {sign_reply:?}");
     };
     let attestation = receipt.attestation;
-    let content = attestation.content.clone();
+    let content = attestation.content_reference.clone();
 
     let verify_reply = root
         .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
             signal_criome::VerifyRequest {
                 attestation,
-                content,
+                content_reference: content,
             },
         )))
         .await
@@ -1136,7 +1180,7 @@ async fn expired_attestation_verifies_as_expired() {
         panic!("expected VerificationResult, got {verify_reply:?}");
     };
     assert_eq!(
-        result.decision,
+        result.verification_decision,
         signal_criome::VerificationDecision::Expired
     );
 
@@ -1167,14 +1211,14 @@ async fn unsupported_signature_scheme_is_rejected() {
     let mut attestation = receipt.attestation;
     // Relabel the envelope with an unsupported scheme; it must be rejected, not
     // parsed as min-pk bytes.
-    attestation.envelope.scheme = SignatureScheme::Bls12_381MinSig;
-    let content = attestation.content.clone();
+    attestation.signature_envelope.signature_scheme = SignatureScheme::Bls12_381MinSig;
+    let content = attestation.content_reference.clone();
 
     let verify_reply = root
         .ask(SubmitRequest::new(CriomeRequest::VerifyAttestation(
             signal_criome::VerifyRequest {
                 attestation,
-                content,
+                content_reference: content,
             },
         )))
         .await
@@ -1184,7 +1228,7 @@ async fn unsupported_signature_scheme_is_rejected() {
         panic!("expected VerificationResult, got {verify_reply:?}");
     };
     assert_eq!(
-        result.decision,
+        result.verification_decision,
         signal_criome::VerificationDecision::InvalidSignature
     );
 
@@ -1253,13 +1297,13 @@ async fn cluster_root_gates_registration() {
     let statement = RegistrationStatement::from_registration(&registration).to_signing_bytes();
     let admitted = IdentityRegistration::new(
         registration.identity,
-        registration.public_key,
-        registration.fingerprint,
-        registration.purpose,
+        registration.bls_public_key,
+        registration.public_key_fingerprint,
+        registration.key_purpose,
         Some(SignatureEnvelope {
-            scheme: SignatureScheme::Bls12_381MinPk,
-            public_key: cluster_root.public_key(),
-            signature: cluster_root.sign(&statement),
+            signature_scheme: SignatureScheme::Bls12_381MinPk,
+            bls_public_key: cluster_root.public_key(),
+            bls_signature: cluster_root.sign(&statement),
         }),
     );
     let accepted = root
@@ -1292,7 +1336,7 @@ fn criome_daemon_signal_frame_registers_identity() {
         reply,
         CriomeReply::IdentityReceipt(signal_criome::IdentityReceipt {
             identity: Identity::developer(("operator").to_string()),
-            status: PrincipalStatus::Active,
+            principal_status: PrincipalStatus::Active,
         })
     );
     assert_eq!(served.join().expect("join daemon"), reply);
@@ -1362,14 +1406,14 @@ fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
 
     let evidence = unproven_evidence(b"auto-approved-head");
     let object = signal_criome::AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: evidence.operation.object_digest().clone(),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: evidence.operation_digest.object_digest().clone(),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     };
     let contract = signal_criome::ContractDigest::from_bytes(b"unadmitted-auto-contract");
     let evaluation = AuthorizationEvaluation {
-        contract: contract.clone(),
-        object: object.clone(),
+        contract_digest: contract.clone(),
+        authorized_object_reference: object.clone(),
         evidence: evidence.clone(),
     };
 
@@ -1384,15 +1428,17 @@ fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
     let CriomeReply::AuthorizationEvaluated(approved) = approved else {
         panic!("expected AuthorizationEvaluated, got {approved:?}");
     };
-    assert_eq!(approved.decision, EvaluationDecision::Authorized);
+    assert_eq!(approved.evaluation_decision, EvaluationDecision::Authorized);
 
     let snapshot = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve authorized observation"));
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::ObserveAuthorizedObjects(
                 AuthorizedObjectObservation {
-                    subscriber: Identity::agent("auto-approve-observer".to_string()),
-                    interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+                    identity: Identity::agent("auto-approve-observer".to_string()),
+                    authorized_object_interest: AuthorizedObjectInterest::Component(
+                        ComponentKind::Spirit,
+                    ),
                 },
             ))
             .expect("observe authorized objects");
@@ -1404,10 +1450,13 @@ fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
     };
     let updates = snapshot.into_updates();
     assert_eq!(updates.len(), 1);
-    assert_eq!(updates[0].object, object);
-    assert_eq!(updates[0].contract, contract);
-    assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
-    assert_eq!(updates[0].stamp, evidence.stamp);
+    assert_eq!(updates[0].authorized_object_reference, object);
+    assert_eq!(updates[0].contract_digest, contract);
+    assert_eq!(
+        updates[0].evaluation_decision,
+        EvaluationDecision::Authorized
+    );
+    assert_eq!(updates[0].attested_moment, evidence.attested_moment);
 
     daemon.shutdown().expect("shutdown daemon");
 }
@@ -1454,16 +1503,16 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
         panic!("expected AuthorizationGranted, got {granted:?}");
     };
     assert_eq!(grant.authorized_object_digest(), &request_digest);
-    assert_eq!(grant.issued_by, Identity::host("criome".to_string()));
+    assert_eq!(grant.identity, Identity::host("criome".to_string()));
     assert_eq!(grant.signatures().len(), 1);
-    let signature = &grant.signatures()[0].envelope;
-    assert_eq!(signature.scheme, SignatureScheme::Bls12_381MinPk);
+    let signature = &grant.signatures()[0].signature_envelope;
+    assert_eq!(signature.signature_scheme, SignatureScheme::Bls12_381MinPk);
     assert!(
-        !signature.public_key.as_str().is_empty(),
+        !signature.bls_public_key.as_str().is_empty(),
         "criome grant signature carries the master public key"
     );
     assert!(
-        !signature.signature.as_str().is_empty(),
+        !signature.bls_signature.as_str().is_empty(),
         "criome grant signature is not a placeholder"
     );
 
@@ -1475,7 +1524,9 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
         });
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::ObserveAuthorization(
-                signal_criome::AuthorizationObservation::new(grant.request_slot.clone()),
+                signal_criome::AuthorizationObservation::new(
+                    grant.authorization_request_slot.clone(),
+                ),
             ))
             .expect("observe authorization");
         assert_eq!(
@@ -1489,8 +1540,8 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
     };
     let states = snapshot.into_states();
     assert_eq!(states.len(), 1);
-    assert_eq!(states[0].status, AuthorizationStatus::Granted);
-    assert_eq!(states[0].grant(), Some(&grant));
+    assert_eq!(states[0].authorization_status, AuthorizationStatus::Granted);
+    assert_eq!(states[0].optional_authorization_grant(), Some(&grant));
 
     daemon.shutdown().expect("shutdown daemon");
 }
@@ -1550,7 +1601,7 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
     let CriomeReply::AuthorizationPending(pending) = pending else {
         panic!("expected AuthorizationPending, got {pending:?}");
     };
-    assert_eq!(pending.request_digest, request_digest);
+    assert_eq!(pending.object_digest, request_digest);
 
     let parked = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next_meta().expect("serve signal parked list"));
@@ -1566,7 +1617,10 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
         panic!("expected ParkedAuthorizationSnapshot, got {parked:?}");
     };
     assert_eq!(parked.parked().len(), 1);
-    assert_eq!(parked.parked()[0].request_slot, pending.request_slot);
+    assert_eq!(
+        parked.parked()[0].authorization_request_slot,
+        pending.authorization_request_slot
+    );
     assert_eq!(
         parked.parked()[0].signal_authorization(),
         Some(&authorization)
@@ -1578,8 +1632,8 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
         let reply = CriomeMetaClient::new(&meta_socket)
             .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
                 AuthorizationApproval {
-                    request_slot: pending.request_slot.clone(),
-                    decision: AuthorizationApprovalDecision::Approve,
+                    authorization_request_slot: pending.authorization_request_slot.clone(),
+                    authorization_approval_decision: AuthorizationApprovalDecision::Approve,
                 },
             ))
             .expect("approve signal authorization");
@@ -1589,8 +1643,14 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
     let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
         panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
     };
-    assert_eq!(approved.request_slot, pending.request_slot);
-    assert_eq!(approved.decision, AuthorizationApprovalDecision::Approve);
+    assert_eq!(
+        approved.authorization_request_slot,
+        pending.authorization_request_slot
+    );
+    assert_eq!(
+        approved.authorization_approval_decision,
+        AuthorizationApprovalDecision::Approve
+    );
 
     let snapshot = thread::scope(|scope| {
         let server = scope.spawn(|| {
@@ -1600,7 +1660,9 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
         });
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::ObserveAuthorization(
-                signal_criome::AuthorizationObservation::new(pending.request_slot.clone()),
+                signal_criome::AuthorizationObservation::new(
+                    pending.authorization_request_slot.clone(),
+                ),
             ))
             .expect("observe signal authorization");
         assert_eq!(
@@ -1617,13 +1679,22 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
     let states = snapshot.into_states();
     assert_eq!(states.len(), 1);
     let state = &states[0];
-    assert_eq!(state.status, AuthorizationStatus::Granted);
-    assert_eq!(state.signal_authorization(), Some(&authorization));
-    let grant = state.grant().expect("approved signal call stores grant");
+    assert_eq!(state.authorization_status, AuthorizationStatus::Granted);
+    assert_eq!(
+        state.optional_signal_call_authorization(),
+        Some(&authorization)
+    );
+    let grant = state
+        .optional_authorization_grant()
+        .expect("approved signal call stores grant");
     assert_eq!(grant.authorized_object_digest(), &request_digest);
     assert_eq!(grant.signatures().len(), 1);
     assert!(
-        !grant.signatures()[0].envelope.signature.as_str().is_empty(),
+        !grant.signatures()[0]
+            .signature_envelope
+            .bls_signature
+            .as_str()
+            .is_empty(),
         "client approval signs the grant through criome"
     );
 
@@ -1682,11 +1753,14 @@ fn authorization_submit_stream_pushes_approval_update() {
         let request_slot = session.token().payload().clone();
         let snapshot_states = session.snapshot().states();
         assert_eq!(snapshot_states.len(), 1);
-        assert_eq!(snapshot_states[0].status, AuthorizationStatus::Parked);
-        assert_eq!(snapshot_states[0].request_slot, request_slot);
-        assert_eq!(snapshot_states[0].request_digest, request_digest);
         assert_eq!(
-            snapshot_states[0].signal_authorization(),
+            snapshot_states[0].authorization_status,
+            AuthorizationStatus::Parked
+        );
+        assert_eq!(snapshot_states[0].authorization_request_slot, request_slot);
+        assert_eq!(snapshot_states[0].object_digest, request_digest);
+        assert_eq!(
+            snapshot_states[0].optional_signal_call_authorization(),
             Some(&authorization)
         );
 
@@ -1694,23 +1768,29 @@ fn authorization_submit_stream_pushes_approval_update() {
             &daemon,
             &meta_socket,
             meta_signal_criome::Input::SubmitAuthorizationApproval(AuthorizationApproval {
-                request_slot: request_slot.clone(),
-                decision: AuthorizationApprovalDecision::Approve,
+                authorization_request_slot: request_slot.clone(),
+                authorization_approval_decision: AuthorizationApprovalDecision::Approve,
             }),
         );
         let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
             panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
         };
-        assert_eq!(approved.request_slot, request_slot);
-        assert_eq!(approved.decision, AuthorizationApprovalDecision::Approve);
+        assert_eq!(approved.authorization_request_slot, request_slot);
+        assert_eq!(
+            approved.authorization_approval_decision,
+            AuthorizationApprovalDecision::Approve
+        );
 
         let update = session.next_update().expect("read pushed approval update");
-        assert_eq!(update.status, AuthorizationStatus::Granted);
-        assert_eq!(update.request_slot, request_slot);
-        assert_eq!(update.request_digest, request_digest);
-        assert_eq!(update.signal_authorization(), Some(&authorization));
+        assert_eq!(update.authorization_status, AuthorizationStatus::Granted);
+        assert_eq!(update.authorization_request_slot, request_slot);
+        assert_eq!(update.object_digest, request_digest);
+        assert_eq!(
+            update.optional_signal_call_authorization(),
+            Some(&authorization)
+        );
         assert!(
-            update.grant().is_some(),
+            update.optional_authorization_grant().is_some(),
             "pushed approval update carries the signed grant"
         );
         assert_eq!(
@@ -1779,7 +1859,7 @@ fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
     let meta_signal_criome::Output::InterceptPolicyCreated(created) = created else {
         panic!("expected InterceptPolicyCreated, got {created:?}");
     };
-    assert_eq!(created.session_slot.as_str(), "mentci-main");
+    assert_eq!(created.mentci_session_slot.as_str(), "mentci-main");
     assert_eq!(created.spirit_operation_names.names().len(), 1);
 
     let overlap = send_meta_request(
@@ -1796,7 +1876,7 @@ fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
         panic!("expected RequestUnimplemented for same-priority overlap, got {overlap:?}");
     };
     assert_eq!(
-        overlap.operation,
+        overlap.operation_kind,
         meta_signal_criome::OperationKind::CreateInterceptPolicy
     );
 
@@ -1848,7 +1928,10 @@ fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
     let meta_signal_criome::Output::InterceptPolicyReplaced(replaced) = replaced else {
         panic!("expected InterceptPolicyReplaced, got {replaced:?}");
     };
-    assert_ne!(replaced.identifier, created.identifier);
+    assert_ne!(
+        replaced.intercept_policy_identifier,
+        created.intercept_policy_identifier
+    );
 
     let listed_after_replace = send_meta_request(
         &daemon,
@@ -1871,13 +1954,13 @@ fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::cancel_intercept_policy(InterceptPolicyCancellation::new(
-            replaced.identifier.clone(),
+            replaced.intercept_policy_identifier.clone(),
         )),
     );
     let meta_signal_criome::Output::InterceptPolicyCancelled(cancelled) = cancelled else {
         panic!("expected InterceptPolicyCancelled, got {cancelled:?}");
     };
-    assert_eq!(cancelled, replaced.identifier);
+    assert_eq!(cancelled, replaced.intercept_policy_identifier);
 
     let listed_after_cancel = send_meta_request(
         &daemon,
@@ -1944,8 +2027,8 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
-            session_slot: None,
-            target: None,
+            optional_mentci_session_slot: None,
+            optional_intercept_target_selector: None,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestsFetched(fetched) = fetched else {
@@ -1953,10 +2036,16 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
     };
     assert_eq!(fetched.requests().len(), 1);
     let parked = &fetched.requests()[0];
-    assert_eq!(parked.matched_policy, policy.identifier);
-    assert_eq!(parked.session_slot, policy.session_slot);
     assert_eq!(
-        parked.context.raw_payload.as_str(),
+        parked.intercept_policy_identifier,
+        policy.intercept_policy_identifier
+    );
+    assert_eq!(parked.mentci_session_slot, policy.mentci_session_slot);
+    assert_eq!(
+        parked
+            .spirit_authorization_context
+            .raw_spirit_operation_payload
+            .as_str(),
         "(Record ([intercepted Spirit operation]))"
     );
 
@@ -1964,21 +2053,29 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
-            identifier: parked.identifier.clone(),
-            decision: ParkedRequestDecision::Approve,
+            parked_request_identifier: parked.parked_request_identifier.clone(),
+            parked_request_decision: ParkedRequestDecision::Approve,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestAnswered(answered) = answered else {
         panic!("expected ParkedRequestAnswered, got {answered:?}");
     };
-    assert_eq!(answered.identifier, parked.identifier);
-    assert_eq!(answered.outcome, ParkedRequestOutcome::Approved);
+    assert_eq!(
+        answered.parked_request_identifier,
+        parked.parked_request_identifier
+    );
+    assert_eq!(
+        answered.parked_request_outcome,
+        ParkedRequestOutcome::Approved
+    );
 
     let observed = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve approved observation"));
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::ObserveAuthorization(
-                signal_criome::AuthorizationObservation::new(pending.request_slot.clone()),
+                signal_criome::AuthorizationObservation::new(
+                    pending.authorization_request_slot.clone(),
+                ),
             ))
             .expect("observe approved authorization");
         assert_eq!(server.join().expect("join approved observation"), reply);
@@ -1989,10 +2086,13 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
     };
     let states = observed.into_states();
     assert_eq!(states.len(), 1);
-    assert_eq!(states[0].status, AuthorizationStatus::Granted);
-    assert_eq!(states[0].signal_authorization(), Some(&authorization));
+    assert_eq!(states[0].authorization_status, AuthorizationStatus::Granted);
+    assert_eq!(
+        states[0].optional_signal_call_authorization(),
+        Some(&authorization)
+    );
     assert!(
-        states[0].grant().is_some(),
+        states[0].optional_authorization_grant().is_some(),
         "approved intercepted Spirit authorization stores criome grant"
     );
 
@@ -2050,8 +2150,8 @@ fn meta_socket_rejects_intercepted_spirit_request_into_authorization_denial() {
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
-            session_slot: None,
-            target: None,
+            optional_mentci_session_slot: None,
+            optional_intercept_target_selector: None,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestsFetched(fetched) = fetched else {
@@ -2063,21 +2163,29 @@ fn meta_socket_rejects_intercepted_spirit_request_into_authorization_denial() {
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
-            identifier: parked.identifier.clone(),
-            decision: ParkedRequestDecision::Reject,
+            parked_request_identifier: parked.parked_request_identifier.clone(),
+            parked_request_decision: ParkedRequestDecision::Reject,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestAnswered(answered) = answered else {
         panic!("expected ParkedRequestAnswered, got {answered:?}");
     };
-    assert_eq!(answered.identifier, parked.identifier);
-    assert_eq!(answered.outcome, ParkedRequestOutcome::Rejected);
+    assert_eq!(
+        answered.parked_request_identifier,
+        parked.parked_request_identifier
+    );
+    assert_eq!(
+        answered.parked_request_outcome,
+        ParkedRequestOutcome::Rejected
+    );
 
     let observed = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve rejected observation"));
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::ObserveAuthorization(
-                signal_criome::AuthorizationObservation::new(pending.request_slot.clone()),
+                signal_criome::AuthorizationObservation::new(
+                    pending.authorization_request_slot.clone(),
+                ),
             ))
             .expect("observe rejected authorization");
         assert_eq!(server.join().expect("join rejected observation"), reply);
@@ -2088,10 +2196,13 @@ fn meta_socket_rejects_intercepted_spirit_request_into_authorization_denial() {
     };
     let states = observed.into_states();
     assert_eq!(states.len(), 1);
-    assert_eq!(states[0].status, AuthorizationStatus::Denied);
-    assert_eq!(states[0].signal_authorization(), Some(&authorization));
+    assert_eq!(states[0].authorization_status, AuthorizationStatus::Denied);
+    assert_eq!(
+        states[0].optional_signal_call_authorization(),
+        Some(&authorization)
+    );
     assert!(
-        states[0].denial().is_some(),
+        states[0].optional_authorization_denial().is_some(),
         "rejected intercepted Spirit authorization stores denial"
     );
 
@@ -2132,7 +2243,10 @@ fn meta_socket_fetches_and_answers_parked_spirit_requests() {
                 .expect("request parked")
                 .request()
                 .clone();
-            assert_eq!(parked.matched_policy, stored_policy.identifier);
+            assert_eq!(
+                parked.intercept_policy_identifier,
+                stored_policy.intercept_policy_identifier
+            );
             store_actor
                 .stop_gracefully()
                 .await
@@ -2152,8 +2266,8 @@ fn meta_socket_fetches_and_answers_parked_spirit_requests() {
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
-            session_slot: None,
-            target: None,
+            optional_mentci_session_slot: None,
+            optional_intercept_target_selector: None,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestsFetched(fetched) = fetched else {
@@ -2161,7 +2275,10 @@ fn meta_socket_fetches_and_answers_parked_spirit_requests() {
     };
     assert_eq!(fetched.requests(), std::slice::from_ref(&parked));
     assert_eq!(
-        fetched.requests()[0].context.raw_payload.as_str(),
+        fetched.requests()[0]
+            .spirit_authorization_context
+            .raw_spirit_operation_payload
+            .as_str(),
         "(Record example)"
     );
 
@@ -2169,23 +2286,29 @@ fn meta_socket_fetches_and_answers_parked_spirit_requests() {
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
-            identifier: parked.identifier.clone(),
-            decision: ParkedRequestDecision::Approve,
+            parked_request_identifier: parked.parked_request_identifier.clone(),
+            parked_request_decision: ParkedRequestDecision::Approve,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestAnswered(answered) = answered else {
         panic!("expected ParkedRequestAnswered, got {answered:?}");
     };
-    assert_eq!(answered.identifier, parked.identifier);
-    assert_eq!(answered.outcome, ParkedRequestOutcome::Approved);
-    assert_eq!(answered.audit_source, ApprovalAuditSource::Manual);
+    assert_eq!(
+        answered.parked_request_identifier,
+        parked.parked_request_identifier
+    );
+    assert_eq!(
+        answered.parked_request_outcome,
+        ParkedRequestOutcome::Approved
+    );
+    assert_eq!(answered.approval_audit_source, ApprovalAuditSource::Manual);
 
     let fetched_after_answer = send_meta_request(
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::fetch_parked_requests(ParkedRequestQuery {
-            session_slot: None,
-            target: None,
+            optional_mentci_session_slot: None,
+            optional_intercept_target_selector: None,
         }),
     );
     let meta_signal_criome::Output::ParkedRequestsFetched(fetched_after_answer) =
@@ -2199,15 +2322,17 @@ fn meta_socket_fetches_and_answers_parked_spirit_requests() {
         &daemon,
         &meta_socket,
         meta_signal_criome::Input::answer_parked_request(ParkedRequestAnswer {
-            identifier: signal_criome::ParkedRequestIdentifier::new("missing-request"),
-            decision: ParkedRequestDecision::Reject,
+            parked_request_identifier: signal_criome::ParkedRequestIdentifier::new(
+                "missing-request",
+            ),
+            parked_request_decision: ParkedRequestDecision::Reject,
         }),
     );
     let meta_signal_criome::Output::RequestUnimplemented(missing) = missing else {
         panic!("expected RequestUnimplemented for missing parked request, got {missing:?}");
     };
     assert_eq!(
-        missing.operation,
+        missing.operation_kind,
         meta_signal_criome::OperationKind::AnswerParkedRequest
     );
 
@@ -2252,14 +2377,14 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
 
     let evidence = unproven_evidence(b"mentci-approved-head");
     let object = signal_criome::AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: evidence.operation.object_digest().clone(),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: evidence.operation_digest.object_digest().clone(),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     };
     let contract = signal_criome::ContractDigest::from_bytes(b"client-approval-contract");
     let evaluation = AuthorizationEvaluation {
-        contract: contract.clone(),
-        object: object.clone(),
+        contract_digest: contract.clone(),
+        authorized_object_reference: object.clone(),
         evidence: evidence.clone(),
     };
 
@@ -2274,7 +2399,7 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     let CriomeReply::AuthorizationPending(pending) = pending else {
         panic!("expected AuthorizationPending, got {pending:?}");
     };
-    assert_eq!(pending.request_digest, object.digest);
+    assert_eq!(pending.object_digest, object.object_digest);
 
     let parked = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next_meta().expect("serve parked list"));
@@ -2290,16 +2415,19 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
         panic!("expected ParkedAuthorizationSnapshot, got {parked:?}");
     };
     assert_eq!(parked.parked().len(), 1);
-    assert_eq!(parked.parked()[0].request_slot, pending.request_slot);
+    assert_eq!(
+        parked.parked()[0].authorization_request_slot,
+        pending.authorization_request_slot
+    );
     assert_eq!(parked.parked()[0].evaluation(), Some(&evaluation));
 
     let working_reject = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve working reject"));
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::RejectAuthorization(AuthorizationRejection {
-                request_slot: pending.request_slot.clone(),
-                rejector: Identity::developer("working-client".to_string()),
-                reason: AuthorizationDenialReason::PolicyRefused,
+                authorization_request_slot: pending.authorization_request_slot.clone(),
+                identity: Identity::developer("working-client".to_string()),
+                authorization_denial_reason: AuthorizationDenialReason::PolicyRefused,
             }))
             .expect("submit working reject");
         assert_eq!(server.join().expect("join working reject server"), reply);
@@ -2331,8 +2459,8 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     };
     assert_eq!(parked_after_working_reject.parked().len(), 1);
     assert_eq!(
-        parked_after_working_reject.parked()[0].request_slot,
-        pending.request_slot
+        parked_after_working_reject.parked()[0].authorization_request_slot,
+        pending.authorization_request_slot
     );
 
     let deferred = thread::scope(|scope| {
@@ -2340,8 +2468,8 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
         let reply = CriomeMetaClient::new(&meta_socket)
             .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
                 AuthorizationApproval {
-                    request_slot: pending.request_slot.clone(),
-                    decision: AuthorizationApprovalDecision::Defer,
+                    authorization_request_slot: pending.authorization_request_slot.clone(),
+                    authorization_approval_decision: AuthorizationApprovalDecision::Defer,
                 },
             ))
             .expect("submit meta defer");
@@ -2351,8 +2479,14 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     let meta_signal_criome::Output::AuthorizationApprovalRecorded(deferred) = deferred else {
         panic!("expected AuthorizationApprovalRecorded, got {deferred:?}");
     };
-    assert_eq!(deferred.request_slot, pending.request_slot);
-    assert_eq!(deferred.decision, AuthorizationApprovalDecision::Defer);
+    assert_eq!(
+        deferred.authorization_request_slot,
+        pending.authorization_request_slot
+    );
+    assert_eq!(
+        deferred.authorization_approval_decision,
+        AuthorizationApprovalDecision::Defer
+    );
 
     let parked_after_defer = thread::scope(|scope| {
         let server = scope.spawn(|| {
@@ -2375,8 +2509,8 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     };
     assert_eq!(parked_after_defer.parked().len(), 1);
     assert_eq!(
-        parked_after_defer.parked()[0].request_slot,
-        pending.request_slot
+        parked_after_defer.parked()[0].authorization_request_slot,
+        pending.authorization_request_slot
     );
 
     let missing_slot = thread::scope(|scope| {
@@ -2384,8 +2518,8 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
         let reply = CriomeMetaClient::new(&meta_socket)
             .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
                 AuthorizationApproval {
-                    request_slot: AuthorizationRequestSlot::new("999"),
-                    decision: AuthorizationApprovalDecision::Approve,
+                    authorization_request_slot: AuthorizationRequestSlot::new("999"),
+                    authorization_approval_decision: AuthorizationApprovalDecision::Approve,
                 },
             ))
             .expect("submit missing approval");
@@ -2396,7 +2530,7 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
         panic!("expected RequestUnimplemented, got {missing_slot:?}");
     };
     assert_eq!(
-        missing_slot.operation,
+        missing_slot.operation_kind,
         meta_signal_criome::OperationKind::SubmitAuthorizationApproval
     );
 
@@ -2405,8 +2539,8 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
         let reply = CriomeMetaClient::new(&meta_socket)
             .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
                 AuthorizationApproval {
-                    request_slot: pending.request_slot.clone(),
-                    decision: AuthorizationApprovalDecision::Approve,
+                    authorization_request_slot: pending.authorization_request_slot.clone(),
+                    authorization_approval_decision: AuthorizationApprovalDecision::Approve,
                 },
             ))
             .expect("submit meta approval");
@@ -2416,16 +2550,24 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     let meta_signal_criome::Output::AuthorizationApprovalRecorded(approved) = approved else {
         panic!("expected AuthorizationApprovalRecorded, got {approved:?}");
     };
-    assert_eq!(approved.request_slot, pending.request_slot);
-    assert_eq!(approved.decision, AuthorizationApprovalDecision::Approve);
+    assert_eq!(
+        approved.authorization_request_slot,
+        pending.authorization_request_slot
+    );
+    assert_eq!(
+        approved.authorization_approval_decision,
+        AuthorizationApprovalDecision::Approve
+    );
 
     let snapshot = thread::scope(|scope| {
         let server = scope.spawn(|| daemon.serve_next().expect("serve authorized observation"));
         let reply = CriomeClient::new(&socket)
             .send(CriomeRequest::ObserveAuthorizedObjects(
                 AuthorizedObjectObservation {
-                    subscriber: Identity::agent("mentci-status".to_string()),
-                    interest: AuthorizedObjectInterest::Component(ComponentKind::Spirit),
+                    identity: Identity::agent("mentci-status".to_string()),
+                    authorized_object_interest: AuthorizedObjectInterest::Component(
+                        ComponentKind::Spirit,
+                    ),
                 },
             ))
             .expect("observe authorized objects");
@@ -2437,10 +2579,13 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     };
     let updates = snapshot.into_updates();
     assert_eq!(updates.len(), 1);
-    assert_eq!(updates[0].object, object);
-    assert_eq!(updates[0].contract, contract);
-    assert_eq!(updates[0].decision, EvaluationDecision::Authorized);
-    assert_eq!(updates[0].stamp, evidence.stamp);
+    assert_eq!(updates[0].authorized_object_reference, object);
+    assert_eq!(updates[0].contract_digest, contract);
+    assert_eq!(
+        updates[0].evaluation_decision,
+        EvaluationDecision::Authorized
+    );
+    assert_eq!(updates[0].attested_moment, evidence.attested_moment);
 
     daemon.shutdown().expect("shutdown daemon");
 }

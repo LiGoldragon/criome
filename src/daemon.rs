@@ -63,28 +63,29 @@ impl CriomeDaemon {
     pub fn from_configuration(configuration: CriomeDaemonConfiguration) -> Self {
         let socket = PathBuf::from(configuration.socket_path.as_str());
         let meta_socket = configuration
-            .meta_socket_path()
+            .optional_daemon_path()
             .map(|path| PathBuf::from(path.as_str()))
             .unwrap_or_else(|| Self::default_meta_socket_path(&socket));
         let node_identity = configuration
-            .node_identity()
+            .optional_identity()
             .cloned()
             .unwrap_or_else(RootArguments::default_node_identity);
-        let conveyance: Arc<dyn PeerConveyance> = match configuration.router_submission() {
-            Some(router_submission) => {
-                Arc::new(RouterSubmission::from_configuration(router_submission))
-            }
-            None => Arc::new(NoConveyance),
-        };
+        let conveyance: Arc<dyn PeerConveyance> =
+            match configuration.optional_router_submission_configuration() {
+                Some(router_submission) => {
+                    Arc::new(RouterSubmission::from_configuration(router_submission))
+                }
+                None => Arc::new(NoConveyance),
+            };
         let quorum_window = configuration
-            .quorum_window()
+            .optional_quorum_window_nanos()
             .map(|window| Duration::from_nanos(*window.payload()))
             .unwrap_or(RootArguments::DEFAULT_QUORUM_WINDOW);
         Self {
             socket,
             meta_socket,
             store: StoreLocation::new(configuration.store_path.as_str()),
-            cluster_root: configuration.cluster_root().cloned(),
+            cluster_root: configuration.optional_bls_public_key().cloned(),
             authorization_mode: *configuration.authorization_mode(),
             quorum_window,
             node_identity,
@@ -526,9 +527,9 @@ impl CriomeConnection {
             opened.snapshot().clone(),
         ))?;
         if opened.snapshot().states().iter().any(|state| {
-            state.request_slot == *token.payload()
+            state.authorization_request_slot == *token.payload()
                 && matches!(
-                    state.status,
+                    state.authorization_status,
                     AuthorizationStatus::Granted
                         | AuthorizationStatus::Denied
                         | AuthorizationStatus::Expired
@@ -544,7 +545,7 @@ impl CriomeConnection {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_count)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             };
-            if state.request_slot != *token.payload() {
+            if state.authorization_request_slot != *token.payload() {
                 continue;
             }
             self.codec.write_authorization_update(
@@ -555,7 +556,7 @@ impl CriomeConnection {
             )?;
             self.authorization_event_sequence = self.authorization_event_sequence.wrapping_add(1);
             if matches!(
-                state.status,
+                state.authorization_status,
                 signal_criome::AuthorizationStatus::Granted
                     | signal_criome::AuthorizationStatus::Denied
                     | signal_criome::AuthorizationStatus::Expired
@@ -571,12 +572,20 @@ impl CriomeConnection {
         reply: &CriomeReply,
     ) -> Option<AuthorizationRequestSlot> {
         match reply {
-            CriomeReply::AuthorizationPending(pending) => Some(pending.request_slot.clone()),
-            CriomeReply::AuthorizationGranted(grant) => Some(grant.request_slot.clone()),
-            CriomeReply::AuthorizationDenied(denied) => Some(denied.request_slot.clone()),
-            CriomeReply::AuthorizationExpired(expired) => Some(expired.request_slot.clone()),
+            CriomeReply::AuthorizationPending(pending) => {
+                Some(pending.authorization_request_slot.clone())
+            }
+            CriomeReply::AuthorizationGranted(grant) => {
+                Some(grant.authorization_request_slot.clone())
+            }
+            CriomeReply::AuthorizationDenied(denied) => {
+                Some(denied.authorization_request_slot.clone())
+            }
+            CriomeReply::AuthorizationExpired(expired) => {
+                Some(expired.authorization_request_slot.clone())
+            }
             CriomeReply::AuthorizationUnavailable(unavailable) => {
-                Some(unavailable.request_slot.clone())
+                Some(unavailable.authorization_request_slot.clone())
             }
             _ => None,
         }

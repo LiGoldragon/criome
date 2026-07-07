@@ -132,9 +132,9 @@ impl StoredIdentity {
     pub fn active(registration: IdentityRegistration) -> Self {
         Self {
             identity: registration.identity,
-            public_key: registration.public_key,
-            fingerprint: registration.fingerprint,
-            purpose: registration.purpose,
+            public_key: registration.bls_public_key,
+            fingerprint: registration.public_key_fingerprint,
+            purpose: registration.key_purpose,
             status: PrincipalStatus::Active,
         }
     }
@@ -167,7 +167,7 @@ impl StoredIdentity {
     pub fn receipt(&self) -> IdentityReceipt {
         IdentityReceipt {
             identity: self.identity.clone(),
-            status: self.status,
+            principal_status: self.status,
         }
     }
 }
@@ -183,8 +183,8 @@ impl StoredRevocation {
     pub fn new(revocation: IdentityRevocation) -> Self {
         Self {
             identity: revocation.identity,
-            fingerprint: revocation.fingerprint,
-            reason: revocation.reason,
+            fingerprint: revocation.public_key_fingerprint,
+            reason: revocation.principal_name,
         }
     }
 
@@ -326,7 +326,11 @@ impl StoredQuorumRound {
     /// Record `vote`, replacing any earlier vote from the same member. A member
     /// votes once; redelivery updates in place rather than double-counting.
     pub fn record_vote(&mut self, vote: QuorumVote) {
-        if let Some(existing) = self.votes.iter_mut().find(|held| held.voter == vote.voter) {
+        if let Some(existing) = self
+            .votes
+            .iter_mut()
+            .find(|held| held.identity == vote.identity)
+        {
             *existing = vote;
         } else {
             self.votes.push(vote);
@@ -529,20 +533,20 @@ impl StoredInterceptPolicy {
             draft
                 .stored_at
                 .into_u64()
-                .saturating_add(draft.proposal.duration.into_u64()),
+                .saturating_add(draft.proposal.policy_duration_nanos.into_u64()),
         );
         Self {
             policy: InterceptPolicy {
-                identifier,
-                session_slot: draft.proposal.session_slot,
-                target: draft.proposal.target,
+                intercept_policy_identifier: identifier,
+                mentci_session_slot: draft.proposal.mentci_session_slot,
+                intercept_target_selector: draft.proposal.intercept_target_selector,
                 spirit_operation_names: draft.proposal.spirit_operation_names,
-                window: InterceptPolicyWindow {
+                intercept_policy_window: InterceptPolicyWindow {
                     starts_at: draft.stored_at,
                     expires_at,
                 },
                 expiry_action: draft.proposal.expiry_action,
-                priority: draft.proposal.priority,
+                policy_priority: draft.proposal.policy_priority,
             },
         }
     }
@@ -556,12 +560,12 @@ impl StoredInterceptPolicy {
     }
 
     pub fn identifier(&self) -> &InterceptPolicyIdentifier {
-        &self.policy.identifier
+        &self.policy.intercept_policy_identifier
     }
 
     pub fn active_at(&self, now: TimestampNanos) -> bool {
-        self.policy.window.starts_at.into_u64() <= now.into_u64()
-            && now.into_u64() < self.policy.window.expires_at.into_u64()
+        self.policy.intercept_policy_window.starts_at.into_u64() <= now.into_u64()
+            && now.into_u64() < self.policy.intercept_policy_window.expires_at.into_u64()
     }
 
     pub fn matches_context(
@@ -570,25 +574,27 @@ impl StoredInterceptPolicy {
         now: TimestampNanos,
     ) -> bool {
         self.active_at(now)
-            && self.policy.target.payload() == &context.target_key
+            && self.policy.intercept_target_selector.payload() == &context.spirit_process_key
             && self
                 .policy
                 .spirit_operation_names
                 .names()
                 .iter()
-                .any(|name| name == &context.operation_name)
+                .any(|name| name == &context.spirit_operation_name)
     }
 
     pub fn same_priority_overlap(&self, other: &Self) -> bool {
-        self.policy.priority == other.policy.priority
-            && self.policy.target == other.policy.target
+        self.policy.policy_priority == other.policy.policy_priority
+            && self.policy.intercept_target_selector == other.policy.intercept_target_selector
             && self.windows_overlap(other)
             && self.operation_names_overlap(other)
     }
 
     fn windows_overlap(&self, other: &Self) -> bool {
-        self.policy.window.starts_at.into_u64() < other.policy.window.expires_at.into_u64()
-            && other.policy.window.starts_at.into_u64() < self.policy.window.expires_at.into_u64()
+        self.policy.intercept_policy_window.starts_at.into_u64()
+            < other.policy.intercept_policy_window.expires_at.into_u64()
+            && other.policy.intercept_policy_window.starts_at.into_u64()
+                < self.policy.intercept_policy_window.expires_at.into_u64()
     }
 
     fn operation_names_overlap(&self, other: &Self) -> bool {
@@ -635,13 +641,16 @@ impl StoredParkedSpiritRequest {
     pub fn matches_query(&self, query: &ParkedRequestQuery) -> bool {
         self.is_active()
             && query
-                .session_slot
+                .optional_mentci_session_slot
                 .as_ref()
-                .is_none_or(|slot| slot == &self.request.session_slot)
+                .is_none_or(|slot| slot == &self.request.mentci_session_slot)
             && query
-                .target
+                .optional_intercept_target_selector
                 .as_ref()
-                .is_none_or(|target| target.payload() == &self.request.context.target_key)
+                .is_none_or(|target| {
+                    target.payload()
+                        == &self.request.spirit_authorization_context.spirit_process_key
+                })
     }
 
     pub fn resolve_manual(
@@ -683,11 +692,11 @@ impl StoredParkedSpiritRequest {
     ) -> Self {
         self.status = ParkedSpiritRequestStatus::Resolved;
         self.resolution = Some(ParkedRequestResolution {
-            identifier: self.request.identifier.clone(),
-            matched_policy: self.request.matched_policy.clone(),
-            outcome,
-            audit_source,
-            resolved_at,
+            parked_request_identifier: self.request.parked_request_identifier.clone(),
+            intercept_policy_identifier: self.request.intercept_policy_identifier.clone(),
+            parked_request_outcome: outcome,
+            approval_audit_source: audit_source,
+            timestamp_nanos: resolved_at,
         });
         self
     }
@@ -712,7 +721,7 @@ impl InterceptPolicyDraft {
 
     pub fn overlap_mode(&self) -> PolicyOverlapMode {
         match self.mode {
-            InterceptPolicyStorageMode::Create => self.proposal.overlap_mode,
+            InterceptPolicyStorageMode::Create => self.proposal.policy_overlap_mode,
             InterceptPolicyStorageMode::Replace => PolicyOverlapMode::ReplaceSamePriorityOverlap,
         }
     }
@@ -903,7 +912,8 @@ impl CriomeTables {
     }
 
     pub fn put_authorization_state(&self, state: &StoredAuthorizationState) -> Result<()> {
-        let key = AuthorizationSlotKey::new(&state.state().request_slot).into_string();
+        let key =
+            AuthorizationSlotKey::new(&state.state().authorization_request_slot).into_string();
         self.upsert(self.authorization_states, key, state.clone())?;
         Ok(())
     }
@@ -943,14 +953,15 @@ impl CriomeTables {
             state = state.with_signal_authorization(authorization);
         }
         let stored = StoredAuthorizationState::new(state);
-        let key = AuthorizationSlotKey::new(&stored.state().request_slot).into_string();
+        let key =
+            AuthorizationSlotKey::new(&stored.state().authorization_request_slot).into_string();
         self.upsert(self.authorization_states, key, stored.clone())?;
         if let Some(replay_identity) = replay_identity {
             let replay_key = AuthorizationReplayKey::new(&replay_identity).into_string();
             self.upsert(
                 self.authorization_replay_nonces,
                 replay_key,
-                stored.state().request_slot.clone(),
+                stored.state().authorization_request_slot.clone(),
             )?;
         }
         self.upsert(
@@ -1140,9 +1151,9 @@ impl CriomeTables {
             .map(StoredInterceptPolicy::into_policy)
             .collect();
         policies.sort_by(|left, right| {
-            InterceptPolicyKey::new(&left.identifier)
+            InterceptPolicyKey::new(&left.intercept_policy_identifier)
                 .into_string()
-                .cmp(&InterceptPolicyKey::new(&right.identifier).into_string())
+                .cmp(&InterceptPolicyKey::new(&right.intercept_policy_identifier).into_string())
         });
         Ok(ActiveInterceptPolicies::new(InterceptPolicies::new(
             policies,
@@ -1162,9 +1173,9 @@ impl CriomeTables {
         policies.sort_by(|left, right| {
             right
                 .policy()
-                .priority
+                .policy_priority
                 .into_u64()
-                .cmp(&left.policy().priority.into_u64())
+                .cmp(&left.policy().policy_priority.into_u64())
                 .then_with(|| {
                     InterceptPolicyKey::new(left.identifier())
                         .into_string()
@@ -1191,12 +1202,12 @@ impl CriomeTables {
         };
         let slot = self.next_parked_spirit_request_slot()?;
         let stored = StoredParkedSpiritRequest::parked(ParkedSpiritRequest {
-            identifier: slot.request_identifier(),
-            matched_policy: policy.identifier,
-            session_slot: policy.session_slot,
-            context,
+            parked_request_identifier: slot.request_identifier(),
+            intercept_policy_identifier: policy.intercept_policy_identifier,
+            mentci_session_slot: policy.mentci_session_slot,
+            spirit_authorization_context: context,
             parked_at: now,
-            expires_at: policy.window.expires_at,
+            expires_at: policy.intercept_policy_window.expires_at,
             expiry_action: policy.expiry_action,
         });
         self.upsert(
@@ -1239,8 +1250,9 @@ impl CriomeTables {
             .map(|stored| stored.request().clone())
             .collect();
         requests.sort_by(|left, right| {
-            ParkedRequestSlot::sort_key(&left.identifier)
-                .cmp(&ParkedRequestSlot::sort_key(&right.identifier))
+            ParkedRequestSlot::sort_key(&left.parked_request_identifier).cmp(
+                &ParkedRequestSlot::sort_key(&right.parked_request_identifier),
+            )
         });
         Ok(ParkedRequestSnapshot::new(ParkedSpiritRequests::new(
             requests,
@@ -1253,7 +1265,7 @@ impl CriomeTables {
         now: TimestampNanos,
     ) -> Result<ParkedRequestResolution> {
         self.apply_parked_spirit_expiry(now)?;
-        let Some(stored) = self.parked_spirit_request(&answer.identifier)? else {
+        let Some(stored) = self.parked_spirit_request(&answer.parked_request_identifier)? else {
             return Err(crate::Error::ParkedSpiritRequestMissing);
         };
         if !stored.is_active() {
@@ -1262,7 +1274,7 @@ impl CriomeTables {
                 .cloned()
                 .ok_or(crate::Error::ParkedSpiritRequestMissing);
         }
-        let resolved = stored.resolve_manual(answer.decision, now);
+        let resolved = stored.resolve_manual(answer.parked_request_decision, now);
         let resolution = resolved
             .resolution()
             .cloned()
@@ -1475,7 +1487,14 @@ impl AuthorizationSlot {
     fn after_records(records: &[StoredAuthorizationState]) -> Self {
         let value = records
             .iter()
-            .filter_map(|record| record.state().request_slot.as_str().parse::<u64>().ok())
+            .filter_map(|record| {
+                record
+                    .state()
+                    .authorization_request_slot
+                    .as_str()
+                    .parse::<u64>()
+                    .ok()
+            })
             .max()
             .map_or(0, |slot| slot + 1);
         Self { value }
@@ -1521,7 +1540,14 @@ impl ParkedRequestSlot {
     fn after_records(records: &[StoredParkedSpiritRequest]) -> Self {
         let value = records
             .iter()
-            .filter_map(|record| record.request().identifier.as_str().parse::<u64>().ok())
+            .filter_map(|record| {
+                record
+                    .request()
+                    .parked_request_identifier
+                    .as_str()
+                    .parse::<u64>()
+                    .ok()
+            })
             .max()
             .map_or(0, |slot| slot + 1);
         Self { value }
@@ -1627,7 +1653,7 @@ impl InterceptPolicyKey {
 
 impl ParkedSpiritRequestKey {
     fn new(request: &ParkedSpiritRequest) -> Self {
-        Self::from_identifier(&request.identifier)
+        Self::from_identifier(&request.parked_request_identifier)
     }
 
     fn from_identifier(identifier: &ParkedRequestIdentifier) -> Self {
@@ -1665,8 +1691,12 @@ struct SignatureSolicitationKey {
 impl SignatureSolicitationKey {
     fn new(route: &SignatureSolicitationRoute) -> Self {
         Self {
-            request_slot: route.solicitation.request_slot.as_str().to_string(),
-            routed_to: IdentityKey::new(&route.routed_to).into_string(),
+            request_slot: route
+                .signature_solicitation
+                .authorization_request_slot
+                .as_str()
+                .to_string(),
+            routed_to: IdentityKey::new(&route.identity).into_string(),
         }
     }
 
@@ -1683,8 +1713,8 @@ struct SignatureSubmissionKey {
 impl SignatureSubmissionKey {
     fn new(submission: &SignatureSubmission) -> Self {
         Self {
-            request_slot: submission.request_slot.as_str().to_string(),
-            signer: IdentityKey::new(&submission.signer).into_string(),
+            request_slot: submission.authorization_request_slot.as_str().to_string(),
+            signer: IdentityKey::new(&submission.identity).into_string(),
         }
     }
 

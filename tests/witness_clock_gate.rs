@@ -112,21 +112,21 @@ fn ask(socket: &Path, request: CriomeRequest) -> CriomeReply {
 fn node_public_key(socket: &Path, identity: Identity) -> BlsPublicKey {
     let request = SignRequest::new(
         ContentReference {
-            digest: ObjectDigest::from_bytes(b"clock-gate-key-probe"),
-            purpose: ContentPurpose::SignedObject,
-            schema_version: PrincipalName::new("clock-probe"),
+            object_digest: ObjectDigest::from_bytes(b"clock-gate-key-probe"),
+            content_purpose: ContentPurpose::SignedObject,
+            principal_name: PrincipalName::new("clock-probe"),
         },
         identity,
         AuditContext {
-            purpose: ContentPurpose::SignedObject,
+            content_purpose: ContentPurpose::SignedObject,
             audience: PrincipalName::new("clock-probe-audience"),
             policy_version: PrincipalName::new("clock-probe-policy"),
-            nonce: ReplayNonce::new("clock-probe-nonce"),
+            replay_nonce: ReplayNonce::new("clock-probe-nonce"),
         },
         None,
     );
     match ask(socket, CriomeRequest::Sign(request)) {
-        CriomeReply::SignReceipt(receipt) => receipt.attestation.envelope.public_key,
+        CriomeReply::SignReceipt(receipt) => receipt.attestation.signature_envelope.bls_public_key,
         other => panic!("expected SignReceipt, got {other:?}"),
     }
 }
@@ -164,9 +164,9 @@ fn mirror_contract(alpha: &Identity, beta: &Identity) -> Contract {
 
 fn mirror_object() -> AuthorizedObjectReference {
     AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: ObjectDigest::from_bytes(b"clock-gate-head-operation"),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: ObjectDigest::from_bytes(b"clock-gate-head-operation"),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     }
 }
 
@@ -197,15 +197,15 @@ fn a_signer_refuses_the_convenient_window_its_clock_is_outside() {
 
     let contract = admit(&socket, mirror_contract(&alpha, &beta));
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let reply = ask(
         &socket,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
-            phase: RoundPhase::Request,
-            round,
-            contract,
-            object,
-            window: window(1_000_000, 2_000_000),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: window(1_000_000, 2_000_000),
         }),
     );
 
@@ -237,22 +237,22 @@ fn a_signer_signs_the_window_its_clock_is_inside() {
 
     let contract = admit(&socket, mirror_contract(&alpha, &beta));
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let reply = ask(
         &socket,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
-            phase: RoundPhase::Request,
-            round,
-            contract,
-            object,
-            window: window(1_000, 2_000),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: window(1_000, 2_000),
         }),
     );
 
     match reply {
         CriomeReply::QuorumRoundOpened(state) => {
             assert_eq!(
-                state.status,
+                state.quorum_round_status,
                 QuorumRoundStatus::Gathering,
                 "the lone self-vote is one short of the 2-of-2 majority"
             );
@@ -306,21 +306,21 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     let _ = admit(&socket_b, mirror_contract(&alpha, &beta));
 
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let opened = match ask(
         &socket_a,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
-            phase: RoundPhase::Request,
-            round: round.clone(),
-            contract,
-            object,
-            window: window(1_000, 2_000),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round.clone(),
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: window(1_000, 2_000),
         }),
     ) {
         CriomeReply::QuorumRoundOpened(state) => state,
         other => panic!("A's clock is inside the window; the round must open, got {other:?}"),
     };
-    assert_eq!(opened.status, QuorumRoundStatus::Gathering);
+    assert_eq!(opened.quorum_round_status, QuorumRoundStatus::Gathering);
     assert_eq!(opened.gathered.into_u16(), 1);
 
     // B is solicited across the conveyance but refuses on its own clock. The round must
@@ -329,7 +329,7 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
     while Instant::now() < deadline {
         let state = observe(&socket_a, &round);
         assert_eq!(
-            state.status,
+            state.quorum_round_status,
             QuorumRoundStatus::Gathering,
             "a peer whose clock is outside the window must refuse; the round never authorizes"
         );
@@ -338,7 +338,7 @@ fn a_peer_refuses_the_window_its_own_clock_is_outside() {
             1,
             "B contributes no vote — its witness-clock gate refuses the window"
         );
-        assert!(state.authorized_evidence.is_none());
+        assert!(state.optional_evidence.is_none());
         std::thread::sleep(Duration::from_millis(150));
     }
 }
@@ -382,15 +382,15 @@ fn two_peers_whose_clocks_are_inside_the_window_co_sign_to_authorized() {
     let _ = admit(&socket_b, mirror_contract(&alpha, &beta));
 
     let object = mirror_object();
-    let round = QuorumRoundIdentifier::for_operation(&object.digest);
+    let round = QuorumRoundIdentifier::for_operation(&object.object_digest);
     let opened = match ask(
         &socket_a,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
-            phase: RoundPhase::Request,
-            round: round.clone(),
-            contract,
-            object,
-            window: window(1_000, 2_000),
+            round_phase: RoundPhase::Request,
+            quorum_round_identifier: round.clone(),
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: window(1_000, 2_000),
         }),
     ) {
         CriomeReply::QuorumRoundOpened(state) => state,
@@ -399,7 +399,10 @@ fn two_peers_whose_clocks_are_inside_the_window_co_sign_to_authorized() {
     assert_eq!(opened.gathered.into_u16(), 1);
 
     let authorized = wait_until_authorized(&socket_a, &round);
-    assert_eq!(authorized.status, QuorumRoundStatus::Authorized);
+    assert_eq!(
+        authorized.quorum_round_status,
+        QuorumRoundStatus::Authorized
+    );
     assert_eq!(
         authorized.gathered.into_u16(),
         2,
@@ -411,7 +414,7 @@ fn wait_until_authorized(socket: &Path, round: &QuorumRoundIdentifier) -> Quorum
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let state = observe(socket, round);
-        if state.status == QuorumRoundStatus::Authorized {
+        if state.quorum_round_status == QuorumRoundStatus::Authorized {
             return state;
         }
         assert!(

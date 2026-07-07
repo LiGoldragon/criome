@@ -207,12 +207,12 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
         MetaInput::InitiateRootFounding(RootFoundingInitiation::new(genesis.clone())),
     ) {
         MetaOutput::RootFoundingStatus(status) => {
-            assert_eq!(status.state, RootFoundingState::Unfounded);
+            assert_eq!(status.root_founding_state, RootFoundingState::Unfounded);
             assert!(
                 status
-                    .pending
+                    .pending_founding_vector
                     .iter()
-                    .any(|pending| pending.anchor == anchor),
+                    .any(|pending| pending.root_anchor_digest == anchor),
                 "the initiator queues its own founding as pending its accept"
             );
         }
@@ -223,9 +223,9 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
     // awaiting B's owner accept.
     wait_until("the proposal to reach B's pending queue", || {
         observe_status(&meta_b)
-            .pending
+            .pending_founding_vector
             .iter()
-            .any(|pending| pending.anchor == anchor)
+            .any(|pending| pending.root_anchor_digest == anchor)
     });
 
     // Both owners explicitly accept on their own meta socket. A signs first (one
@@ -233,7 +233,7 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
     // to A, which completes the cohort and distributes the finished root.
     accept(&meta_a, &anchor, &genesis);
     assert_eq!(
-        observe_status(&meta_a).state,
+        observe_status(&meta_a).root_founding_state,
         RootFoundingState::Gathering,
         "the initiator's lone signature is one short of unanimity"
     );
@@ -242,11 +242,11 @@ fn two_nodes_found_a_unanimous_root_end_to_end() {
     // The conveyed signature makes A unanimous; the distributed root makes B
     // unanimous. Both nodes adopt the same founded anchor.
     wait_until("A to reach a founded root", || {
-        observe_status(&meta_a).state == RootFoundingState::Founded
+        observe_status(&meta_a).root_founding_state == RootFoundingState::Founded
     });
     wait_until(
         "B to reach a founded root (from the distributed root)",
-        || observe_status(&meta_b).state == RootFoundingState::Founded,
+        || observe_status(&meta_b).root_founding_state == RootFoundingState::Founded,
     );
 
     // Adoption seeds each node's registry from the founded cohort, on BOTH nodes —
@@ -304,7 +304,7 @@ fn a_forged_conveyed_founding_signature_is_rejected_no_false_founding() {
     }
     accept(&meta_a, &anchor, &genesis);
     assert_eq!(
-        observe_status(&meta_a).state,
+        observe_status(&meta_a).root_founding_state,
         RootFoundingState::Gathering,
         "A's own lone valid signature is one short of the 2-member unanimity"
     );
@@ -312,13 +312,13 @@ fn a_forged_conveyed_founding_signature_is_rejected_no_false_founding() {
     // beta's real cohort key, but a signature over bytes that are NOT the founding
     // statement — a well-formed envelope that does not verify.
     let forged = FoundingSignatureReturn {
-        anchor: anchor.clone(),
-        signature: FoundingSignature::new(
+        root_anchor_digest: anchor.clone(),
+        founding_signature: FoundingSignature::new(
             beta.clone(),
             SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: beta_key.public_key(),
-                signature: beta_key.sign(b"not the founding statement"),
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: beta_key.public_key(),
+                bls_signature: beta_key.sign(b"not the founding statement"),
             },
         ),
     };
@@ -329,7 +329,7 @@ fn a_forged_conveyed_founding_signature_is_rejected_no_false_founding() {
         .expect("convey forged founding signature");
     match reply {
         CriomeReply::FoundingConveyed(receipt) => assert_eq!(
-            receipt.outcome,
+            receipt.founding_conveyance_outcome,
             FoundingConveyanceOutcome::Refused,
             "a forged conveyed signature is refused, never accumulated toward unanimity"
         ),
@@ -339,7 +339,7 @@ fn a_forged_conveyed_founding_signature_is_rejected_no_false_founding() {
     // No false unanimity, no seeding: A is still Gathering and beta was never
     // registered from a founding that never validly completed.
     assert_eq!(
-        observe_status(&meta_a).state,
+        observe_status(&meta_a).root_founding_state,
         RootFoundingState::Gathering,
         "the forged signature did NOT push A into a false Founded state"
     );

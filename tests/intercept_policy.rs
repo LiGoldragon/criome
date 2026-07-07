@@ -38,35 +38,35 @@ fn proposal(
     overlap_mode: PolicyOverlapMode,
 ) -> InterceptPolicyProposal {
     InterceptPolicyProposal {
-        session_slot: MentciSessionSlot::new(session),
-        target: InterceptTargetSelector::new(SpiritProcessKey::new(target)),
+        mentci_session_slot: MentciSessionSlot::new(session),
+        intercept_target_selector: InterceptTargetSelector::new(SpiritProcessKey::new(target)),
         spirit_operation_names: SpiritOperationNames::from_names(vec![SpiritOperationName::new(
             operation,
         )]),
-        duration: PolicyDurationNanos::new(100),
+        policy_duration_nanos: PolicyDurationNanos::new(100),
         expiry_action,
-        priority: PolicyPriority::new(priority),
-        overlap_mode,
+        policy_priority: PolicyPriority::new(priority),
+        policy_overlap_mode: overlap_mode,
     }
 }
 
 fn context(target: &str, operation: &str, payload: &str) -> SpiritAuthorizationContext {
     SpiritAuthorizationContext {
-        operation_name: SpiritOperationName::new(operation),
-        raw_payload: RawSpiritOperationPayload::new(payload),
-        target_key: SpiritProcessKey::new(target),
+        spirit_operation_name: SpiritOperationName::new(operation),
+        raw_spirit_operation_payload: RawSpiritOperationPayload::new(payload),
+        spirit_process_key: SpiritProcessKey::new(target),
     }
 }
 
 fn all_parked_requests() -> ParkedRequestQuery {
     ParkedRequestQuery {
-        session_slot: None,
-        target: None,
+        optional_mentci_session_slot: None,
+        optional_intercept_target_selector: None,
     }
 }
 
 fn policy_identifier(policy: &InterceptPolicy) -> String {
-    policy.identifier.as_str().to_owned()
+    policy.intercept_policy_identifier.as_str().to_owned()
 }
 
 #[tokio::test]
@@ -187,10 +187,13 @@ async fn intercept_policy_matching_uses_highest_priority_and_rejects_same_priori
         .into_request()
         .expect("matching policy parks request");
     assert_eq!(
-        parked.request().matched_policy,
-        replacement.identifier.clone()
+        parked.request().intercept_policy_identifier,
+        replacement.intercept_policy_identifier.clone()
     );
-    assert_eq!(parked.request().session_slot, replacement.session_slot);
+    assert_eq!(
+        parked.request().mentci_session_slot,
+        replacement.mentci_session_slot
+    );
 }
 
 #[tokio::test]
@@ -246,12 +249,27 @@ async fn one_spirit_process_can_hold_many_operation_policies_with_set_time_expir
         .into_policy()
         .into_policy();
 
-    assert_eq!(record_policy.window.starts_at, timestamp(20));
-    assert_eq!(record_policy.window.expires_at, timestamp(120));
-    assert_eq!(observe_policy.window.starts_at, timestamp(21));
-    assert_eq!(observe_policy.window.expires_at, timestamp(121));
-    assert_eq!(beta_policy.window.starts_at, timestamp(22));
-    assert_eq!(beta_policy.window.expires_at, timestamp(122));
+    assert_eq!(
+        record_policy.intercept_policy_window.starts_at,
+        timestamp(20)
+    );
+    assert_eq!(
+        record_policy.intercept_policy_window.expires_at,
+        timestamp(120)
+    );
+    assert_eq!(
+        observe_policy.intercept_policy_window.starts_at,
+        timestamp(21)
+    );
+    assert_eq!(
+        observe_policy.intercept_policy_window.expires_at,
+        timestamp(121)
+    );
+    assert_eq!(beta_policy.intercept_policy_window.starts_at, timestamp(22));
+    assert_eq!(
+        beta_policy.intercept_policy_window.expires_at,
+        timestamp(122)
+    );
 
     let record_request = store
         .ask(InterceptSpiritAuthorization::new(
@@ -287,17 +305,26 @@ async fn one_spirit_process_can_hold_many_operation_policies_with_set_time_expir
         .request()
         .clone();
 
-    assert_eq!(record_request.matched_policy, record_policy.identifier);
-    assert_eq!(observe_request.matched_policy, observe_policy.identifier);
-    assert_eq!(beta_request.matched_policy, beta_policy.identifier);
+    assert_eq!(
+        record_request.intercept_policy_identifier,
+        record_policy.intercept_policy_identifier
+    );
+    assert_eq!(
+        observe_request.intercept_policy_identifier,
+        observe_policy.intercept_policy_identifier
+    );
+    assert_eq!(
+        beta_request.intercept_policy_identifier,
+        beta_policy.intercept_policy_identifier
+    );
 
     let alpha_snapshot = store
         .ask(FetchParkedSpiritRequests::new(
             ParkedRequestQuery {
-                session_slot: None,
-                target: Some(InterceptTargetSelector::new(SpiritProcessKey::new(
-                    "spirit-alpha",
-                ))),
+                optional_mentci_session_slot: None,
+                optional_intercept_target_selector: Some(InterceptTargetSelector::new(
+                    SpiritProcessKey::new("spirit-alpha"),
+                )),
             },
             timestamp(26),
         ))
@@ -312,8 +339,8 @@ async fn one_spirit_process_can_hold_many_operation_policies_with_set_time_expir
     let observe_session_snapshot = store
         .ask(FetchParkedSpiritRequests::new(
             ParkedRequestQuery {
-                session_slot: Some(MentciSessionSlot::new("mentci-alpha-observe")),
-                target: None,
+                optional_mentci_session_slot: Some(MentciSessionSlot::new("mentci-alpha-observe")),
+                optional_intercept_target_selector: None,
             },
             timestamp(27),
         ))
@@ -382,7 +409,7 @@ async fn expiry_actions_resolve_or_keep_parked_requests_with_audit_source() {
         .into_snapshot();
     assert_eq!(snapshot.requests().len(), 1);
     assert_eq!(
-        snapshot.requests()[0].session_slot.as_str(),
+        snapshot.requests()[0].mentci_session_slot.as_str(),
         "mentci-leave-parked"
     );
 
@@ -394,7 +421,12 @@ async fn expiry_actions_resolve_or_keep_parked_requests_with_audit_source() {
     let resolutions: Vec<_> = history
         .iter()
         .filter_map(|request| request.resolution())
-        .map(|resolution| (resolution.outcome, resolution.audit_source))
+        .map(|resolution| {
+            (
+                resolution.parked_request_outcome,
+                resolution.approval_audit_source,
+            )
+        })
         .collect();
     assert_eq!(
         resolutions,
@@ -442,16 +474,22 @@ async fn manual_answer_resolves_one_parked_request_and_resubmission_hits_current
     let resolution = store
         .ask(AnswerParkedSpiritRequest::new(
             ParkedRequestAnswer {
-                identifier: first.request().identifier.clone(),
-                decision: ParkedRequestDecision::Reject,
+                parked_request_identifier: first.request().parked_request_identifier.clone(),
+                parked_request_decision: ParkedRequestDecision::Reject,
             },
             timestamp(12),
         ))
         .await
         .expect("answer first")
         .into_resolution();
-    assert_eq!(resolution.outcome, ParkedRequestOutcome::Rejected);
-    assert_eq!(resolution.audit_source, ApprovalAuditSource::Manual);
+    assert_eq!(
+        resolution.parked_request_outcome,
+        ParkedRequestOutcome::Rejected
+    );
+    assert_eq!(
+        resolution.approval_audit_source,
+        ApprovalAuditSource::Manual
+    );
 
     let second = store
         .ask(InterceptSpiritAuthorization::new(
@@ -463,8 +501,8 @@ async fn manual_answer_resolves_one_parked_request_and_resubmission_hits_current
         .into_request()
         .expect("second parked");
     assert_ne!(
-        first.request().identifier,
-        second.request().identifier,
+        first.request().parked_request_identifier,
+        second.request().parked_request_identifier,
         "manual denial resolves only the first parked request"
     );
 

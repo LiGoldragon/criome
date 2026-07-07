@@ -72,9 +72,9 @@ fn mirror_contract(alpha: &Identity, beta: &Identity) -> Contract {
 /// A distinct successor object per `tag` — same shape the two-round witnesses use.
 fn successor(tag: &[u8]) -> AuthorizedObjectReference {
     AuthorizedObjectReference {
-        component: ComponentKind::Spirit,
-        digest: ObjectDigest::from_bytes(tag),
-        kind: AuthorizedObjectKind::Head,
+        component_kind: ComponentKind::Spirit,
+        object_digest: ObjectDigest::from_bytes(tag),
+        authorized_object_kind: AuthorizedObjectKind::Head,
     }
 }
 
@@ -115,15 +115,15 @@ async fn propose(
     contract: ContractDigest,
     object: AuthorizedObjectReference,
 ) -> CriomeReply {
-    let round = QuorumRoundIdentifier::for_phase(&object.digest, RoundPhase::Request);
+    let round = QuorumRoundIdentifier::for_phase(&object.object_digest, RoundPhase::Request);
     submit(
         root,
         CriomeRequest::ProposeQuorumAuthorization(QuorumProposal {
-            round,
-            phase: RoundPhase::Request,
-            contract,
-            object,
-            window: shared_window(),
+            quorum_round_identifier: round,
+            round_phase: RoundPhase::Request,
+            contract_digest: contract,
+            authorized_object_reference: object,
+            time_window: shared_window(),
         }),
     )
     .await
@@ -163,11 +163,11 @@ async fn a_co_signed_successor_veto_survives_a_restart() {
     match reply {
         CriomeReply::QuorumConflict(conflict) => {
             assert_eq!(
-                conflict.contract, contract,
+                conflict.contract_digest, contract,
                 "the reconstructed conflict names the contract it protects"
             );
             assert_eq!(
-                conflict.existing_successor.digest, successor_one.digest,
+                conflict.authorized_object_reference.object_digest, successor_one.object_digest,
                 "the durable ledger still holds S1 as the one co-signed successor from this head"
             );
         }
