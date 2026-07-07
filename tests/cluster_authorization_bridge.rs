@@ -15,15 +15,27 @@
 //!     its majority, so the window-close timer marks the ask Expired and the
 //!     session receives the terminal push. Quorum can't complete ⇒ operation
 //!     refused; nothing is granted.
+//!   - `a_window_dead_round_is_superseded_by_a_differing_successor`: the §3.3
+//!     dead-round supersession end to end — a 2-member root whose peer goes
+//!     dark expires a first advance (its operation refused, its row and round
+//!     standing dead); once the peer returns, a DIFFERING successor from the
+//!     same head durably supersedes the dead row and proceeds to a full
+//!     cluster grant. Pre-amendment, the catch-up stage would have re-driven
+//!     the dead round — materializing a refused operation — and the differing
+//!     successor would have wedged as a false conflict forever.
 //!
 //! Falsification: if the bridge granted on the Request round alone, the
 //! expiry witness would grant instead of expire; if status were trusted
-//! without machinery, the grant witness would carry no evidence.
+//! without machinery, the grant witness would carry no evidence; if
+//! supersession were missing, the retry witness would refuse forever with a
+//! conflict.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use criome::conveyance::{DirectDialConveyance, PeerSocketRoute};
 use criome::daemon::CriomeDaemon;
 use criome::founding::FoundingStatementBytes;
 use criome::master_key::MasterKey;
@@ -31,6 +43,7 @@ use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeMetaClient};
 use meta_signal_criome::{
     Input as MetaInput, Output as MetaOutput, RootFoundingAcceptance, RootFoundingInitiation,
+    RootFoundingObservation, RootFoundingState,
 };
 use signal_criome::{
     AuthorizationPolicyClass, AuthorizationStatus, AuthorizedObjectKind, AuthorizedObjectReference,
@@ -570,5 +583,177 @@ fn every_pending_slot_for_one_digest_settles_at_window_close() {
     assert_ne!(
         first.request_slot, second.request_slot,
         "two asks occupy two observable slots"
+    );
+}
+
+fn observe_founding_state(meta_socket: &Path) -> RootFoundingState {
+    match meta(
+        meta_socket,
+        MetaInput::ObserveRootFounding(RootFoundingObservation::new()),
+    ) {
+        MetaOutput::RootFoundingStatus(status) => status.state,
+        other => panic!("expected RootFoundingStatus, got {other:?}"),
+    }
+}
+
+fn wait_until<Predicate>(what: &str, predicate: Predicate)
+where
+    Predicate: Fn() -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// §3.3 DEAD-ROUND SUPERSESSION, END TO END. A 2-of-2 root founds over a live
+/// direct-dial conveyance; the peer then goes dark (its conveyance route is
+/// removed), so a first head advance D expires — the operation is refused and
+/// the originator's veto row `(root, genesis) → D` and its `Gathering` round
+/// stand, window-dead. The peer returns, and a DIFFERING successor D' from
+/// the SAME head must durably supersede the dead row and proceed to a full
+/// two-round cluster grant. Under the retired catch-up rule this ask would
+/// have re-driven D's round (materializing an operation that was refused and
+/// whose staged content no longer exists anywhere) — or, with catch-up gone
+/// but no supersession, wedged forever as a false `QuorumConflict`.
+#[test]
+fn a_window_dead_round_is_superseded_by_a_differing_successor() {
+    let alpha = host("bridge-supersede-alpha");
+    let beta = host("bridge-supersede-beta");
+    let (socket_a, store_a) = fixture("supersede-alpha");
+    let (socket_b, store_b) = fixture("supersede-beta");
+    let meta_a = meta_socket_for(&socket_a);
+    let meta_b = meta_socket_for(&socket_b);
+
+    // A dials B through a symlink the test controls: present ⇒ the peer is
+    // reachable; removed ⇒ the peer is dark (the dial fails, best-effort,
+    // and the round can never reach 2-of-2).
+    let route_to_b = socket_b.with_file_name("criome-route-to-b.sock");
+    std::os::unix::fs::symlink(&socket_b, &route_to_b).expect("arm the route to B");
+
+    serve(
+        CriomeDaemon::new(&socket_a, store_a)
+            .with_node_identity(alpha.clone())
+            // Seconds in tests: long enough for the local two-round drive,
+            // short enough that the dead-round leg expires quickly.
+            .with_quorum_window(Duration::from_secs(4))
+            .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
+                PeerSocketRoute::new(beta.clone(), route_to_b.clone()),
+            ]))),
+    );
+    serve(
+        CriomeDaemon::new(&socket_b, store_b)
+            .with_node_identity(beta.clone())
+            .with_quorum_window(Duration::from_secs(4))
+            .with_peer_conveyance(Arc::new(DirectDialConveyance::new(vec![
+                PeerSocketRoute::new(alpha.clone(), socket_a.clone()),
+            ]))),
+    );
+    for socket in [&socket_a, &socket_b, &meta_a, &meta_b] {
+        wait_for_socket(socket);
+    }
+
+    // Found the 2-of-2 root end to end while both are reachable: initiate on
+    // A (the proposal conveys to B), both owners accept on their own meta
+    // sockets, the returned signature completes unanimity on both.
+    let key_a = node_public_key(&socket_a);
+    let key_b = node_public_key(&socket_b);
+    let cohort = genesis(
+        vec![
+            FoundingMember::new(alpha.clone(), key_a),
+            FoundingMember::new(beta.clone(), key_b),
+        ],
+        "bridge-dead-round-supersession",
+    );
+    let anchor = cohort.anchor().expect("cohort anchor");
+    match meta(
+        &meta_a,
+        MetaInput::InitiateRootFounding(RootFoundingInitiation::new(cohort.clone())),
+    ) {
+        MetaOutput::RootFoundingStatus(_status) => {}
+        other => panic!("initiate must report status, got {other:?}"),
+    }
+    wait_until("the founding proposal to reach B", || {
+        match meta(
+            &meta_b,
+            MetaInput::ObserveRootFounding(RootFoundingObservation::new()),
+        ) {
+            MetaOutput::RootFoundingStatus(status) => status
+                .pending
+                .iter()
+                .any(|pending| pending.anchor == anchor),
+            _other => false,
+        }
+    });
+    found(&meta_a, &cohort);
+    found(&meta_b, &cohort);
+    wait_until("A to adopt the founded root", || {
+        observe_founding_state(&meta_a) == RootFoundingState::Founded
+    });
+    wait_until("B to adopt the founded root", || {
+        observe_founding_state(&meta_b) == RootFoundingState::Founded
+    });
+
+    // THE PEER GOES DARK: the dead-round leg. Advance D can only gather A's
+    // self-vote, so its window expires and the operation is REFUSED — the
+    // veto row and the Gathering round stand, window-dead.
+    std::fs::remove_file(&route_to_b).expect("darken the route to B");
+    let refused = terminal_state(
+        &socket_a,
+        head_advance(b"supersede advance D", "supersede-d-1"),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        refused.status,
+        AuthorizationStatus::Expired,
+        "the unreachable-peer advance expires fail-closed, got {refused:?}"
+    );
+    assert!(
+        refused.grant().is_none(),
+        "an expired ask carries no grant — the operation was refused"
+    );
+
+    // THE PEER RETURNS, and a DIFFERING successor from the same (genesis)
+    // head supersedes the dead row and proceeds to a full cluster grant.
+    std::os::unix::fs::symlink(&socket_b, &route_to_b).expect("restore the route to B");
+    let superseding = terminal_state(
+        &socket_a,
+        head_advance(b"supersede advance D-prime", "supersede-d-prime-1"),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        superseding.status,
+        AuthorizationStatus::Granted,
+        "a differing successor supersedes the window-dead row and grants, got {superseding:?}"
+    );
+    let grant = superseding
+        .grant()
+        .expect("the superseding grant carries its grant");
+    assert_eq!(
+        grant.authorized_object_digest().as_str(),
+        ObjectDigest::from_bytes(b"supersede advance D-prime").as_str(),
+        "the grant binds the superseding digest, not the dead round's"
+    );
+    assert!(
+        superseding
+            .granted_evidence()
+            .is_some_and(|evidence| !evidence.evidence.evidence_signatures.is_empty()),
+        "the superseding grant hands off the commit round's quorum Evidence"
+    );
+
+    // The dead round was never completed: the contract head moved to D', so
+    // a re-ask of D' re-grants while the dead D stays refused (a conflict
+    // against the ADVANCED head would now be a fresh state-point anyway;
+    // what matters is D' is the standing head).
+    let re_ask = terminal_state(
+        &socket_a,
+        head_advance(b"supersede advance D-prime", "supersede-d-prime-2"),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        re_ask.status,
+        AuthorizationStatus::Granted,
+        "the superseding successor is the standing committed head, got {re_ask:?}"
     );
 }

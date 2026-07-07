@@ -123,7 +123,7 @@ impl CriomeDaemon {
     }
 
     /// Set the cluster authorization window: how long one Quorum-mode
-    /// authorization (both commit rounds plus the catch-up case) may take
+    /// authorization (both commit rounds plus network round-trips) may take
     /// before it expires fail-closed. Tens of seconds live, seconds in tests.
     pub fn with_quorum_window(mut self, quorum_window: Duration) -> Self {
         self.quorum_window = quorum_window;
