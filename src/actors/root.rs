@@ -1126,6 +1126,12 @@ impl CriomeRoot {
                 attested_moment: evaluation.evidence.attested_moment.clone(),
             })
             .await;
+        } else {
+            self.remove_authorized_object_update(
+                evaluation.authorized_object_reference.clone(),
+                evaluation.contract_digest.clone(),
+            )
+            .await;
         }
         CriomeReply::AuthorizationEvaluated(AuthorizationEvaluated {
             contract_digest: evaluation.contract_digest,
@@ -1189,6 +1195,12 @@ impl CriomeRoot {
                 evaluation_decision: EvaluationDecision::Authorized,
                 attested_moment: evaluation.evidence.attested_moment.clone(),
             })
+            .await;
+        } else {
+            self.remove_authorized_object_update(
+                evaluation.authorized_object_reference.clone(),
+                evaluation.contract_digest.clone(),
+            )
             .await;
         }
         let denial =
@@ -1955,6 +1967,20 @@ impl CriomeRoot {
         let _ = self
             .subscription
             .ask(subscription::PublishAuthorizedObjectUpdate::new(update))
+            .await;
+    }
+
+    async fn remove_authorized_object_update(
+        &self,
+        authorized_object_reference: signal_criome::AuthorizedObjectReference,
+        contract_digest: signal_criome::ContractDigest,
+    ) {
+        let _ = self
+            .subscription
+            .ask(subscription::RemoveAuthorizedObjectUpdate::new(
+                authorized_object_reference,
+                contract_digest,
+            ))
             .await;
     }
 

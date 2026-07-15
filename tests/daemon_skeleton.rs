@@ -3,7 +3,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::thread;
 
-use criome::actors::root::{Arguments as RootArguments, CriomeRoot, ReadTopology, SubmitRequest};
+use criome::actors::root::{
+    Arguments as RootArguments, CriomeRoot, ReadTopology, SubmitMetaRequest, SubmitRequest,
+};
 use criome::actors::store::{InterceptSpiritAuthorization, StoreInterceptPolicy, StoreKernel};
 use criome::command::CriomeDaemonCommand;
 #[cfg(feature = "nota-text")]
@@ -21,9 +23,9 @@ use nota::NotaEncode;
 use signal_criome::{
     ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
-    AuthorizationExpired, AuthorizationGrant, AuthorizationObservation, AuthorizationPolicyClass,
-    AuthorizationPolicySatisfaction, AuthorizationRejection, AuthorizationRequestSlot,
-    AuthorizationStatus, AuthorizedObjectInterest, AuthorizedObjectKind,
+    AuthorizationExpired, AuthorizationGrant, AuthorizationMode, AuthorizationObservation,
+    AuthorizationPolicyClass, AuthorizationPolicySatisfaction, AuthorizationRejection,
+    AuthorizationRequestSlot, AuthorizationStatus, AuthorizedObjectInterest, AuthorizedObjectKind,
     AuthorizedObjectObservation, AuthorizedObjectReference, AuthorizedObjectUpdateToken,
     BlsPublicKey, BlsSignature, ComponentKind, ComponentObjectInterest, ContentPurpose,
     ContentReference, Contract, ContractTimeCheck, CriomeFrame, CriomeFrameBody, CriomeReply,
@@ -581,6 +583,216 @@ async fn registered_signer_attestation_verifies_under_real_bls() {
     assert_eq!(
         tampered_result.verification_decision,
         signal_criome::VerificationDecision::InvalidSignature
+    );
+
+    CriomeRoot::stop(root).await.expect("stop criome root");
+}
+
+#[tokio::test]
+async fn authorized_object_snapshots_retain_current_state_not_publication_history() {
+    let mut arguments = RootArguments::new(store_location("current-authorized-objects"));
+    arguments.authorization_mode = AuthorizationMode::AutoApprove;
+    let root = CriomeRoot::start(arguments)
+        .await
+        .expect("start auto-approving root");
+    let first_observer = Identity::agent("first-authorized-object-observer".to_string());
+    let second_observer = Identity::agent("second-authorized-object-observer".to_string());
+    let interest = AuthorizedObjectInterest::Component(ComponentKind::Spirit);
+
+    let first_snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                identity: first_observer.clone(),
+                authorized_object_interest: interest.clone(),
+            },
+        )))
+        .await
+        .expect("open first observation")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(first_snapshot) = first_snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {first_snapshot:?}");
+    };
+    assert!(
+        first_snapshot.into_updates().is_empty(),
+        "the early subscriber starts before either current authorization exists"
+    );
+
+    let first_evidence = unproven_evidence(b"current-first-object");
+    let first_evaluation = AuthorizationEvaluation {
+        contract_digest: signal_criome::ContractDigest::from_bytes(b"current-contract"),
+        authorized_object_reference: AuthorizedObjectReference {
+            component_kind: ComponentKind::Spirit,
+            object_digest: first_evidence.operation_digest.object_digest().clone(),
+            authorized_object_kind: AuthorizedObjectKind::Head,
+        },
+        evidence: first_evidence,
+    };
+    let second_evidence = unproven_evidence(b"current-second-object");
+    let second_evaluation = AuthorizationEvaluation {
+        contract_digest: first_evaluation.contract_digest.clone(),
+        authorized_object_reference: AuthorizedObjectReference {
+            component_kind: ComponentKind::Spirit,
+            object_digest: second_evidence.operation_digest.object_digest().clone(),
+            authorized_object_kind: AuthorizedObjectKind::Head,
+        },
+        evidence: second_evidence,
+    };
+
+    for evaluation in [&first_evaluation, &second_evaluation] {
+        let reply = root
+            .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+                evaluation.clone(),
+            )))
+            .await
+            .expect("record initial authorization")
+            .into_reply();
+        assert!(matches!(reply, CriomeReply::AuthorizationEvaluated(_)));
+    }
+    for _ in 0..512 {
+        let reply = root
+            .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+                first_evaluation.clone(),
+            )))
+            .await
+            .expect("replace current authorization during churn")
+            .into_reply();
+        assert!(matches!(reply, CriomeReply::AuthorizationEvaluated(_)));
+    }
+
+    let late_snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                identity: second_observer.clone(),
+                authorized_object_interest: interest.clone(),
+            },
+        )))
+        .await
+        .expect("open late observation")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(late_snapshot) = late_snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {late_snapshot:?}");
+    };
+    assert_eq!(
+        late_snapshot.into_updates().len(),
+        2,
+        "512 duplicate publications retain only the two current authorized objects"
+    );
+
+    let refreshed_snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                identity: first_observer.clone(),
+                authorized_object_interest: interest.clone(),
+            },
+        )))
+        .await
+        .expect("refresh early observation")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(refreshed_snapshot) = refreshed_snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {refreshed_snapshot:?}");
+    };
+    assert_eq!(
+        refreshed_snapshot.into_updates().len(),
+        2,
+        "observers at different progress receive the same compact current snapshot"
+    );
+
+    let closed = root
+        .ask(SubmitRequest::new(
+            CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken {
+                identity: first_observer.clone(),
+                authorized_object_interest: interest.clone(),
+            }),
+        ))
+        .await
+        .expect("close first observation")
+        .into_reply();
+    assert!(matches!(
+        closed,
+        CriomeReply::AuthorizedObjectUpdateRetracted(_)
+    ));
+
+    let configuration = CriomeDaemonConfiguration::new(
+        "current-authorized-objects.sock".to_string(),
+        "current-authorized-objects.sema".to_string(),
+    )
+    .with_authorization_mode(AuthorizationMode::ClientApproval);
+    root.ask(SubmitMetaRequest::new(
+        meta_signal_criome::Input::Configure(configuration),
+    ))
+    .await
+    .expect("configure client approval")
+    .into_reply();
+    let pending = root
+        .ask(SubmitRequest::new(CriomeRequest::EvaluateAuthorization(
+            first_evaluation.clone(),
+        )))
+        .await
+        .expect("park replacement authorization")
+        .into_reply();
+    let CriomeReply::AuthorizationPending(pending) = pending else {
+        panic!("expected AuthorizationPending, got {pending:?}");
+    };
+    root.ask(SubmitMetaRequest::new(
+        meta_signal_criome::Input::SubmitAuthorizationApproval(AuthorizationApproval {
+            authorization_request_slot: pending.authorization_request_slot,
+            authorization_approval_decision: AuthorizationApprovalDecision::Reject,
+        }),
+    ))
+    .await
+    .expect("reject replacement authorization")
+    .into_reply();
+
+    let retained_snapshot = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                identity: second_observer.clone(),
+                authorized_object_interest: interest.clone(),
+            },
+        )))
+        .await
+        .expect("read retained observation")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(retained_snapshot) = retained_snapshot else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {retained_snapshot:?}");
+    };
+    assert_eq!(
+        retained_snapshot.into_updates().len(),
+        1,
+        "a rejected replacement removes its former authorization instead of retaining stale state"
+    );
+
+    let closed = root
+        .ask(SubmitRequest::new(
+            CriomeRequest::AuthorizedObjectUpdateRetraction(AuthorizedObjectUpdateToken {
+                identity: second_observer,
+                authorized_object_interest: interest.clone(),
+            }),
+        ))
+        .await
+        .expect("close second observation")
+        .into_reply();
+    assert!(matches!(
+        closed,
+        CriomeReply::AuthorizedObjectUpdateRetracted(_)
+    ));
+    let resubscribed = root
+        .ask(SubmitRequest::new(CriomeRequest::ObserveAuthorizedObjects(
+            AuthorizedObjectObservation {
+                identity: first_observer,
+                authorized_object_interest: interest,
+            },
+        )))
+        .await
+        .expect("resubscribe after close")
+        .into_reply();
+    let CriomeReply::AuthorizedObjectUpdateSnapshot(resubscribed) = resubscribed else {
+        panic!("expected AuthorizedObjectUpdateSnapshot, got {resubscribed:?}");
+    };
+    assert_eq!(
+        resubscribed.into_updates().len(),
+        1,
+        "resubscribing returns current state without retaining closed subscriber history"
     );
 
     CriomeRoot::stop(root).await.expect("stop criome root");

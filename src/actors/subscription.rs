@@ -22,7 +22,7 @@ pub struct SubscriptionRegistry {
     registry: ActorRef<registry::IdentityRegistry>,
     identity_subscriptions: Vec<IdentitySubscriptionToken>,
     authorized_object_subscriptions: Vec<AuthorizedObjectUpdateToken>,
-    authorized_object_updates: Vec<AuthorizedObjectUpdate>,
+    current_authorized_object_updates: Vec<AuthorizedObjectUpdate>,
     contract_time_checks: Vec<ContractTimeCheck>,
 }
 
@@ -51,6 +51,11 @@ pub struct PublishAuthorizedObjectUpdate {
     update: AuthorizedObjectUpdate,
 }
 
+pub struct RemoveAuthorizedObjectUpdate {
+    authorized_object_reference: signal_criome::AuthorizedObjectReference,
+    contract_digest: signal_criome::ContractDigest,
+}
+
 pub struct ScheduleContractTimeCheck {
     check: ContractTimeCheck,
 }
@@ -66,13 +71,34 @@ trait AuthorizedObjectFilter {
     fn matches_update(&self, update: &AuthorizedObjectUpdate) -> bool;
 }
 
+#[derive(PartialEq, Eq)]
+struct AuthorizedObjectAuthorization {
+    authorized_object_reference: signal_criome::AuthorizedObjectReference,
+    contract_digest: signal_criome::ContractDigest,
+}
+
+impl From<&AuthorizedObjectUpdate> for AuthorizedObjectAuthorization {
+    fn from(update: &AuthorizedObjectUpdate) -> Self {
+        Self {
+            authorized_object_reference: update.authorized_object_reference.clone(),
+            contract_digest: update.contract_digest.clone(),
+        }
+    }
+}
+
+impl AuthorizedObjectAuthorization {
+    fn matches_update(&self, update: &AuthorizedObjectUpdate) -> bool {
+        *self == Self::from(update)
+    }
+}
+
 impl SubscriptionRegistry {
     fn new(registry: ActorRef<registry::IdentityRegistry>) -> Self {
         Self {
             registry,
             identity_subscriptions: Vec::new(),
             authorized_object_subscriptions: Vec::new(),
-            authorized_object_updates: Vec::new(),
+            current_authorized_object_updates: Vec::new(),
             contract_time_checks: Vec::new(),
         }
     }
@@ -110,7 +136,7 @@ impl SubscriptionRegistry {
             self.authorized_object_subscriptions.push(token);
         }
         CriomeReply::AuthorizedObjectUpdateSnapshot(AuthorizedObjectUpdateSnapshot::from_updates(
-            self.authorized_object_updates
+            self.current_authorized_object_updates
                 .iter()
                 .filter(|update| interest.matches_update(update))
                 .cloned()
@@ -141,8 +167,25 @@ impl SubscriptionRegistry {
         &mut self,
         update: AuthorizedObjectUpdate,
     ) -> AuthorizedObjectPublication {
-        self.authorized_object_updates.push(update);
+        let authorization = AuthorizedObjectAuthorization::from(&update);
+        match self
+            .current_authorized_object_updates
+            .iter()
+            .position(|current| authorization.matches_update(current))
+        {
+            Some(index) => self.current_authorized_object_updates[index] = update,
+            None => self.current_authorized_object_updates.push(update),
+        }
         AuthorizedObjectPublication
+    }
+
+    fn remove_authorized_object_update(&mut self, removal: RemoveAuthorizedObjectUpdate) {
+        let authorization = AuthorizedObjectAuthorization {
+            authorized_object_reference: removal.authorized_object_reference,
+            contract_digest: removal.contract_digest,
+        };
+        self.current_authorized_object_updates
+            .retain(|update| !authorization.matches_update(update));
     }
 
     fn schedule_contract_time_check(&mut self, check: ContractTimeCheck) -> CriomeReply {
@@ -165,7 +208,7 @@ impl SubscriptionRegistry {
         let mut triggered = Vec::new();
         for check in due {
             if self
-                .authorized_object_updates
+                .current_authorized_object_updates
                 .iter()
                 .any(|update| check.authorized_object_interest.matches_update(update))
             {
@@ -180,7 +223,9 @@ impl SubscriptionRegistry {
             });
         }
 
-        self.authorized_object_updates.extend(triggered.clone());
+        for update in triggered.iter().cloned() {
+            self.publish_authorized_object_update(update);
+        }
         CriomeReply::DueContractChecksEvaluated(DueContractChecksEvaluated::from_triggered(
             triggered,
         ))
@@ -190,6 +235,18 @@ impl SubscriptionRegistry {
 impl PublishAuthorizedObjectUpdate {
     pub fn new(update: AuthorizedObjectUpdate) -> Self {
         Self { update }
+    }
+}
+
+impl RemoveAuthorizedObjectUpdate {
+    pub fn new(
+        authorized_object_reference: signal_criome::AuthorizedObjectReference,
+        contract_digest: signal_criome::ContractDigest,
+    ) -> Self {
+        Self {
+            authorized_object_reference,
+            contract_digest,
+        }
     }
 }
 
@@ -293,6 +350,19 @@ impl Message<PublishAuthorizedObjectUpdate> for SubscriptionRegistry {
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         self.publish_authorized_object_update(message.update)
+    }
+}
+
+impl Message<RemoveAuthorizedObjectUpdate> for SubscriptionRegistry {
+    type Reply = AuthorizedObjectPublication;
+
+    async fn handle(
+        &mut self,
+        message: RemoveAuthorizedObjectUpdate,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.remove_authorized_object_update(message);
+        AuthorizedObjectPublication
     }
 }
 
