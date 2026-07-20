@@ -22,3 +22,9 @@ See `ARCHITECTURE.md` for this repo's shape.
 one-argument daemon and accepts only a signal-encoded rkyv
 `CriomeDaemonConfiguration` file; it has no flag/subcommand
 configuration surface.
+
+## v0.11 compatibility family
+
+This release pins the runtime contract family to immutable producer revisions.
+It retains one Nota, signal-frame, and signal-criome runtime family while
+preserving criome's source, schema, storage, and wire behavior.

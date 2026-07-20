@@ -1,6 +1,6 @@
 [package]
 name         = "criome"
-version      = "0.8.3"
+version      = "0.8.4"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -64,17 +64,17 @@ cluster-witness = []
 blake3       = "1"
 blst         = "0.3"
 kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
-nota    = { package = "nota", git = "https://github.com/LiGoldragon/nota.git", branch = "main", optional = true }
-meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", branch = "main" }
+nota    = { package = "nota", git = "https://github.com/LiGoldragon/nota.git", rev = "ce7c564de0a0518eaa1938d55dccc460a67cadb4", optional = true }
+meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", rev = "40eb09bedbd315fd80265946082d1a085e6cba66" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 rustix       = { version = "1", features = ["net"] }
-sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
-signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
-signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", branch = "main" }
-signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
+sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", rev = "f2fc106654a7ec45a1c9c174664cec4bbdde9753" }
+signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", rev = "91e675298b79ec2aab2e0714a5e3e5b2d6d07339" }
+signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", rev = "38522278c884b47d01a1b7868123375a5b523ef6" }
+signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", rev = "41ba79fe601c0659793fd7c95e50424811cb3b32" }
 thiserror    = "2"
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
+triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", rev = "054420fada54093affe996730879ea1f6c8edd23" }
 
 [dev-dependencies]
 tempfile = "3"
