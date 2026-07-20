@@ -113,9 +113,9 @@ impl Witness {
     fn evaluation(salt: u8) -> AuthorizationEvaluation {
         let bytes = Self::head_bytes(salt);
         let object = AuthorizedObjectReference {
-            component: ComponentKind::Spirit,
-            digest: ObjectDigest::from_bytes(&bytes),
-            kind: AuthorizedObjectKind::Head,
+            component_kind: ComponentKind::Spirit,
+            object_digest: ObjectDigest::from_bytes(&bytes),
+            authorized_object_kind: AuthorizedObjectKind::Head,
         };
         let stamp = AttestedMoment::new(
             AttestedMomentProposition::new(
@@ -136,8 +136,8 @@ impl Witness {
             Vec::new(),
         );
         AuthorizationEvaluation {
-            contract: ContractDigest::from_bytes(&bytes),
-            object,
+            contract_digest: ContractDigest::from_bytes(&bytes),
+            authorized_object_reference: object,
             evidence,
         }
     }
@@ -154,7 +154,7 @@ impl Witness {
                 "ClientApproval parks the request, expected AuthorizationPending, got {reply:?}"
             );
         };
-        let slot = pending.request_slot;
+        let slot = pending.authorization_request_slot;
         eprintln!(
             "criome-client-approval-witness-test: PROOF (2) salt={salt} EvaluateAuthorization -> AuthorizationPending (parked)"
         );
@@ -177,7 +177,7 @@ impl Witness {
             snapshot
                 .parked()
                 .iter()
-                .any(|parked| &parked.request_slot == slot),
+                .any(|parked| &parked.authorization_request_slot == slot),
             "the parked snapshot lists the slot just parked, got {:?}",
             snapshot.parked()
         );
@@ -193,8 +193,8 @@ impl Witness {
             .meta
             .send(meta_signal_criome::Input::SubmitAuthorizationApproval(
                 AuthorizationApproval {
-                    request_slot: slot.clone(),
-                    decision,
+                    authorization_request_slot: slot.clone(),
+                    authorization_approval_decision: decision,
                 },
             ))
             .expect("SubmitAuthorizationApproval reaches criome over the meta socket");
@@ -202,7 +202,7 @@ impl Witness {
             panic!("expected AuthorizationApprovalRecorded, got {reply:?}");
         };
         assert_eq!(
-            recorded.decision, decision,
+            recorded.authorization_approval_decision, decision,
             "the daemon records the submitted decision"
         );
         eprintln!(
@@ -226,7 +226,7 @@ impl Witness {
         let state = snapshot
             .states()
             .iter()
-            .find(|state| &state.request_slot == slot)
+            .find(|state| &state.authorization_request_slot == slot)
             .unwrap_or_else(|| {
                 panic!(
                     "the observation snapshot carries the slot, got {:?}",
@@ -234,7 +234,7 @@ impl Witness {
                 )
             });
         assert_eq!(
-            state.status, expected,
+            state.authorization_status, expected,
             "the settled authorization status matches the decision"
         );
         eprintln!(

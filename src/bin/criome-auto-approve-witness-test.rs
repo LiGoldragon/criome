@@ -90,9 +90,9 @@ impl Witness {
     fn evaluate_evidence_less(&self) {
         let bytes = Self::head_bytes();
         let object = AuthorizedObjectReference {
-            component: ComponentKind::Spirit,
-            digest: ObjectDigest::from_bytes(&bytes),
-            kind: AuthorizedObjectKind::Head,
+            component_kind: ComponentKind::Spirit,
+            object_digest: ObjectDigest::from_bytes(&bytes),
+            authorized_object_kind: AuthorizedObjectKind::Head,
         };
         // A well-formed but signature-less evidence (the quorum path rejects it as
         // threshold-short; AutoApprove authorizes it).
@@ -115,8 +115,8 @@ impl Witness {
             Vec::new(),
         );
         let evaluation = AuthorizationEvaluation {
-            contract: ContractDigest::from_bytes(&bytes),
-            object,
+            contract_digest: ContractDigest::from_bytes(&bytes),
+            authorized_object_reference: object,
             evidence,
         };
         let reply = self
@@ -127,9 +127,12 @@ impl Witness {
             panic!("expected AuthorizationEvaluated, got {reply:?}");
         };
         assert!(
-            matches!(evaluated.decision, EvaluationDecision::Authorized),
+            matches!(
+                evaluated.evaluation_decision,
+                EvaluationDecision::Authorized
+            ),
             "AutoApprove authorizes an evidence-less request, got {:?}",
-            evaluated.decision
+            evaluated.evaluation_decision
         );
         eprintln!(
             "criome-auto-approve-witness-test: PROOF (2) evidence-less evaluation -> Authorized"

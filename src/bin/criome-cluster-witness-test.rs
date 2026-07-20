@@ -83,11 +83,11 @@ impl WitnessPolicy {
             vec![self.timekeeper_identity.clone()],
         );
         let signature = TimeSignature {
-            signer: self.timekeeper_identity.clone(),
-            envelope: SignatureEnvelope {
-                scheme: SignatureScheme::Bls12_381MinPk,
-                public_key: self.timekeeper_key.public_key(),
-                signature: self.timekeeper_key.sign(
+            identity: self.timekeeper_identity.clone(),
+            signature_envelope: SignatureEnvelope {
+                signature_scheme: SignatureScheme::Bls12_381MinPk,
+                bls_public_key: self.timekeeper_key.public_key(),
+                bls_signature: self.timekeeper_key.sign(
                     AttestedMomentStatement::new(&proposition)
                         .to_signing_bytes()
                         .expect("moment statement signs")
@@ -109,11 +109,11 @@ impl WitnessPolicy {
                 .to_signing_bytes()
                 .expect("operation statement signs");
             vec![StampedSignatureEnvelope {
-                stamp: stamp.clone(),
-                envelope: SignatureEnvelope {
-                    scheme: SignatureScheme::Bls12_381MinPk,
-                    public_key: self.signer_key.public_key(),
-                    signature: self.signer_key.sign(&statement),
+                attested_moment: stamp.clone(),
+                signature_envelope: SignatureEnvelope {
+                    signature_scheme: SignatureScheme::Bls12_381MinPk,
+                    bls_public_key: self.signer_key.public_key(),
+                    bls_signature: self.signer_key.sign(&statement),
                 },
             }]
         };
@@ -197,7 +197,7 @@ impl Witness {
         let CriomeReply::AuthorizationEvaluated(evaluated) = reply else {
             panic!("expected AuthorizationEvaluated, got {reply:?}");
         };
-        evaluated.decision
+        evaluated.evaluation_decision
     }
 
     fn run(&self) {
@@ -206,16 +206,16 @@ impl Witness {
 
         let bytes = Self::head_bytes();
         let object = AuthorizedObjectReference {
-            component: ComponentKind::Spirit,
-            digest: ObjectDigest::from_bytes(&bytes),
-            kind: AuthorizedObjectKind::Head,
+            component_kind: ComponentKind::Spirit,
+            object_digest: ObjectDigest::from_bytes(&bytes),
+            authorized_object_kind: AuthorizedObjectKind::Head,
         };
         let operation = OperationDigest::from_bytes(&bytes);
 
         // (a) AUTHORIZED — one valid signer signature satisfies threshold-1.
         let authorized = self.evaluate(AuthorizationEvaluation {
-            contract: contract.clone(),
-            object: object.clone(),
+            contract_digest: contract.clone(),
+            authorized_object_reference: object.clone(),
             evidence: self.policy.evidence(operation.clone(), 1),
         });
         assert!(
@@ -226,8 +226,8 @@ impl Witness {
 
         // (b) REJECTED — threshold-short evidence (zero operation signatures).
         let rejected = self.evaluate(AuthorizationEvaluation {
-            contract,
-            object,
+            contract_digest: contract,
+            authorized_object_reference: object,
             evidence: self.policy.evidence(operation, 0),
         });
         assert!(
