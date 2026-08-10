@@ -80,9 +80,9 @@ authorization decisions, and privilege elevations.*
   quorum-signature multi-sig lands.
 - **Wire**: `signal-criome` contract crate over `signal-frame`.
   Closed `CriomeRequest` / `CriomeReply` enums. `criome` accepts one
-  NOTA request and prints one NOTA reply at the CLI boundary;
+  DOTOS request and prints one DOTOS reply at the CLI boundary;
   `criome-daemon` accepts one signal-encoded rkyv
-  `CriomeDaemonConfiguration` file and never parses NOTA.
+  `CriomeDaemonConfiguration` file and never parses DOTOS.
 - **Out-of-band only.** Attestations live as separate
   records that reference content records (a
   `ChannelGrantAttestation` references a `signal-mind`
@@ -460,7 +460,7 @@ mismatch (per
   derived from the key, not stored fields: a short identifier is the
   first three bytes of the public key, exposed by a `shortest_id()`
   method that returns the shortest non-colliding prefix (3 bytes
-  default, widening up to the NOTA namespace width on collision).
+  default, widening up to the DOTOS namespace width on collision).
   Because identities are binary in the signal layer, the collision
   check is a direct byte comparison on the public-key prefix.
 - Public-key distribution to verifiers is **pushed** via
@@ -631,10 +631,10 @@ Each load-bearing constraint becomes a witness test per
 `~/primary/skills/architectural-truth-tests.md`. The headline
 constraints:
 
-- The `criome` CLI accepts exactly one NOTA request
-  record and prints exactly one NOTA reply record.
+- The `criome` CLI accepts exactly one DOTOS request
+  record and prints exactly one DOTOS reply record.
 - The `criome-daemon` binary accepts exactly one signal-encoded rkyv
-  `CriomeDaemonConfiguration` file. It has no flags and no NOTA
+  `CriomeDaemonConfiguration` file. It has no flags and no DOTOS
   configuration path.
 - The daemon owns `criome.sema`; the CLI never opens it.
 - Signed payloads carry **domain separation** — every
@@ -887,7 +887,7 @@ src/actors/verifier.rs     AttestationVerifier actor
 src/actors/registry.rs     IdentityRegistry actor
 src/actors/store.rs        StoreKernel + criome.sema tables
 src/tables.rs              component-local sema-engine table facade
-src/text.rs                Nexus/NOTA projection (one record in/out)
+src/text.rs                Nexus/DOTOS projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
 src/conveyance.rs          peer conveyance (router-mediated / direct-dial / none)
 src/command.rs             CLI client process-boundary logic
@@ -906,7 +906,7 @@ dependency solely for the router-mediated conveyance.
 Cargo dependencies after the rewrite: `signal-frame`,
 `signal-criome`, `signal-router` (the peer conveyance only),
 `kameo`, `sema-engine`, `tokio`, `thiserror`,
-`triad-runtime`, `rkyv`, `blst`, `blake3`, `nota`.
+`triad-runtime`, `rkyv`, `blst`, `blake3`, `dotos`.
 **Drops** the retired `signal` and `ractor` dependencies.
 
 Current implementation status:

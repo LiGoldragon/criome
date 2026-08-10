@@ -38,6 +38,6 @@ attestation daemon described in `ARCHITECTURE.md`.
 - **Blocking belongs in plane actors.** BLS signature
   generation/verification is blocking work; it lives behind
   `DelegatedReply` or a dedicated thread.
-- **One NOTA record at the CLI.** The `criome` CLI accepts
-  exactly one NOTA request record and prints exactly one NOTA
+- **One DOTOS record at the CLI.** The `criome` CLI accepts
+  exactly one DOTOS request record and prints exactly one DOTOS
   reply record.

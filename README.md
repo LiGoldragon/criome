@@ -18,7 +18,7 @@ eventual shape, bringing forward the auth/identity slice.
 
 See `ARCHITECTURE.md` for this repo's shape.
 
-`criome` is the one-argument NOTA client. `criome-daemon` is the
+`criome` is the one-argument DOTOS client. `criome-daemon` is the
 one-argument daemon and accepts only a signal-encoded rkyv
 `CriomeDaemonConfiguration` file; it has no flag/subcommand
 configuration surface.

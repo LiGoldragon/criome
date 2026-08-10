@@ -14,9 +14,9 @@ pub enum Error {
     ActorSpawn(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[cfg(feature = "nota-text")]
-    #[error("nota: {0}")]
-    Nota(#[from] nota::NotaDecodeError),
+    #[cfg(feature = "dotos-text")]
+    #[error("dotos: {0}")]
+    Dotos(#[from] dotos::DotosDecodeError),
     #[error("sema: {0}")]
     Sema(#[from] sema_engine::Error),
     #[error("signal frame: {0}")]
@@ -51,8 +51,8 @@ pub enum Error {
     MissingRequestRecord,
     #[error("too many request records: expected exactly one")]
     TooManyRequestRecords,
-    #[error("expected a NOTA request record")]
-    ExpectedNotaRequest,
+    #[error("expected a DOTOS request record")]
+    ExpectedDotosRequest,
     #[error("flag-style arguments are not part of component binaries: {0}")]
     FlagArgument(String),
     #[error("socket does not exist: {}", .path.display())]

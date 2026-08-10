@@ -70,7 +70,7 @@
             context.commonArgs
             // {
               inherit (context) cargoArtifacts;
-              cargoExtraArgs = "--features nota-text";
+              cargoExtraArgs = "--features dotos-text";
               meta.mainProgram = "criome";
             }
           );
@@ -78,7 +78,7 @@
           # The criome-cluster test harness build (designer report 704, Stage A):
           # criome-daemon plus the authorization witness-test and its rkyv-config
           # encoder. The NixOS cluster test consumes these; production uses
-          # `default`. The criome CLI bin (nota-text) is skipped here.
+          # `default`. The criome CLI bin (dotos-text) is skipped here.
           cluster-witness = context.craneLib.buildPackage (
             context.commonArgs
             // {
@@ -106,11 +106,11 @@
               cargoTestExtraArgs = "--test daemon_skeleton";
             }
           );
-          test-nota-text = context.craneLib.cargoTest (
+          test-dotos-text = context.craneLib.cargoTest (
             context.commonArgs
             // {
               inherit (context) cargoArtifacts;
-              cargoTestExtraArgs = "--features nota-text --all-targets";
+              cargoTestExtraArgs = "--features dotos-text --all-targets";
             }
           );
           criome-uses-kameo-not-ractor = context.pkgs.runCommand "criome-uses-kameo-not-ractor" { } ''
@@ -167,11 +167,11 @@
               cargoClippyExtraArgs = "--all-targets -- -D warnings";
             }
           );
-          clippy-nota-text = context.craneLib.cargoClippy (
+          clippy-dotos-text = context.craneLib.cargoClippy (
             context.commonArgs
             // {
               inherit (context) cargoArtifacts;
-              cargoClippyExtraArgs = "--features nota-text --all-targets -- -D warnings";
+              cargoClippyExtraArgs = "--features dotos-text --all-targets -- -D warnings";
             }
           );
           doc = context.craneLib.cargoDoc (

@@ -1,27 +1,27 @@
-//! Deploy-time NOTA → rkyv encoder for the criome daemon's startup
+//! Deploy-time DOTOS → rkyv encoder for the criome daemon's startup
 //! configuration.
 //!
 //! The criome daemon takes exactly one pre-generated rkyv startup message and
-//! parses no NOTA (`CriomeDaemonCommand` only accepts a `SignalFile`). A
-//! deployment therefore needs a bootstrap step that turns the typed NOTA the
+//! parses no DOTOS (`CriomeDaemonCommand` only accepts a `SignalFile`). A
+//! deployment therefore needs a bootstrap step that turns the typed DOTOS the
 //! deploy/module surface authors into the binary `CriomeDaemonConfiguration`
 //! rkyv the daemon consumes.
 //!
-//! `criome-encode-configuration` is that step: it takes ONE NOTA argument — a
+//! `criome-encode-configuration` is that step: it takes ONE DOTOS argument — a
 //! `CriomeConfigurationArtifact` record carrying the full typed
 //! `CriomeDaemonConfiguration` plus the path the rkyv is written to — decodes
-//! the configuration with the schema-derived `NotaDecode` on
+//! the configuration with the schema-derived `DotosDecode` on
 //! `CriomeDaemonConfiguration`, and writes the rkyv via the daemon's own
 //! `CriomeDaemonConfigurationFile`. No flags; one rkyv file out.
 //!
 //! This mirrors the router's `router-encode-configuration` and mirror's
-//! `mirror-write-configuration`. It lives behind the `nota-text` feature so the
-//! daemon's runtime path (no `nota-text`) cannot decode NOTA at all — the
+//! `mirror-write-configuration`. It lives behind the `dotos-text` feature so the
+//! daemon's runtime path (no `dotos-text`) cannot decode DOTOS at all — the
 //! encode is exclusively a deploy-time step.
 
 use std::path::{Path, PathBuf};
 
-use nota::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError};
+use dotos::{Block, Delimiter, DotosBlock, DotosDecode, DotosDecodeError, DotosSource};
 use signal_criome::CriomeDaemonConfiguration;
 use triad_runtime::{ComponentArgument, ComponentCommand};
 
@@ -31,8 +31,8 @@ use crate::{Error, Result};
 /// `(CriomeConfigurationArtifact <CriomeDaemonConfiguration> <output-path>)`:
 /// the full typed daemon configuration plus the path the rkyv is written to.
 ///
-/// This record decodes itself through the `nota` block API, the same way
-/// criome's other crate-local NOTA boundaries do.
+/// This record decodes itself through the DOTOS block API, the same way
+/// criome's other crate-local DOTOS boundaries do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CriomeConfigurationArtifact {
     configuration: CriomeDaemonConfiguration,
@@ -48,13 +48,13 @@ impl CriomeConfigurationArtifact {
     }
 }
 
-impl NotaDecode for CriomeConfigurationArtifact {
-    fn from_nota_block(block: &Block) -> std::result::Result<Self, NotaDecodeError> {
-        let body = NotaBlock::new(block)
+impl DotosDecode for CriomeConfigurationArtifact {
+    fn from_dotos_block(block: &Block) -> std::result::Result<Self, DotosDecodeError> {
+        let body = DotosBlock::new(block)
             .expect_body(Delimiter::Parenthesis, "CriomeConfigurationArtifact")?;
         let objects = body.root_objects();
         if objects.len() != 3 {
-            return Err(NotaDecodeError::ExpectedRootCount {
+            return Err(DotosDecodeError::ExpectedRootCount {
                 type_name: "CriomeConfigurationArtifact",
                 expected: 3,
                 found: objects.len(),
@@ -63,24 +63,24 @@ impl NotaDecode for CriomeConfigurationArtifact {
         match objects[0].demote_to_string() {
             Some("CriomeConfigurationArtifact") => {}
             Some(variant) => {
-                return Err(NotaDecodeError::UnknownVariant {
+                return Err(DotosDecodeError::UnknownVariant {
                     enum_name: "CriomeConfigurationArtifact",
                     variant: variant.to_owned(),
                 });
             }
             None => {
-                return Err(NotaDecodeError::ExpectedAtom {
+                return Err(DotosDecodeError::ExpectedAtom {
                     type_name: "CriomeConfigurationArtifact",
                 });
             }
         }
         let output_path = objects[2]
             .demote_to_string()
-            .ok_or(NotaDecodeError::ExpectedAtom {
+            .ok_or(DotosDecodeError::ExpectedAtom {
                 type_name: "CriomeConfigurationArtifact",
             })?;
         Ok(Self {
-            configuration: CriomeDaemonConfiguration::from_nota_block(&objects[1])?,
+            configuration: CriomeDaemonConfiguration::from_dotos_block(&objects[1])?,
             output_path: PathBuf::from(output_path),
         })
     }
@@ -93,7 +93,7 @@ pub struct ArtifactWritten {
 }
 
 impl ArtifactWritten {
-    /// The deploy log line — a `(ArtifactWritten <path>)` NOTA atom naming where
+    /// The deploy log line — a `(ArtifactWritten <path>)` DOTOS atom naming where
     /// the rkyv landed, printed so an `ExecStartPre` step records its output.
     pub fn report(&self) -> String {
         format!("(ArtifactWritten {})", self.output_path.display())
@@ -104,7 +104,7 @@ impl ArtifactWritten {
     }
 }
 
-/// The configuration encoder process: one NOTA arg in, one config rkyv out.
+/// The configuration encoder process: one DOTOS arg in, one config rkyv out.
 #[derive(Debug)]
 pub struct CriomeConfigurationEncoder {
     command: ComponentCommand,
@@ -125,12 +125,12 @@ impl CriomeConfigurationEncoder {
 
     fn request(&self) -> Result<CriomeConfigurationArtifact> {
         let text = ArtifactSource::read(&self.command)?;
-        Ok(nota::NotaSource::new(text.as_str()).parse()?)
+        Ok(DotosSource::new(text.as_str()).parse()?)
     }
 }
 
-/// The decoded NOTA text source for the deploy-encode request — an inline NOTA
-/// string or a `.nota` file. A `.signal` rkyv input is rejected (this is the
+/// The decoded DOTOS text source for the deploy-encode request — an inline DOTOS
+/// string or a `.dotos` file. A `.signal` rkyv input is rejected (this is the
 /// text edge that produces rkyv, not consumes it).
 struct ArtifactSource {
     text: String,
@@ -138,8 +138,8 @@ struct ArtifactSource {
 
 impl ArtifactSource {
     fn read(command: &ComponentCommand) -> Result<Self> {
-        match command.nota_argument()? {
-            ComponentArgument::InlineNota(argument) => {
+        match command.dotos_argument()? {
+            ComponentArgument::InlineDotos(argument) => {
                 if argument.as_str().starts_with("--") {
                     return Err(Error::FlagArgument(argument.into_string()));
                 }
@@ -147,13 +147,13 @@ impl ArtifactSource {
                     text: argument.into_string(),
                 })
             }
-            ComponentArgument::NotaFile(file) => {
+            ComponentArgument::DotosFile(file) => {
                 let path: PathBuf = file.into_path();
                 let text = std::fs::read_to_string(&path)
                     .map_err(|source| Error::ConfigurationRead { path, source })?;
                 Ok(Self { text })
             }
-            ComponentArgument::SignalFile(_) => Err(Error::ExpectedNotaRequest),
+            ComponentArgument::SignalFile(_) => Err(Error::ExpectedDotosRequest),
         }
     }
 

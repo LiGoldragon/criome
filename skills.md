@@ -138,7 +138,7 @@ Criome does **not** own:
 - `~/primary/skills/rust/storage-and-wire.md` — storage + rkyv
   discipline.
 - `~/primary/skills/rust/crate-layout.md` — CLIs are daemon
-  clients; one NOTA record in, one out.
+  clients; one DOTOS record in, one out.
 - `~/primary/reports/system-assistant/21-criome-routed-authorization-and-thin-cli-shape-2026-05-17.md`
   — routed authorization and thin caller shape.
 - `~/primary/reports/system-specialist/140-lojix-criome-mediated-authorization-decision-2026-05-17.md`

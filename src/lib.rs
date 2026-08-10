@@ -9,7 +9,7 @@ pub mod admission;
 pub mod command;
 pub mod conveyance;
 pub mod daemon;
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 pub mod deploy_encode;
 pub mod error;
 pub mod founding;
@@ -17,7 +17,7 @@ pub mod language;
 pub mod master_key;
 pub mod router_client;
 pub mod tables;
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 pub mod text;
 pub mod transport;
 

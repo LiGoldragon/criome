@@ -17,18 +17,18 @@
 //! accept-founding <anchor>    explicitly accept (sign) the pending founding for the anchor
 //! ```
 //!
-//! `<cohort>` is inline NOTA when it starts with `(`, otherwise a path to a NOTA
+//! `<cohort>` is inline DOTOS when it starts with `(`, otherwise a path to a DOTOS
 //! file. Sockets: `CRIOME_SOCKET` (working, default `/tmp/criome.sock`) and
 //! `CRIOME_META_SOCKET` (owner-only, default `<working>.meta`).
 
 use std::path::{Path, PathBuf};
 
 use criome::transport::{CriomeClient, CriomeMetaClient};
+use dotos::{DotosEncode, DotosSource};
 use meta_signal_criome::{
     Input as MetaInput, Output as MetaOutput, RootFoundingAcceptance, RootFoundingInitiation,
     RootFoundingObservation, RootFoundingStatus,
 };
-use nota::{NotaEncode, NotaSource};
 use signal_criome::{
     CriomeReply, CriomeRequest, NodePublicKeyObservation, ObjectDigest, RootAnchorDigest,
     RootGenesis,
@@ -39,7 +39,7 @@ enum OperatorError {
     #[error(
         "usage: criome-founding <command>\n  \
          observe-node-public-key\n  \
-         initiate-founding <cohort.nota|inline-nota>\n  \
+         initiate-founding <cohort.dotos|inline-dotos>\n  \
          observe-founding\n  \
          accept-founding <anchor>"
     )]
@@ -51,8 +51,8 @@ enum OperatorError {
         path: String,
         source: std::io::Error,
     },
-    #[error("parse cohort NOTA: {0}")]
-    CohortParse(nota::NotaDecodeError),
+    #[error("parse cohort DOTOS: {0}")]
+    CohortParse(dotos::DotosDecodeError),
     #[error("unexpected reply: {0}")]
     UnexpectedReply(String),
     #[error("no pending founding for anchor {0}")]
@@ -116,7 +116,7 @@ impl FoundingOperator {
             ))?;
         match reply {
             CriomeReply::NodePublicKey(key) => {
-                println!("{}", key.to_nota());
+                println!("{}", key.to_dotos());
                 Ok(())
             }
             other => Err(OperatorError::UnexpectedReply(format!("{other:?}"))),
@@ -179,13 +179,13 @@ impl FoundingOperator {
                 source,
             })?
         };
-        NotaSource::new(&text)
+        DotosSource::new(&text)
             .parse::<RootGenesis>()
             .map_err(OperatorError::CohortParse)
     }
 
     fn print_meta(reply: &MetaOutput) -> Result<(), OperatorError> {
-        println!("{}", reply.to_nota());
+        println!("{}", reply.to_dotos());
         Ok(())
     }
 

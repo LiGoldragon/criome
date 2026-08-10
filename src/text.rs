@@ -1,4 +1,4 @@
-use nota::{NotaEncode, NotaSource};
+use dotos::{DotosEncode, DotosSource};
 use signal_criome::{CriomeReply, CriomeRequest};
 
 use crate::Result;
@@ -9,7 +9,7 @@ pub struct RequestDocument {
 
 impl RequestDocument {
     pub fn parse(source: &str) -> Result<Self> {
-        let request = NotaSource::new(source).parse::<CriomeRequest>()?;
+        let request = DotosSource::new(source).parse::<CriomeRequest>()?;
         Ok(Self { request })
     }
 
@@ -28,6 +28,6 @@ impl ReplyDocument {
     }
 
     pub fn render(&self) -> Result<String> {
-        Ok(self.reply.to_nota())
+        Ok(self.reply.to_dotos())
     }
 }

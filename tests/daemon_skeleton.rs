@@ -8,7 +8,7 @@ use criome::actors::root::{
 };
 use criome::actors::store::{InterceptSpiritAuthorization, StoreInterceptPolicy, StoreKernel};
 use criome::command::CriomeDaemonCommand;
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 use criome::command::CriomeRequestArgument;
 use criome::daemon::{BoundCriomeDaemon, CriomeDaemon};
 use criome::daemon::{CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
@@ -16,10 +16,10 @@ use criome::language::{AttestedMomentStatement, OperationStatement};
 use criome::master_key::MasterKey;
 use criome::tables::StoreLocation;
 use criome::transport::{CriomeClient, CriomeFrameCodec, CriomeMetaClient};
+#[cfg(feature = "dotos-text")]
+use dotos::DotosEncode;
 use kameo::actor::Spawn;
 use meta_signal_criome::{AuthorizationApproval, AuthorizationApprovalDecision};
-#[cfg(feature = "nota-text")]
-use nota::NotaEncode;
 use signal_criome::{
     ApprovalAuditSource, AttestedMoment, AttestedMomentProposition, AuditContext,
     AuthorizationDenialReason, AuthorizationDenialSource, AuthorizationEvaluation,
@@ -2801,44 +2801,44 @@ fn criome_daemon_configuration_accepts_binary_file_argument() {
 }
 
 #[test]
-fn criome_daemon_configuration_rejects_nota_arguments() {
-    let workspace = fixture_path("daemon-config-nota");
-    let nota_path = workspace.join("criome-daemon.nota");
-    std::fs::write(&nota_path, "(CriomeDaemonConfiguration)").expect("write nota fixture");
+fn criome_daemon_configuration_rejects_dotos_arguments() {
+    let workspace = fixture_path("daemon-config-dotos");
+    let dotos_path = workspace.join("criome-daemon.dotos");
+    std::fs::write(&dotos_path, "(CriomeDaemonConfiguration)").expect("write dotos fixture");
 
     let inline = CriomeDaemonCommand::from_arguments(["(CriomeDaemonConfiguration)"])
         .configuration()
-        .expect_err("inline NOTA is rejected");
-    let file = CriomeDaemonCommand::from_arguments([nota_path.display().to_string()])
+        .expect_err("inline DOTOS is rejected");
+    let file = CriomeDaemonCommand::from_arguments([dotos_path.display().to_string()])
         .configuration()
-        .expect_err(".nota file is rejected");
+        .expect_err(".dotos file is rejected");
 
     assert!(matches!(inline, criome::Error::Argument(_)));
     assert!(matches!(file, criome::Error::Argument(_)));
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 #[test]
-fn criome_cli_request_argument_accepts_inline_and_nota_file() {
+fn criome_cli_request_argument_accepts_inline_and_dotos_file() {
     let request = CriomeRequest::LookupIdentity(IdentityLookup::new(Identity::developer(
         ("operator").to_string(),
     )));
-    let text = request.to_nota();
+    let text = request.to_dotos();
     let workspace = fixture_path("request-argument");
-    let nota_path = workspace.join("request.nota");
-    std::fs::write(&nota_path, &text).expect("write request");
+    let dotos_path = workspace.join("request.dotos");
+    std::fs::write(&dotos_path, &text).expect("write request");
 
     let inline = CriomeRequestArgument::new(
         triad_runtime::ComponentCommand::from_arguments([text.clone()])
-            .nota_argument()
-            .expect("inline nota argument"),
+            .dotos_argument()
+            .expect("inline dotos argument"),
     )
     .request()
     .expect("inline request decodes");
     let file = CriomeRequestArgument::new(
-        triad_runtime::ComponentCommand::from_arguments([nota_path.display().to_string()])
-            .nota_argument()
-            .expect("file nota argument"),
+        triad_runtime::ComponentCommand::from_arguments([dotos_path.display().to_string()])
+            .dotos_argument()
+            .expect("file dotos argument"),
     )
     .request()
     .expect("file request decodes");
@@ -2847,16 +2847,16 @@ fn criome_cli_request_argument_accepts_inline_and_nota_file() {
     assert_eq!(file, request);
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 #[test]
 fn criome_cli_request_argument_rejects_flag_shape() {
     let error = CriomeRequestArgument::new(
         triad_runtime::ComponentCommand::from_arguments(["--socket"])
-            .nota_argument()
+            .dotos_argument()
             .expect("inline flag-shaped argument"),
     )
     .request()
-    .expect_err("flag-shaped argument is rejected before NOTA parsing");
+    .expect_err("flag-shaped argument is rejected before DOTOS parsing");
 
     assert!(matches!(error, criome::Error::FlagArgument(_)));
 }

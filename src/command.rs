@@ -1,17 +1,17 @@
 use triad_runtime::{ComponentArgument, ComponentCommand};
-#[cfg(feature = "nota-text")]
-use triad_runtime::{InlineNota, NotaFile};
+#[cfg(feature = "dotos-text")]
+use triad_runtime::{DotosFile, InlineDotos};
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 use crate::Error;
 use crate::Result;
 use crate::daemon::{CriomeDaemon, CriomeDaemonConfiguration, CriomeDaemonConfigurationFile};
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 use crate::text::{ReplyDocument, RequestDocument};
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 use crate::transport::CriomeClient;
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CriomeCommandLine {
     command: ComponentCommand,
@@ -22,17 +22,17 @@ pub struct CriomeDaemonCommand {
     command: ComponentCommand,
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 pub struct CriomeRequestArgument {
     argument: ComponentArgument,
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 pub struct CriomeRequestFile {
-    file: NotaFile,
+    file: DotosFile,
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 impl CriomeCommandLine {
     pub fn from_environment() -> Self {
         Self {
@@ -51,7 +51,7 @@ impl CriomeCommandLine {
     }
 
     pub fn run(self) -> Result<()> {
-        let request = CriomeRequestArgument::new(self.command.nota_argument()?).request()?;
+        let request = CriomeRequestArgument::new(self.command.dotos_argument()?).request()?;
         let reply = CriomeClient::from_environment().send(request)?;
         println!("{}", ReplyDocument::new(reply).render()?);
         Ok(())
@@ -80,7 +80,7 @@ impl CriomeDaemonCommand {
             ComponentArgument::SignalFile(file) => {
                 CriomeDaemonConfigurationFile::from_signal_file(file).configuration()
             }
-            ComponentArgument::InlineNota(_) | ComponentArgument::NotaFile(_) => {
+            ComponentArgument::InlineDotos(_) | ComponentArgument::DotosFile(_) => {
                 Err(triad_runtime::ArgumentError::ExpectedSignalFile.into())
             }
         }
@@ -91,7 +91,7 @@ impl CriomeDaemonCommand {
     }
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 impl CriomeRequestArgument {
     pub fn new(argument: ComponentArgument) -> Self {
         Self { argument }
@@ -99,23 +99,23 @@ impl CriomeRequestArgument {
 
     pub fn request(self) -> Result<signal_criome::CriomeRequest> {
         match self.argument {
-            ComponentArgument::InlineNota(nota) => Self::request_from_inline_nota(nota),
-            ComponentArgument::NotaFile(file) => CriomeRequestFile::new(file).request(),
-            ComponentArgument::SignalFile(_) => Err(Error::ExpectedNotaRequest),
+            ComponentArgument::InlineDotos(dotos) => Self::request_from_inline_dotos(dotos),
+            ComponentArgument::DotosFile(file) => CriomeRequestFile::new(file).request(),
+            ComponentArgument::SignalFile(_) => Err(Error::ExpectedDotosRequest),
         }
     }
 
-    fn request_from_inline_nota(nota: InlineNota) -> Result<signal_criome::CriomeRequest> {
-        if nota.as_str().starts_with("--") {
-            return Err(Error::FlagArgument(nota.into_string()));
+    fn request_from_inline_dotos(dotos: InlineDotos) -> Result<signal_criome::CriomeRequest> {
+        if dotos.as_str().starts_with("--") {
+            return Err(Error::FlagArgument(dotos.into_string()));
         }
-        Ok(RequestDocument::parse(nota.as_str())?.into_request())
+        Ok(RequestDocument::parse(dotos.as_str())?.into_request())
     }
 }
 
-#[cfg(feature = "nota-text")]
+#[cfg(feature = "dotos-text")]
 impl CriomeRequestFile {
-    pub fn new(file: NotaFile) -> Self {
+    pub fn new(file: DotosFile) -> Self {
         Self { file }
     }
 
