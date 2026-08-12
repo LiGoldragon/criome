@@ -41,3 +41,9 @@ attestation daemon described in `ARCHITECTURE.md`.
 - **One DOTOS record at the CLI.** The `criome` CLI accepts
   exactly one DOTOS request record and prints exactly one DOTOS
   reply record.
+
+## Protos estate status
+
+Stack: correct-new destination
+Status: active component, current checkout legacy-wired
+This checkout is not proof of correct-new adoption.
