@@ -1,6 +1,6 @@
 [package]
 name         = "criome"
-version      = "0.9.0"
+version      = "0.9.1"
 edition      = "2024"
 rust-version = "1.89"
 license      = "MIT OR Apache-2.0"
@@ -63,15 +63,15 @@ cluster-witness = []
 [dependencies]
 blake3       = "1"
 blst         = "0.3"
-kameo        = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
+kameo        = { git = "https://github.com/LiGoldragon/kameo.git", rev = "f491b45d7dcb55e5837eddde3d5d7ca8ceaa9f01", default-features = false, features = ["macros", "tracing"] }
 dotos   = { package = "dotos", git = "https://github.com/LiGoldragon/dotos.git", rev = "b3c2c76fe7a18ba026ab054d1fa7162e55860b9e", optional = true }
-meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", rev = "1c3bd8784142c54856e031d74b897382204cec21" }
+meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", rev = "5acfedafd63964da1a4d1082245f3943c6d371b5" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 rustix       = { version = "1", features = ["net"] }
-sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
+sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", rev = "27e814a721439af67721c530d48b4d2101141f74" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", rev = "80f70d929ae6d72707052f097be2264872913983" }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", rev = "b85fe3408faa24b8439a3685396430a68bfbcb71" }
-signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
+signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", rev = "03ed6bc2217d6a8d0ed5e1291e417ea4d4de168f" }
 thiserror    = "2"
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
 triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", rev = "7d10bb9d9a08ce363a0be8cff2716103f0a326fe" }
@@ -85,4 +85,4 @@ unused      = { level = "warn", priority = -1 }
 dead_code   = "warn"
 
 [patch.crates-io]
-kameo = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main" }
+kameo = { git = "https://github.com/LiGoldragon/kameo.git", rev = "f491b45d7dcb55e5837eddde3d5d7ca8ceaa9f01" }
