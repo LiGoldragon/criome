@@ -43,7 +43,7 @@ fn shared_store() -> StoreLocation {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create ledger-restart fixture dir");
-    StoreLocation::new(dir.join("criome.sema"))
+    StoreLocation::new(dir.join("criome.memory"))
 }
 
 fn host(name: &str) -> Identity {

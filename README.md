@@ -10,7 +10,7 @@ ecosystem. A single Kameo daemon: identity registry,
 sign/verify primitives, typed attestations.*
 
 The **eventual** `Criome` is the universal computing paradigm
-expressed in Sema — replacing Git, the editor, SSH, and the
+expressed in Memory — replacing Git, the editor, SSH, and the
 web; encompassing programming, version control, network
 identity, validation, and auth/security across the stack.
 Today's Spartan criome is one realization step toward that

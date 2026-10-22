@@ -663,7 +663,7 @@ mod conveyance_selection_tests {
     fn base_configuration() -> CriomeDaemonConfiguration {
         CriomeDaemonConfiguration::new(
             "/tmp/criome-conveyance-selection-test.sock",
-            "/tmp/criome-conveyance-selection-test.sema",
+            "/tmp/criome-conveyance-selection-test.memory",
         )
     }
 

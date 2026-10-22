@@ -278,10 +278,10 @@ dependencies = [
  "blst",
  "dotos 0.10.1",
  "kameo 0.20.0 (git+https://github.com/LiGoldragon/kameo.git?branch=main)",
+ "memory-engine",
  "meta-signal-criome",
  "rkyv",
  "rustix",
- "sema-engine",
  "signal-criome",
  "signal-frame 0.3.2",
  "signal-router",
@@ -592,6 +592,28 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memory"
+version = "0.1.1"
+source = "git+https://github.com/LiGoldragon/memory.git?rev=69d91c486b335575ee5e4b0eb79da27094e700b6#69d91c486b335575ee5e4b0eb79da27094e700b6"
+dependencies = [
+ "redb",
+ "rkyv",
+ "thiserror",
+]
+
+[[package]]
+name = "memory-engine"
+version = "0.18.0"
+source = "git+https://github.com/LiGoldragon/memory-engine.git?rev=abf9d85166e22440440baba03358913458905b8d#abf9d85166e22440440baba03358913458905b8d"
+dependencies = [
+ "blake3",
+ "memory",
+ "rkyv",
+ "signal-sema",
+ "thiserror",
+]
 
 [[package]]
 name = "meta-signal-criome"
@@ -960,29 +982,6 @@ dependencies = [
  "core-nomos 0.41.1 (git+https://github.com/LiGoldragon/core-nomos.git?rev=e57728e)",
  "rust-logos 0.32.0",
  "sema-translator 0.11.0",
- "thiserror",
-]
-
-[[package]]
-name = "sema"
-version = "0.1.1"
-source = "git+https://github.com/LiGoldragon/sema.git?rev=51d7927c872f0df12791bad8d39a4db6433b01a1#51d7927c872f0df12791bad8d39a4db6433b01a1"
-dependencies = [
- "redb",
- "rkyv",
- "thiserror",
-]
-
-[[package]]
-name = "sema-engine"
-version = "0.15.1"
-source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#7158e5503f37fd2fbca1d707f134e38a3fda1176"
-dependencies = [
- "blake3",
- "rkyv",
- "sema",
- "signal-frame 0.3.1",
- "signal-sema",
  "thiserror",
 ]
 
@@ -1395,13 +1394,12 @@ dependencies = [
 
 [[package]]
 name = "triad-runtime"
-version = "0.8.1"
-source = "git+https://github.com/LiGoldragon/triad-runtime.git?rev=7d10bb9d9a08ce363a0be8cff2716103f0a326fe#7d10bb9d9a08ce363a0be8cff2716103f0a326fe"
+version = "0.10.1"
+source = "git+https://github.com/LiGoldragon/triad-runtime.git?rev=4cc0a100841d2400f354c008c9faa73b2cedf50e#4cc0a100841d2400f354c008c9faa73b2cedf50e"
 dependencies = [
  "kameo 0.20.0 (git+https://github.com/LiGoldragon/kameo.git?rev=f491b45d7dcb55e5837eddde3d5d7ca8ceaa9f01)",
  "rkyv",
  "rustix",
- "signal-frame 0.3.1",
  "thiserror",
  "tokio",
 ]

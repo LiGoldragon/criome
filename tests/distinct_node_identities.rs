@@ -43,7 +43,7 @@ fn node_store(name: &str) -> StoreLocation {
     ));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("create node fixture dir");
-    StoreLocation::new(path.join("criome.sema"))
+    StoreLocation::new(path.join("criome.memory"))
 }
 
 /// A criome instance configured to sign as `node_identity`. Each instance owns

@@ -17,8 +17,8 @@ pub enum Error {
     #[cfg(feature = "dotos-text")]
     #[error("dotos: {0}")]
     Dotos(#[from] dotos::DotosDecodeError),
-    #[error("sema: {0}")]
-    Sema(#[from] sema_engine::Error),
+    #[error("memory: {0}")]
+    Memory(#[from] memory_engine::Error),
     #[error("signal frame: {0}")]
     SignalFrame(#[from] signal_frame::FrameError),
     #[error("argument: {0}")]

@@ -50,7 +50,7 @@ fn fixture(tag: &str) -> (PathBuf, StoreLocation) {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create founding fixture dir");
-    (dir.clone(), StoreLocation::new(dir.join("criome.sema")))
+    (dir.clone(), StoreLocation::new(dir.join("criome.memory")))
 }
 
 fn founder() -> Identity {

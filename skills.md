@@ -22,7 +22,7 @@ Read `ARCHITECTURE.md` for this repo's shape.
 Today's criome is **narrow and Spartan**. The eventual `Criome`
 (per `ARCHITECTURE.md` §"Scope: today, not eventually") subsumes
 everything — validation, identity, programming, version control,
-network identity, web request handling — expressed in Sema.
+network identity, web request handling — expressed in Memory.
 Today's Spartan criome is one step toward that eventual shape,
 bringing forward the auth/identity slice and nothing else.
 
@@ -41,7 +41,7 @@ today's narrow scope; the eventual encompassment is named in
   variant; no string-tagged dispatch; no generic-record
   fallback. Per `~/primary/ESSENCE.md` §"Perfect specificity at
   boundaries".
-- **One store, one writer.** `StoreKernel` owns `criome.sema`;
+- **One store, one writer.** `StoreKernel` owns `criome.memory`;
   every other store actor routes through it.
 - **Push, not poll.** Identity-update consumers subscribe; they
   do not poll. Per `~/primary/skills/push-not-pull.md`.
@@ -102,7 +102,7 @@ Criome owns:
 - The `Identity` enum vocabulary (`Persona`, `Agent`, `Host`,
   `Developer`, `Cluster`) — closed.
 - The attestation envelope format and signing/verification API.
-- The identity registry storage shape (in `criome.sema`).
+- The identity registry storage shape (in `criome.memory`).
 - The signing/verification API contract surface.
 - The `criome.pub` public-material publication conventions.
 - Authorization request state, signature solicitation state,
@@ -117,7 +117,7 @@ Criome does **not** own:
   authorization, but does not run the authorized workload.
 - Audit-policy decisions (the audit-policy engine is a
   separate component, to be designed in a follow-up report).
-- Sema-ecosystem records validation (deferred to eventual
+- Memory-ecosystem records validation (deferred to eventual
   Criome).
 - ClaviFaber's per-host key generation (ClaviFaber remains a
   narrow per-host shim; it feeds criome but criome doesn't own
@@ -146,4 +146,4 @@ Criome does **not** own:
 - `/git/github.com/LiGoldragon/clavifaber/ARCHITECTURE.md` —
   feeds criome's identity registry.
 - This repo at commit `a3f4173` — archaeology of the prior
-  sema-records-validator skeleton.
+  memory-records-validator skeleton.

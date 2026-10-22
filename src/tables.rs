@@ -1,16 +1,16 @@
 use std::path::{Path, PathBuf};
 
+use memory_engine::{
+    Engine, EngineOpen, EngineStoredValue, FamilyName, KeyedAssertion, KeyedMutation, QueryPlan,
+    RecordKey, Retraction, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
+    VersionedStoreName, VersioningPolicy,
+};
 use rkyv::api::high::HighDeserializer;
 use rkyv::bytecheck::CheckBytes;
 use rkyv::rancor::{self, Strategy};
 use rkyv::validation::Validator;
 use rkyv::validation::archive::ArchiveValidator;
 use rkyv::validation::shared::SharedValidator;
-use sema_engine::{
-    Engine, EngineOpen, EngineStoredValue, FamilyName, KeyedAssertion, KeyedMutation, QueryPlan,
-    RecordKey, Retraction, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
-    VersionedStoreName, VersioningPolicy,
-};
 use signal_criome::{
     ActiveInterceptPolicies, ApprovalAuditSource, Attestation, AttestedMomentProposition,
     AuthorizationDenial, AuthorizationEvaluation, AuthorizationGrant, AuthorizationRequestSlot,
@@ -109,7 +109,7 @@ impl StoreLocation {
             Some(path) => Self::new(path),
             None => match std::env::var_os("PERSONA_STATE_PATH") {
                 Some(path) => Self::new(path),
-                None => Self::new("/tmp/criome.sema"),
+                None => Self::new("/tmp/criome.memory"),
             },
         }
     }

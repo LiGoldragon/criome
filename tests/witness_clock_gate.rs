@@ -60,7 +60,7 @@ fn fixture(tag: &str) -> (PathBuf, StoreLocation) {
     std::fs::create_dir_all(&dir).expect("create clock-gate fixture dir");
     (
         dir.join("criome.sock"),
-        StoreLocation::new(dir.join("criome.sema")),
+        StoreLocation::new(dir.join("criome.memory")),
     )
 }
 

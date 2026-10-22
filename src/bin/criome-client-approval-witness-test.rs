@@ -86,7 +86,7 @@ impl Witness {
             working: CriomeClient::new(&socket),
             meta: CriomeMetaClient::new(&meta),
             socket_path: socket.display().to_string(),
-            store_path: format!("{}.sema", socket.display()),
+            store_path: format!("{}.memory", socket.display()),
         }
     }
 

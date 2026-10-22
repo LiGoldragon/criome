@@ -60,14 +60,14 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 }
 
 fn store_location(name: &str) -> StoreLocation {
-    StoreLocation::new(fixture_path(name).join("criome.sema"))
+    StoreLocation::new(fixture_path(name).join("criome.memory"))
 }
 
 fn daemon_configuration(name: &str) -> CriomeDaemonConfiguration {
     let workspace = fixture_path(name);
     CriomeDaemonConfiguration::new(
         workspace.join("criome.sock").display().to_string(),
-        workspace.join("criome.sema").display().to_string(),
+        workspace.join("criome.memory").display().to_string(),
     )
 }
 
@@ -714,7 +714,7 @@ async fn authorized_object_snapshots_retain_current_state_not_publication_histor
 
     let configuration = CriomeDaemonConfiguration::new(
         "current-authorized-objects.sock".to_string(),
-        "current-authorized-objects.sema".to_string(),
+        "current-authorized-objects.memory".to_string(),
     )
     .with_authorization_mode(AuthorizationMode::ClientApproval);
     root.ask(SubmitMetaRequest::new(
@@ -1431,7 +1431,7 @@ async fn unsupported_signature_scheme_is_rejected() {
 #[tokio::test]
 async fn restored_store_with_mismatched_master_key_fails_startup() {
     let workspace = fixture_path("reconcile-mismatch");
-    let store_path = workspace.join("criome.sema");
+    let store_path = workspace.join("criome.memory");
     let key_path = workspace.join("criome.masterkey");
 
     // First start generates master key A and registers Host("criome") = A.
@@ -1458,7 +1458,7 @@ async fn cluster_root_gates_registration() {
     let workspace = fixture_path("cluster-root-gate");
     let cluster_root = MasterKey::generate().expect("cluster root key");
     let root = CriomeRoot::start(RootArguments {
-        store: StoreLocation::new(workspace.join("criome.sema")),
+        store: StoreLocation::new(workspace.join("criome.memory")),
         cluster_root: Some(cluster_root.public_key()),
         authorization_mode: signal_criome::AuthorizationMode::Quorum,
         quorum_window: RootArguments::DEFAULT_QUORUM_WINDOW,
@@ -1515,7 +1515,7 @@ async fn cluster_root_gates_registration() {
 fn criome_daemon_signal_frame_registers_identity() {
     let workspace = fixture_path("daemon-registers");
     let socket = workspace.join("criome.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store);
     let served = thread::spawn(move || daemon.serve_one().expect("serve one request"));
 
@@ -1540,7 +1540,7 @@ fn criome_daemon_socket_modes_split_shared_working_from_private_meta() {
     let workspace = fixture_path("socket-mode");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store)
         .with_meta_socket(&meta_socket)
         .bind()
@@ -1570,7 +1570,7 @@ fn meta_socket_configure_auto_approve_authorizes_without_quorum_evidence() {
     let workspace = fixture_path("meta-configure-auto-approve");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store.clone())
         .with_meta_socket(&meta_socket)
         .bind()
@@ -1659,7 +1659,7 @@ fn auto_approve_signal_call_returns_signed_authorization_grant() {
     let workspace = fixture_path("auto-approve-signal-call-grant");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store.clone())
         .with_meta_socket(&meta_socket)
         .bind()
@@ -1744,7 +1744,7 @@ fn client_approval_signal_call_approval_records_signed_authorization_grant() {
     let workspace = fixture_path("client-approval-signal-call-grant");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store.clone())
         .with_meta_socket(&meta_socket)
         .bind()
@@ -1899,7 +1899,7 @@ fn authorization_submit_stream_pushes_approval_update() {
     let workspace = fixture_path("authorization-submit-push");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store.clone())
         .with_meta_socket(&meta_socket)
         .bind()
@@ -2000,7 +2000,7 @@ fn meta_socket_configure_rejects_malformed_configuration() {
     let workspace = fixture_path("meta-configure-malformed");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let daemon = CriomeDaemon::new(&socket, StoreLocation::new(workspace.join("criome.sema")))
+    let daemon = CriomeDaemon::new(&socket, StoreLocation::new(workspace.join("criome.memory")))
         .with_meta_socket(&meta_socket)
         .bind()
         .expect("bind daemon");
@@ -2032,7 +2032,7 @@ fn meta_socket_intercept_policy_lifecycle_uses_store_state() {
     let workspace = fixture_path("meta-intercept-policy-lifecycle");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store)
         .with_meta_socket(&meta_socket)
         .bind()
@@ -2177,7 +2177,7 @@ fn working_socket_spirit_authorization_uses_intercept_policy_before_authorizatio
     let workspace = fixture_path("working-intercept-policy");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store)
         .with_meta_socket(&meta_socket)
         .with_authorization_mode(signal_criome::AuthorizationMode::AutoApprove)
@@ -2297,7 +2297,7 @@ fn meta_socket_rejects_intercepted_spirit_request_into_authorization_denial() {
     let workspace = fixture_path("working-intercept-policy-reject");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store)
         .with_meta_socket(&meta_socket)
         .with_authorization_mode(signal_criome::AuthorizationMode::AutoApprove)
@@ -2407,7 +2407,7 @@ fn meta_socket_fetches_and_answers_parked_spirit_requests() {
     let workspace = fixture_path("meta-parked-spirit-requests");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
 
     let parked = {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -2537,7 +2537,7 @@ fn meta_socket_approval_by_parked_id_records_authorized_head_update() {
     let workspace = fixture_path("meta-approval-by-id");
     let socket = workspace.join("criome.sock");
     let meta_socket = workspace.join("criome-meta.sock");
-    let store = StoreLocation::new(workspace.join("criome.sema"));
+    let store = StoreLocation::new(workspace.join("criome.memory"));
     let daemon = CriomeDaemon::new(&socket, store.clone())
         .with_meta_socket(&meta_socket)
         .bind()

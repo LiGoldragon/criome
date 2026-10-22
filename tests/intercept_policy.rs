@@ -22,7 +22,7 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 }
 
 fn store_location(name: &str) -> StoreLocation {
-    StoreLocation::new(fixture_path(name).join("criome.sema"))
+    StoreLocation::new(fixture_path(name).join("criome.memory"))
 }
 
 fn timestamp(value: u64) -> TimestampNanos {

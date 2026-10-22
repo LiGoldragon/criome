@@ -8,7 +8,7 @@ authorization decisions, and privilege elevations.*
 
 > **Scope: today, not eventually.** This document describes
 > today's narrow `criome` daemon. The **eventual** `Criome`
-> is the universal computing paradigm expressed in Sema —
+> is the universal computing paradigm expressed in Memory —
 > replacing Git, the editor, SSH, and the web; encompassing
 > programming, version control, network identity, validation,
 > and auth/security across the stack. Today's Spartan criome
@@ -20,7 +20,7 @@ authorization decisions, and privilege elevations.*
 > eventually").
 
 > **Place in Telos.** Telos is the umbrella meta-project (Greek:
-> ultimate end) — the far-horizon eventual Criome plus Sema, realized
+> ultimate end) — the far-horizon eventual Criome plus Memory, realized
 > now as Persona, a meta-AI of LLMs over a typed dumb mechanism.
 > `criome` is *not* Telos; it is Telos's **agreement-and-authorization
 > organ** — a universal agreement machine for authorization. Quorum is
@@ -32,12 +32,12 @@ authorization decisions, and privilege elevations.*
 > implemented surface.
 
 > **Archaeology note.** Prior to this rewrite, today's
-> `criome` was the sema-ecosystem records validator
+> `criome` was the memory-ecosystem records validator
 > (Graph/Node/Edge/Derivation/CompiledBinary). That skeleton
-> (validator pipeline, ractor supervision tree, sema-records
+> (validator pipeline, ractor supervision tree, memory-records
 > tables) is preserved at commit **`a3f4173`**
 > (`architecture: reframe marker as scope discipline …`).
-> The sema-records validator function is **deferred to
+> The memory-records validator function is **deferred to
 > eventual Criome**; today's daemon does not carry it.
 
 
@@ -52,8 +52,8 @@ authorization decisions, and privilege elevations.*
   criome.
 - **One Kameo-based daemon** holding criome's own root
   keypair, an identity registry, delegation grants, a
-  replay-guard, and an audit event log in `criome.sema`
-  through `sema-engine`.
+  replay-guard, and an audit event log in `criome.memory`
+  through `memory-engine`.
 - **First milestone is verifier-shaped.** Three primary
   capabilities: **verify** external signatures (developer
   release signatures, message signatures), **
@@ -187,7 +187,7 @@ authorization decisions, and privilege elevations.*
   is per-component-per-domain agent spaces.
 - **Criome-daemon's authority state.** Request state, signature
   solicitation state, submitted-signature state, grant state, expiry,
-  and replay policy — all owned through sema-engine tables. Plus the
+  and replay policy — all owned through memory-engine tables. Plus the
   policy table and the peer-routing table.
 - **`AuthorizationGrant` carries the satisfied policy.** Scope, the
   signatures collected, and the threshold expression that says why
@@ -272,8 +272,8 @@ flowchart TB
     verifier["AttestationVerifier<br/>(holds public-key cache; verifies)"]
     authorization["AuthorizationCoordinator<br/>(signature state;<br/>routes solicitations)"]
     registry["IdentityRegistry<br/>(Identity ↔ PublicKey)"]
-    store["StoreKernel<br/>(sole owner of criome.sema)"]
-    db["criome.sema<br/>(via sema-engine)"]
+    store["StoreKernel<br/>(sole owner of criome.memory)"]
+    db["criome.memory<br/>(via memory-engine)"]
     audit["AuditLog<br/>(append-only attestation history)"]
 
     cli --> socket
@@ -303,8 +303,8 @@ work is hot enough.
 
 ## 2 · Owned
 
-- The `criome.sema` durable store and its component-local
-  Sema layer.
+- The `criome.memory` durable store and its component-local
+  Memory layer.
 - **The single Unix-user meta authority relation.** The daemon's meta
   socket lives at a per-user path with mode 0600; only that user
   can write to it. The `meta-signal-criome` contract is the
@@ -348,7 +348,7 @@ work is hot enough.
   audit-policy engine is a separate component to
   be designed in a follow-up report. Criome signs the
   *verdict*; the policy engine produces the verdict.
-- Sema-ecosystem records validation (Graph/Node/Edge/
+- Memory-ecosystem records validation (Graph/Node/Edge/
   Derivation/CompiledBinary) — deferred to eventual
   Criome.
 - Effect-bearing dispatch (forge, arca-daemon, prism) —
@@ -408,9 +408,9 @@ CriomeReply
 
 ## 5 · State and ownership
 
-Single component store file (`criome.sema`), opened only by
+Single component store file (`criome.memory`), opened only by
 `StoreKernel`. Durable families are registered through
-`sema-engine` with per-family schema hashes:
+`memory-engine` with per-family schema hashes:
 
 | Family | Key | Value |
 |---|---|---|
@@ -423,7 +423,7 @@ Single component store file (`criome.sema`), opened only by
 | `criome-submitted-signature` | typed authorization request slot + signer | signatures submitted by the owner or peer criome daemons |
 | `criome-attestation-slot` | fixed counter key | next attestation slot |
 | `criome-authorization-slot` | fixed counter key | next authorization request slot |
-| Sema meta | Sema-owned | schema-version and rkyv-format guards |
+| Memory meta | Memory-owned | schema-version and rkyv-format guards |
 
 The version-skew guard runs at boot and hard-fails on
 mismatch (per
@@ -636,7 +636,7 @@ constraints:
 - The `criome-daemon` binary accepts exactly one signal-encoded rkyv
   `CriomeDaemonConfiguration` file. It has no flags and no DOTOS
   configuration path.
-- The daemon owns `criome.sema`; the CLI never opens it.
+- The daemon owns `criome.memory`; the CLI never opens it.
 - Signed payloads carry **domain separation** — every
   signature binds a content hash to its purpose
   (component name, channel role, audience, contract/
@@ -651,7 +651,7 @@ constraints:
 - The verifier subscribes to identity updates (push, not
   poll).
 - `signal-criome` does not depend on `signal` (the
-  sema-ecosystem vocabulary).
+  memory-ecosystem vocabulary).
 - Content records (e.g., `ChannelGrant`) do not carry
   embedded proof fields; attestations live in separate
   records.
@@ -885,8 +885,8 @@ src/actors/authorization.rs AuthorizationCoordinator actor
 src/actors/signer.rs       AttestationSigner actor
 src/actors/verifier.rs     AttestationVerifier actor
 src/actors/registry.rs     IdentityRegistry actor
-src/actors/store.rs        StoreKernel + criome.sema tables
-src/tables.rs              component-local sema-engine table facade
+src/actors/store.rs        StoreKernel + criome.memory tables
+src/tables.rs              component-local memory-engine table facade
 src/text.rs                Nexus/DOTOS projection (one record in/out)
 src/transport.rs           Unix-socket Signal-frame transport
 src/conveyance.rs          peer conveyance (router-mediated / direct-dial / none)
@@ -905,7 +905,7 @@ dependency solely for the router-mediated conveyance.
 
 Cargo dependencies after the rewrite: `signal-frame`,
 `signal-criome`, `signal-router` (the peer conveyance only),
-`kameo`, `sema-engine`, `tokio`, `thiserror`,
+`kameo`, `memory-engine`, `tokio`, `thiserror`,
 `triad-runtime`, `rkyv`, `blst`, `blake3`, `dotos`.
 **Drops** the retired `signal` and `ractor` dependencies.
 
@@ -913,7 +913,7 @@ Current implementation status:
 
 - `RegisterIdentity`, `LookupIdentity`, `RevokeIdentity`,
   and `SubscribeIdentityUpdates` route through the Kameo
-  actor tree and the component-local sema-engine store.
+  actor tree and the component-local memory-engine store.
   When a cluster-root public key is configured, `RegisterIdentity`
   accepts only registrations carrying a valid cluster-root BLS
   admission signature over the canonical registration statement.
@@ -945,12 +945,12 @@ Current implementation status:
   the identical preimage, so no signed field (notably the
   expiry) can be altered without breaking the signature.
 - `AdmitContract`, `LookupContract`, and `EvaluateAuthorization`
-  route through the component-local sema-engine store when the daemon
+  route through the component-local memory-engine store when the daemon
   runs in quorum mode. The `criome-contract` family stores
   content-addressed policy contracts durably by `ContractDigest`;
   admission validation rejects dangling references against the durable
   contract set, and evaluation rebuilds a pure in-memory evaluator
-  snapshot from SEMA records. The contract DAG therefore survives
+  snapshot from MEMORY records. The contract DAG therefore survives
   daemon restart.
 - Authorization mode is daemon configuration: `AutoApprove` records
   an authorized object update directly, `ClientApproval` parks the
@@ -1009,5 +1009,5 @@ Current implementation status:
   — feeds criome's identity registry; ClaviFaber's
   narrow per-host scope unchanged.
 - This repo at commit `a3f4173` — archaeology of the
-  prior sema-records-validator skeleton + ractor
+  prior memory-records-validator skeleton + ractor
   supervision tree + capability-token BLS-G1 stubs.

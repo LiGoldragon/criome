@@ -68,13 +68,13 @@ dotos   = { package = "dotos", git = "https://github.com/LiGoldragon/dotos.git",
 meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", rev = "1c3bd8784142c54856e031d74b897382204cec21" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 rustix       = { version = "1", features = ["net"] }
-sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
+memory-engine  = { git = "https://github.com/LiGoldragon/memory-engine.git", rev = "abf9d85166e22440440baba03358913458905b8d" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", rev = "80f70d929ae6d72707052f097be2264872913983" }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", rev = "b85fe3408faa24b8439a3685396430a68bfbcb71" }
 signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
 thiserror    = "2"
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net"] }
-triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", rev = "7d10bb9d9a08ce363a0be8cff2716103f0a326fe" }
+triad-runtime = { git = "https://github.com/LiGoldragon/triad-runtime.git", rev = "4cc0a100841d2400f354c008c9faa73b2cedf50e" }
 
 [dev-dependencies]
 tempfile = "3"
