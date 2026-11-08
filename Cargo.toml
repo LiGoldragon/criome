@@ -68,7 +68,7 @@ dotos   = { package = "dotos", git = "https://github.com/LiGoldragon/dotos.git",
 meta-signal-criome = { git = "https://github.com/LiGoldragon/meta-signal-criome.git", rev = "1c3bd8784142c54856e031d74b897382204cec21" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 rustix       = { version = "1", features = ["net"] }
-sema-engine  = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
+sema-engine  = { git = "https://github.com/LiGoldragon/memory-engine.git", rev = "abb1c6b59108c7f9f03a6d1edeb663ac4b5a2cac" }
 signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", rev = "80f70d929ae6d72707052f097be2264872913983" }
 signal-criome = { git = "https://github.com/LiGoldragon/signal-criome.git", rev = "b85fe3408faa24b8439a3685396430a68bfbcb71" }
 signal-router = { git = "https://github.com/LiGoldragon/signal-router.git", branch = "main" }
